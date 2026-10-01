@@ -31,9 +31,11 @@ is `PASS` or is explicitly accepted by the peer as `BLOCKED` with a reason.
 
 | # | Acceptance criterion | Evidence | Result | Gap |
 |---|---|---|---|---|
-| 1 | Public sweep is clean over tracked and untracked files | `python3 scripts/security-sweep.py --untracked` exits 0 |  |  |
-| 2 | Design spec and build cards are reviewable as a split set | `docs/specs/adapter/{spec,plan,tasks}.md` exist; spec is §1-17 |  |  |
-| 3 | The registration `_bool_conv` fix is present and covered | `tests/` re-run; file:line of the fix |  |  |
+| 1 | Public sweep is clean over tracked and untracked files | `python3 scripts/security-sweep.py --untracked` exits 0 (run at merge commit efef313) | PASS |  |
+| 2 | Design spec and build cards are reviewable as a split set | `docs/specs/adapter/{spec,plan,tasks,verification}.md` exist; spec is §1-17 | PASS |  |
+| 3 | The registration `_bool_conv` fix is present and covered | `src/hermes_reticulum/plugin/registration.py:32` `_bool_conv`, used at :40 for `RETICULUM_REQUIRE_SHARED_INSTANCE`; `tests/test_reticulum_registration_env.py` re-runs green | PASS |  |
+
+Merged in PR #13 (squash `efef313`, base `dev`).
 
 ## Card A2: Context pin + step-POST noise
 
@@ -78,7 +80,11 @@ is `PASS` or is explicitly accepted by the peer as `BLOCKED` with a reason.
 
 | # | Acceptance criterion | Evidence | Result | Gap |
 |---|---|---|---|---|
-| 1 | Mesh approvals survive LoRa latency |  |  |  |
+| 1 | Mesh approvals survive LoRa latency | Value ships in `plugins/reticulum/config.yaml` (`timeout: 900`); `install.sh` applies it to the user's `config.yaml` (fast + merge paths, existing value preserved); adapter tests green (`tests/test_reticulum_adapter.py`, 37 passed) | BLOCKED | Wire check on a live mesh (approval arriving >300s after the prompt) not yet run. Mechanism is in place and installer-verified; the end-to-end latency behaviour is unproven. |
+
+Merged in PR #13 (squash `efef313`, base `dev`). The gateway reads `approvals.timeout` from
+top-level config, which a plugin cannot set from its own subtree, so the value lands via
+`install.sh`; see spec §17.6 and ADR-0003.
 
 ## Card A9: P-5 `/retry`, P-6 `/status`, P-13 command audit
 

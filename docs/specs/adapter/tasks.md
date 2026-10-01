@@ -22,7 +22,7 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 
 | Card | Build | Blocked by | Acceptance (headline) | Status |
 |---|---|---|---|---|
-| A1 | Docs foundation: spec split, step cards, PII quarantine rule, findings docs, the registration `_bool_conv` fix | - | public sweep is clean; spec + cards reviewable | in-review |
+| A1 | Docs foundation: spec split, step cards, PII quarantine rule, findings docs, the registration `_bool_conv` fix | - | public sweep is clean; spec + cards reviewable | done |
 | A2 | Pin context length; silence the dead step POST | A1 | overflow turns stop; log noise stops | open |
 | A3 | Automated ACL rejection (code gate, canned reply, zero model involvement) | A1 | unauthorized peer gets `⛔ Access not authorized.` and nothing else | open |
 | A4 | Command feedback verification + terse render + send-failure truth | A1 | `/status`, `/resume`, `/new`-confirm all visibly answered on the phone | open |
