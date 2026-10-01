@@ -1,0 +1,222 @@
+<!-- Part of the adapter feature bundle: docs/specs/adapter/.
+     Each card is one branch and one PR into `adapter`. Working sections live in plan.md.
+-->
+
+# Adapter implementation steps (split 2026-09-30)
+
+The design spec (`docs/specs/adapter/spec.md`, §1-17) and the working decisions
+that grew on top of it are split on purpose: the spec says *what the adapter is*, this file
+says *what we build next*. Sections §18-21 of the old spec moved to `plan.md` intact (their text
+governs; only their numbering changed into cards). Each card is one branch and one PR into
+the `adapter` branch, so the review bot reviews one vertical change at a time.
+
+Card anatomy: **Build** (one sentence), **Spec basis** (which design invariant it implements),
+**Blocked by** (cards that must merge first), **Acceptance** (what proves it works; each item
+is a Given/When/Then), **Status** (open / in-review / merged).
+
+Peer rule that governs all cards: no spec content enters a card without the peer approving
+it ("I want you to run everything by me"). A card whose acceptance depends on an open
+decision (O-8, delivery bot choice) stays blocked, not guessed.
+
+## Step index
+
+| Card | Build | Blocked by | Acceptance (headline) | Status |
+|---|---|---|---|---|
+| A1 | Docs foundation: spec split, step cards, PII quarantine rule, findings docs, the registration `_bool_conv` fix | - | public sweep is clean; spec + cards reviewable | in-review |
+| A2 | Pin context length; silence the dead step POST | A1 | overflow turns stop; log noise stops | open |
+| A3 | Automated ACL rejection (code gate, canned reply, zero model involvement) | A1 | unauthorized peer gets `⛔ Access not authorized.` and nothing else | open |
+| A4 | Command feedback verification + terse render + send-failure truth | A1 | `/status`, `/resume`, `/new`-confirm all visibly answered on the phone | open |
+| A5 | `/new` ack names new session id + auto-title | A4 | peer can find the new session after `/new` | open |
+| A6 | Tool-call visibility (step pusher) + `/verbose` (default on) | A4 | a 22-tool turn is no longer silent; `/verbose off` truncates like the CLI | open |
+| A7 | YAML config hook (`apply_yaml_config_fn`), display name + announce interval as config keys | A1 | `config.yaml` keys work without env vars | open |
+| A8 | Ship `approvals.timeout: 900` with LoRa rationale | A1 | mesh approvals survive LoRa latency | done |
+| A9 | P-5 `/retry`, P-6 adapter-built `/status`, P-13 command audit | A4 | commands listed in §19.2 respond on the mesh | open |
+| A10 | P-8 `/clarify` verification, adapter-side plumbing only if gateway lacks it | A4 | `/clarify` resolves or a findings doc proves the gateway gap | open |
+
+## Where the moved sections live
+
+Sections 18-21 of the old spec moved to `plan.md` (this bundle), under their own headings:
+**18 (context overflow)**, **19 (feature parity delta)**, **20 (command feedback)**,
+**21 (session rulings)**. Cards cite them directly. The cards are the build units; the moved
+sections remain the governing text they were written from.
+
+Open decisions O-7 and O-8 stay where they were, in the design spec's §15 open-decision list
+(`docs/specs/adapter/spec.md`); card A5 decides O-7 and card A4 closes O-8.
+
+## Un-carded by peer decision
+
+Parked, not forgotten: cron-over-RNS delivery vehicle (community LXMF bot note, §21.3 item 8
+in `plan.md`), `standalone_sender_fn` design question, P-2 map,
+P-3 media, P-4 NomadNet channel, P-9 gateway watchdog, RNS version pin (§14).
+
+## Card A1: Docs foundation
+
+**Build:** Split the spec (design §1-17 stays; working sections become these cards), add the
+PII quarantine rule in this card, land the findings docs and roadmap banner, and the one registration
+boolean fix.
+**Spec basis:** §16 invariants; the findings doc `docs/findings-2026-09-30-session-management-
+and-telegram-parity.md`.
+**Blocked by:** nothing.
+**Acceptance:**
+- Given every tracked and untracked visible file, When the pre-push sweep runs (hash-shaped
+  strings, host:port endpoints, numeric account/session ids, `-----BEGIN` headers), Then zero
+  non-synthetic hits remain.
+- Given a reader new to the repo, When they read spec §1-17 then this file, Then every open
+  decision and every planned build is findable without reading 1,100 lines of history.
+
+### The PII quarantine rule (card A1's security content)
+
+Recurring failure mode: docs written from live log excerpts or live command output carry real
+peer destination hashes, real session ids, and real account ids into files that outlive the
+session. Two live leaks were found and redacted on 2026-09-30 (a numeric chat id quoted from a
+gateway log line; a session id quoted as an example), and one remains in committed §19.2
+(a hook docstring quoting a real peer hash in a "do not copy verbatim" example, now marked
+synthetic).
+
+Rules, all enforced *before writing*, not during the push sweep:
+
+1. **Docs never quote raw identity values.** Identity values (32-hex destination hashes,
+   display names, session row ids, account/chat ids) get a label at the point of writing:
+   `<peer-A>`, `<session-id>`, `<chat_id>`. The mapping lives nowhere in the repo.
+2. **Log excerpts are redacted on paste**, the same rule the gateway's own sanitizer applies
+   to outbound text (destination hashes scrubbed at the display boundary, `redact.py`
+   `_IDENT_PATTERNS`), extended to session ids and numeric account ids.
+3. **Session ids count as fingerprint material.** A session id is 8 random hex characters;
+   8-hex strings are fingerprintable and fall under the same 32-hex quarantine.
+4. **Pre-push gate stays and grows**: the repo has no committed sweep script yet (the
+   2026-09-15 quarantine ran ad-hoc). Card A1 adds a tracked `scripts/security-sweep.py`
+   that walks every tracked and untracked visible file for: 32-hex identity values, other
+   hash-shaped runs (8+ hex), host:port endpoints, `-----BEGIN` headers, and 9-11 digit
+   numeric ids, with a synthetic-allowlist (`aabbccdd`, `deadbeef`, `0badc0de`,
+   `abcd1234`, zero-filled placeholders). Non-synthetic hits exit non-zero, so no push
+   happens until they are redacted. Plus a **pre-write habit**: when a doc quotes a log line
+   or command output, sanitize first, then paste.
+5. **Open decision (peer):** whether identity values also get scrubbed from *gateway-visible
+   log lines* at the log boundary (`--redact-pii` exists but is opt-in), so docs quoted from
+   logs are clean by construction. This touches the logging story and awaits the peer's
+   ruling before it becomes a card.
+
+## Card A2: Context pin + step-POST noise
+
+**Build:** Pin `model.context_length` below the serving endpoint's live `n_ctx`; stop
+`mesh-tool-gate`'s step POSTs to the deleted control server (gate the POST on the server's
+presence or unset `HERMES_MESH_CONTROL_URL`).
+**Spec basis:** §18 in `plan.md` (root causes: declared window > endpoint slot; dead POST flood);
+invariant: the adapter never asserts a context window it has not verified against the serving
+endpoint.
+**Blocked by:** A1 (config docs land first).
+**Acceptance:**
+- Given a llama.cpp slot of `n_ctx = 8192`, When the adapter declares a window, Then it
+  declares a value strictly below 8192 and a turn that would overflow degrades by compression
+  instead of failing.
+- Given the adapter model running (no bridge control server), When a guarded turn executes,
+  Then zero `Connection refused` lines appear from step pushes.
+
+## Card A3: Automated ACL rejection
+
+**Build:** Inbound from a peer outside the allowlist gets the canned automated rejection
+(`⛔ Access not authorized.`, the original bridge's `core/acl.py` + `cli.py` behaviour),
+returned by adapter code before any model involvement.
+**Spec basis:** peer ruling 2026-09-30 (§21.3 item 3 in `plan.md`): "if they're not
+authorized, don't leave it to the model to try to figure it out and get prompt injected."
+Security invariant: an unauthorized peer's text never enters a prompt, a system note, or a
+model-visible log lane. Supersedes the silent-drop behaviour documented in §17.8.
+**Blocked by:** A1.
+**Acceptance:**
+- Given a peer hash absent from the allowlist, When it sends any text, Then it receives
+  exactly the canned rejection and no Hermes turn runs (gateway logs show no session touch).
+- Given the rejection path, When its logs are swept, Then the unauthorized peer's message text
+  appears nowhere in gateway-visible output.
+- Open sub-question for the peer (carried from §15): the rejection is a liveness oracle by
+  design (a stranger learns a destination exists). Peer ruling accepts this trade for UX
+  clarity; recorded, not re-litigated.
+
+## Card A4: Command feedback + terse render + send truth
+
+**Build:** Phone-exercise `/status`, `/resume`, and the `/new` confirm→`yes` cycle; add
+`mesh_terse()` for confirm/clarify bodies; make `send()` return `SendResult.failed` on LXMF
+delivery failure and log WARNING from the delivery tracker.
+**Spec basis:** old §20 (mechanism verified from source; gateway core untouched; ride the base
+`send_slash_confirm` / `send_clarify` defaults).
+**Blocked by:** A1.
+**Acceptance:**
+- Given the phone on the mesh, When `/status` is sent, Then a reply packet is observed on the
+  peer side (not just a gateway "response ready" log line).
+- Given `/new` on the mesh, When the confirm prompt arrives, Then it renders as one terse
+  line (`Confirm /new? reply: yes / always / cancel`) plus the verbatim destructive-detail
+  line, and a `yes` reply runs the reset.
+- Given a send whose LXMF delivery fails, When the command handler returns, Then the send is
+  reported failed and a WARNING names the lost delivery.
+
+## Card A5: `/new` ack with session id + title
+
+**Build:** `/new`'s result ack names the new session's id and auto-title.
+**Spec basis:** peer ruling (§21.3 item 4 in `plan.md`): "a new session ID or name so that you
+can go back to it"; decides O-7. The lane key stays stable (no key churn).
+**Blocked by:** A4 (the ack path must be live first).
+**Acceptance:** Given `/new` completes, When the ack arrives, Then it names the session id and
+title, and `/resume` lists that session.
+
+## Card A6: Tool visibility (P-1) + `/verbose` (P-7)
+
+**Build:** Adapter-side step pusher consuming gateway tool events; tool emoji from the shared
+`agent/tool_emoji.py` registry; `/verbose` per-session flag on the step pusher.
+**Spec basis:** peer rulings: auto title gen (already gateway-side), "verbose on, should be
+like the cli default, otherwise truncated like the cli does."
+**Blocked by:** A4.
+**Acceptance:**
+- Given a turn with 22 tool calls, When it runs on the mesh with `/verbose` on (default),
+  Then the peer sees tool-call progress like the CLI sees it.
+- Given `/verbose off`, When a turn runs, Then recaps arrive in the truncated form.
+
+## Card A7: YAML config hook
+
+**Build:** Register `apply_yaml_config_fn` on the platform entry; `display_name` and
+`announce_interval` become `config.yaml` keys under `platforms.reticulum`.
+**Spec basis:** §12, §17.5 (env-only config is a known gap that must close before public
+plugin shipping).
+**Blocked by:** A1.
+**Acceptance:** Given a fresh checkout with only `config.yaml` set (no env vars), When the
+gateway starts, Then the adapter announces with the configured display name and cadence.
+**Progress:** the transport now receives `PlatformConfig.extra` (connect() passes it), so a
+setting that reaches the adapter is no longer dropped on the floor before the transport. The
+`apply_yaml_config_fn` registration itself remains to be added.
+
+## Card A8: Approvals 900s
+
+**Build:** Ship `approvals.timeout: 900` in the plugin config with the LoRa-latency rationale.
+**Spec basis:** §7 approval row, §16 invariant, §17.6 (without it, mesh approvals fail closed
+at the gateway's 300s default).
+**Blocked by:** A1.
+**Acceptance:** Given an approval prompt on a multi-hop LoRa path, When the peer answers within
+900s, Then the approval is honoured.
+
+## Card A9: P-5 `/retry`, P-6 `/status` health block, P-13 command audit
+
+**Build:** Adapter-side `/retry` for failed sends; adapter-built `/status` answer (RNS attach
+state, announce cadence, peer pending-set depth); command audit entries.
+**Spec basis:** §19.2 in `plan.md` (parity gap table); `/usage` rides the gateway-provided command.
+**Blocked by:** A4.
+**Acceptance:** Each command in this card's list gets a visible, correct answer on the phone
+exercise.
+
+## Card A10: P-8 `/clarify` verification
+
+**Build:** Probe whether the gateway's `send_clarify` plumbing reaches plugin platforms; build
+an adapter-side callback only if it does not.
+**Spec basis:** §19.2 in `plan.md`, P-8 row ("gateway plumbing existence unverified; adapter-side callback if
+absent").
+**Blocked by:** A4.
+**Acceptance:** Given `/clarify`-style output is possible on the mesh, When probed from source
+or a live run, Then either it works or a findings doc names the gateway gap precisely.
+
+## Branch and PR workflow
+
+- `adapter` is the integration branch every card merges into.
+- One card per branch (`step/A3-acl-rejection` style), one PR, review bot feedback on the PR,
+  fixes pushed to the same branch. Card acceptance above is the PR's "done" definition.
+- No card merges while a blocked-by card is unmerged.
+- Spec, code, and skill update together per card, except pure planning rounds (spec + skill
+  only) - the standing peer rule.
+
+---

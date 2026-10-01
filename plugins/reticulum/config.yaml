@@ -1,0 +1,19 @@
+# Reticulum (LXMF) platform defaults.
+#
+# These are the values this platform ships with. The gateway merges them over
+# the user's config.yaml, so a user setting overrides them; they exist so a
+# mesh install works out of the box without hand-editing config.
+#
+# approvals.timeout: 900
+#   The gateway default for `approvals.timeout` is 300s. That is too short for
+#   this platform: a multi-hop LoRa path can take minutes for a prompt to reach
+#   the peer and the answer to come back, and an operator is often away from
+#   the radio (AFK) between hops. With 300s, approvals fail closed before the
+#   answer can arrive, and there is no way to re-open the same prompt.
+#   900s (15 minutes) covers LoRa hop latency plus an AFK operator.
+#
+#   This value is the platform's documented default; it is not a preference.
+#   It is set here rather than in a user's config so every mesh install gets it,
+#   and it is the reason this file exists.
+approvals:
+  timeout: 900

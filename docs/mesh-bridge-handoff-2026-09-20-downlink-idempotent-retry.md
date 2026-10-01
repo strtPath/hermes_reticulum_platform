@@ -94,7 +94,7 @@ recipients (Phase 2).
 - seq 188 = silent state=timeout, no first-hop ACK.
 - seq 189-192 acked ~1s each on the same TCP path.
 - Forwarded MeshChatX msg id 1506: dest = phone RNS identity, src = bridge
-  identity (both redacted), timestamp <msg-id>.
+  identity (both redacted), timestamp <epoch>.
 
 ## Constraints carried forward
 - No code changes to the phone-side chat client (dedupe = spec-only).

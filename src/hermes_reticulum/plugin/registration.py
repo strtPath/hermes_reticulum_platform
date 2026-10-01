@@ -2,14 +2,110 @@
 Plugin Registration — registers Reticulum/LXMF with the Hermes gateway.
 
 This module is the entry point called by the Hermes plugin system.
-It registers a PlatformEntry so the gateway discovers and instantiates
+It registers a platform so the gateway discovers and instantiates
 the Reticulum adapter automatically.
+
+``check_reticulum_requirements`` remains exported because the installed
+``~/.hermes/plugins/reticulum`` shim's ``register(ctx)`` wraps it (it is
+the ``check_fn`` that gates platform enablement); do not delete it without
+updating that shim.
 """
 
 import logging
-import os
+
+from gateway.platforms._shared import (
+    get_scoped_secret as _get_scoped_secret,
+)
+from gateway.platforms._shared import (
+    seed_extra_from_env as _seed_extra_from_env,
+)
 
 logger = logging.getLogger("hermes_reticulum.registration")
+
+# (ENV_VAR, extra_key, converter) table consumed by seed_extra_from_env.
+# This must list every var the transport reads, or the README and the install
+# scripts document a shorter list than the code honours.
+#
+# display_name is deliberately NOT in the table: env_enablement requires it
+# and returns None when it is absent (the platform is then not minimally
+# configured and never registers).
+def _bool_conv(raw: str) -> bool:
+    return raw.lower() in ("1", "true", "yes", "on")
+
+
+_ENV_TABLE = (
+    ("RETICULUM_ANNOUNCE_INTERVAL", "announce_interval", float),
+    ("RETICULUM_STORAGE_PATH", "storage_path", None),
+    ("RETICULUM_RNS_CONFIG_PATH", "rns_config_path", None),
+    ("RETICULUM_REQUIRE_SHARED_INSTANCE", "require_shared_instance", _bool_conv),
+)
+
+# The bridge's name for the storage path. Kept as a fallback so an operator
+# migrating an existing bridge .env does not silently get the plugin default
+# because the variable was spelled differently. RETICULUM_STORAGE_PATH wins
+# when both are set.
+_LEGACY_STORAGE_ENV = "RETICULUM_STORAGE"
+
+
+def _seed_extra() -> dict:
+    """``PlatformConfig.extra`` seeded from env, including the legacy key and
+    the home channel used for cron delivery to the mesh."""
+    seed = _seed_extra_from_env(_ENV_TABLE, home_env="RETICULUM_HOME_CHANNEL")
+    if "storage_path" not in seed:
+        legacy = (_get_scoped_secret(_LEGACY_STORAGE_ENV, "") or "").strip()
+        if legacy:
+            seed["storage_path"] = legacy
+    return seed
+
+
+def check_reticulum_requirements() -> bool:
+    """Check if RNS and LXMF Python packages are available.
+
+    Kept because the installed plugin shim's ``register(ctx)`` wraps this
+    module's ``register`` as the platform ``check_fn``.
+    """
+    try:
+        import LXMF  # noqa: F401
+        import RNS  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _validate_config(config) -> bool:
+    """Config is always usable — every field has a default."""
+    return True
+
+
+def _is_connected(config) -> bool:
+    """Whether Reticulum is CONFIGURED — the gateway's enable gate.
+
+    The gateway calls this to decide whether to instantiate the adapter
+    (``gateway/config_env.py::_enable_plugin_platform``: a False return
+    skips the platform entirely, at debug level, so a wrong answer here is
+    silent). It asks "is this platform set up", NOT "is a socket open right
+    now" — the IRC reference plugin returns ``validate_config(config)`` for
+    the same reason.
+
+    Docking the answer to a runtime state flag (an earlier version read
+    RETICULUM_CONNECTED, which nothing ever sets) makes the gate permanently
+    False, so the adapter is never constructed and the node never announces.
+    """
+    return _validate_config(config)
+
+
+def _env_enablement() -> dict | None:
+    """Seed ``PlatformConfig.extra`` and the home channel from env before
+    construction, so env-only setups appear in ``hermes gateway status``.
+    Build from the (ENV_VAR, extra_key, conv) table via
+    ``_shared.seed_extra_from_env`` (spec section 2)."""
+    display = (_get_scoped_secret("RETICULUM_DISPLAY_NAME", "") or "").strip()
+    if not display:
+        # No display name configured: the platform is not minimally set up,
+        # matching the IRC example's env_enablement contract.
+        return None
+    seed = _seed_extra()
+    return {"display_name": display, **seed}
 
 
 def register(ctx):
@@ -19,36 +115,7 @@ def register(ctx):
     Args:
         ctx: PluginContext with register_platform() method.
     """
-    from hermes_reticulum.plugin.adapter import (
-        ReticulumPlatformAdapter,
-        check_reticulum_requirements,
-    )
-
-    def validate_config(config) -> bool:
-        """Config is always usable — every field has a default."""
-        return True
-
-    def is_connected(config) -> bool:
-        """Check if the adapter is currently connected."""
-        # This is called by the gateway status system
-        return os.getenv("RETICULUM_CONNECTED", "false").lower() == "true"
-
-    def env_enablement() -> dict | None:
-        """Seed PlatformConfig.extra from environment variables."""
-        extra = {}
-        display_name = os.getenv("RETICULUM_DISPLAY_NAME")
-        if display_name:
-            extra["display_name"] = display_name
-
-        storage = os.getenv("RETICULUM_STORAGE")
-        if storage:
-            extra["storage_path"] = storage
-
-        stamp = os.getenv("RETICULUM_STAMP_COST")
-        if stamp:
-            extra["stamp_cost"] = int(stamp)
-
-        return extra if extra else None
+    from hermes_reticulum.plugin.adapter import ReticulumPlatformAdapter
 
     # Build the platform entry. The plugin context OWNS PlatformEntry
     # construction: ctx.register_platform(name, label, adapter_factory,
@@ -69,9 +136,9 @@ def register(ctx):
         label="Reticulum (LXMF)",
         adapter_factory=lambda cfg: ReticulumPlatformAdapter(cfg),
         check_fn=check_reticulum_requirements,
-        validate_config=validate_config,
-        is_connected=is_connected,
-        env_enablement_fn=env_enablement,
+        validate_config=_validate_config,
+        is_connected=_is_connected,
+        env_enablement_fn=_env_enablement,
         required_env=[],
         install_hint="pip install hermes-reticulum",
         emoji="🛜",
@@ -84,8 +151,8 @@ def register(ctx):
             "The client may be off-grid; route replies efficiently."
         ),
         cron_deliver_env_var="RETICULUM_HOME_CHANNEL",
-        allowed_users_env="HERMES_RETICUM_ALLOWED_USERS",
-        allow_all_env="HERMES_RETICUM_ALLOW_ALL",
+        allowed_users_env="HERMES_RETICULUM_ALLOWED_USERS",
+        allow_all_env="HERMES_RETICULUM_ALLOW_ALL",
     )
 
     logger.info("Reticulum/LXMF platform registered")

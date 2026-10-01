@@ -1,5 +1,12 @@
 # Mesh Bridge — Feature Parity Roadmap (vs Telegram gateway)
 
+> **MODEL UPDATE (2026-09-30):** this is a **bridge-era** document. Every "✅ done" below was
+> built into the standalone bridge (`cli run`), and the adapter model (adapter spec, sections
+> 1-19) deleted that runtime. Do not read these checkmarks as adapter reality. The authoritative
+> bridge-vs-adapter delta is **adapter spec section 19** (`docs/specs/adapter/spec.md`, and plan.md section 19),
+> which lists what landed on the adapter side, what was dropped, and the proposed re-homing
+> order (P-1..P-14). This file stays as the bridge history.
+
 _Goal: bring the Reticulum/LXMF mesh bridge (`rns_hermes_endpoint`) to feature
 parity with the Hermes **Telegram** gateway, so the mesh endpoint is a first-class
 way to talk to the agent, not a degraded one. This is a living doc — update the

@@ -105,7 +105,7 @@ pushed body. With the id set the result map can refresh without re-pushing.
   resolving a null sid and pushing:
 
   ```
-  11:59:05 step-watcher start sid=None since=<msg-id>.723
+  11:59:05 step-watcher start sid=None since=<epoch>
   11:59:06 step-watcher resolved sid=sess-first (was None)
   11:59:06   push_step(terminal) → 30 chars
   11:59:06 step-watcher stop sid=sess-first pushed=1

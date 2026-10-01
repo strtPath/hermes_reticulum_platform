@@ -30,7 +30,7 @@ the user saw it around 13:28–13:32.
 hermes database. It is our own hook:
 
 1. `agent:step` fires on every tool batch in every mesh session, including
-   this very conversation (`mesh-reticulum-<msg-id>`).
+   this very conversation (`mesh-reticulum-<timestamp>`).
 2. For risky tools the hook does a **blocking**
    `urllib.request.urlopen(..., timeout=600.0)` POST to the bridge control
    server — *from inside the gateway's asyncio event loop* (see
