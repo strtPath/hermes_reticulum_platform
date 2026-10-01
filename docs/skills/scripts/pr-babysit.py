@@ -123,10 +123,37 @@ def is_resolved(c):
     return False
 
 
+def latest_bot_review(repo, pr):
+    """The commit_id of the bot's most recent review, or None.
+
+    Greptile submits one review per push, tagged with the commit it reviewed.
+    The snapshot is only COMPLETE once the bot has reviewed the current head:
+    otherwise a green CI reads as 'ready' while the bot is still thinking (it
+    lags CI by minutes), and its findings land after the agent already called it
+    clean.
+
+    Prefer the newest review submission's commit_id. A review submission is the
+    authoritative 'I reviewed SHA X' signal. Inline comments are NOT used as the
+    primary signal: their ``commit_id`` tracks the PR's current head at read time
+    and only ``original_commit_id`` records what was reviewed, so they are a
+    weaker and easily-stale source.
+    """
+    reviews, err = gh_json(["api", f"repos/{repo}/pulls/{pr}/reviews", "--paginate"])
+    if err or not reviews:
+        return None, err or "no reviews"
+    bot = [r for r in reviews
+           if any(b in ((r.get("user") or {}).get("login", "")) for b in BOT_LOGINS)]
+    if not bot:
+        return None, None
+    # Reviews come oldest-first; the last one is the most recent.
+    return bot[-1].get("commit_id"), None
+
+
 def snapshot(pr, repo):
     rep = {"pr": pr, "repo": repo, "bot_comments": [], "resolved_bot_comments": [],
            "ci": None, "mergeable": None,
-           "state": None, "review_decision": None, "errors": []}
+           "state": None, "review_decision": None, "errors": [],
+           "head_sha": None, "bot_reviewed_sha": None, "bot_reviewed_head": None}
 
     resolved, rerr = resolved_comment_ids(repo, pr)
     if rerr:
@@ -165,7 +192,9 @@ def snapshot(pr, repo):
     sha_out, err = gh(["pr", "view", pr, "--repo", repo, "--json", "headRefOid",
                       "--jq", ".headRefOid"])
     if not err and sha_out:
-        checks, cerr = gh_json(["api", f"repos/{repo}/commits/{sha_out.strip()}/check-runs"])
+        head = sha_out.strip()
+        rep["head_sha"] = head
+        checks, cerr = gh_json(["api", f"repos/{repo}/commits/{head}/check-runs"])
         if cerr or checks is None:
             rep["errors"].append(f"checks: {cerr or 'no output'}")
         else:
@@ -176,6 +205,13 @@ def snapshot(pr, repo):
                 "pending": [r["name"] for r in runs
                             if r.get("status") in ("queued", "in_progress")],
             }
+
+    reviewed_sha, rverr = latest_bot_review(repo, pr)
+    if rverr:
+        rep["errors"].append(f"reviews: {rverr}")
+    rep["bot_reviewed_sha"] = reviewed_sha
+    if rep["head_sha"] and reviewed_sha:
+        rep["bot_reviewed_head"] = (reviewed_sha == rep["head_sha"])
     return rep
 
 
@@ -214,6 +250,16 @@ def main():
         print(f"       {c['url']}")
     if not rep["bot_comments"]:
         print("review-bot comments: none unresolved")
+    # Readiness verdict: a clean snapshot is only trustworthy once the bot has
+    # reviewed the CURRENT head. Otherwise CI is green but the bot is still
+    # thinking (it lags CI by minutes) and its findings land after 'ready'.
+    if rep.get("bot_reviewed_head") is True:
+        print(f"bot reviewed: current head ({rep.get('head_sha','')[:8]}) — snapshot complete")
+    elif rep.get("bot_reviewed_head") is False:
+        print(f"bot reviewed: STALE — last reviewed {str(rep.get('bot_reviewed_sha'))[:8]}, "
+              f"head is {str(rep.get('head_sha'))[:8]}; WAIT, do not call it ready")
+    else:
+        print("bot reviewed: unknown (no bot review seen) — do not call it ready")
     if rep["resolved_bot_comments"]:
         print(f"({len(rep['resolved_bot_comments'])} bot comments already resolved, not blocking)")
     for e in rep["errors"]:

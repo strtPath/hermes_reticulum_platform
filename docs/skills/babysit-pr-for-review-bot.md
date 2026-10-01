@@ -109,6 +109,29 @@ Aim for no unresolved bot comments and the bot's score at 5 out of 5. Do not dec
 from "no new comments since I looked" — check the bot's actual state after each push, because
 a fix push retriggers a fresh review.
 
+### Wait for the bot to review the CURRENT head, not just for green CI
+
+The bot lags CI by minutes here. CI (ruff + pytest) goes green well before greptile submits
+its review, so a snapshot taken right after a green CI reads "no unresolved comments" while
+the bot has not yet looked at the new code — the classic false "5 out of 5". Do not call it
+ready on CI alone.
+
+The authoritative signal is the **commit the bot's newest review is pinned to**. Read it:
+
+```bash
+gh api repos/<owner>/<repo>/pulls/<n>/reviews \
+  --jq '[.[] | select(.user.login|startswith("greptile"))] | last | .commit_id'
+```
+
+Compare that to the PR head (`gh pr view <n> --json headRefOid --jq .headRefOid`). Only when
+they match has the bot reviewed the code you are about to merge. `scripts/pr-babysit.py`
+reports this as `bot reviewed: current head` / `STALE` / `unknown` — do not merge on a
+`STALE` or `unknown`.
+
+Note: an inline comment's `commit_id` is NOT this signal — GitHub rewrites it to the current
+head as the PR moves; only a review submission's `commit_id`, or a comment's
+`original_commit_id`, records what was actually reviewed.
+
 ## Files
 
 - `scripts/pr-babysit.py` — read-only snapshot of PR state: unresolved bot comments, CI,
