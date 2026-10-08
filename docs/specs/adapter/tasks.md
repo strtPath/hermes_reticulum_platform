@@ -98,10 +98,13 @@ Rules, all enforced *before writing*, not during the push sweep:
 
 ## Card A2: Context pin + step-POST noise
 
-**Build:** Pin `model.context_length` below the serving endpoint's live `n_ctx`; stop
-`mesh-tool-gate`'s step POSTs to the deleted control server (gate the POST on the server's
-presence or unset `HERMES_MESH_CONTROL_URL`).
-**Spec basis:** §18 in `plan.md` (root causes: declared window > endpoint slot; dead POST flood);
+**Build:** Pin `model.context_length` in `~/.hermes/config.yaml` to the serving endpoint's
+live `n_ctx` (priority-0 override; operational, no Hermes patch); stop the `mesh-tool-events`
+*hook*'s step POSTs to the deleted control server by gating both `_post` call sites on a
+single "control server configured?" predicate (`HERMES_MESH_CONTROL_URL` unset/empty/invalid
+⇒ no-op). Do NOT touch the `mesh-tool-gate` pre-exec plugin — different component (see
+`a2-spec.md` §4 sibling invariants).
+**Spec basis:** `a2-spec.md` (root causes: declared window > endpoint slot; dead POST flood);
 invariant: the adapter never asserts a context window it has not verified against the serving
 endpoint.
 **Blocked by:** A1 (config docs land first).

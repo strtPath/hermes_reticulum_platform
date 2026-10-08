@@ -74,10 +74,11 @@ declared training window (larger than the live slot).
 
 **This is a LIVE path, not an install-time one.** The gateway reads `model.context_length`
 from config.yaml **at every inbound/turn**, not once at install:
-- `gateway/run_inbound.py:1656` (`_inbound_model_context_length`) reads
+- `gateway/run_inbound.py:1652` (`_inbound_model_context_length`) reads
   `model.context_length` from the live gateway config and passes it as
   `config_context_length` into `get_model_context_length_async` (run_inbound.py:1705).
-- `gateway/run_turn.py:647` and `gateway/run.py:2409` do the same on the turn/run path.
+- `gateway/run_turn.py:647` reads it into `hs.config_context_length` and
+  `run_turn.py:743` passes it to `get_model_context_length_async` on the turn path.
 - There is a runtime setter, `set_config_context_length(agent, value)`
   (`agent/agent_init.py:1773`), that updates `agent._config_context_length` and the
   compressor's copy without a restart.
@@ -102,12 +103,26 @@ model:
 ```
 
 No `context_length` key. So the resolver falls through priority 0 and lands on the
-endpoint-scoped / local-probe / cache / default path. On this llama.cpp endpoint those
-paths can report the **declared** training window (the GGUF `context_length` /
-`model_info.*.context_length`, the model's trained max) rather than the **allocated**
-`n_ctx` that the slot actually holds. A turn whose prompt+tools+output exceed the live
-`n_ctx` therefore overflows, and the adapter swallows it (A8 note: the adapter swallows
-gateway exceptions into a bare text reply).
+endpoint-scoped / local-probe / cache / default path. On a llama.cpp endpoint the resolver
+*does* have a reconcile path: `_apply_llamacpp_props` (model_metadata.py:974) reads the
+allocated `n_ctx` from `/props` (or `/v1/props`) and overwrites the cached `context_length`
+with it (model_metadata.py:990-991, 1003). So the resolver can report the correct live slot
+when that path fires.
+
+But that reconcile path is **conditional**, and it can silently miss: it only rewrites the
+cache when `n_ctx` and a `model_alias` are both present and the alias is already in the cache
+(model_metadata.py:990-991); it skips unloaded children in router mode (model_metadata.py:
+"unloaded children are skipped"); it falls back to `/props` only if `/v1/props` errors; and if
+the endpoint isn't recognized as a llamacpp server, or the props call 404s, or the model_alias
+isn't in cache, the rewrite never happens. In those cases the resolver falls back to the
+endpoint's declared window (the GGUF `context_length` / `model_info.*.context_length`, the
+model's trained max, model_metadata.py:570-591, 915) — which is ≥ the live slot. A turn whose
+prompt+tools+output exceed the live `n_ctx` therefore overflows, and the adapter swallows it
+(A8 note: the adapter swallows gateway exceptions into a bare text reply).
+
+The pin is the deterministic complement: `model.context_length` is priority 0 and is read
+from the live config at every inbound/turn, so it does not depend on the reconcile path
+firing, the props call succeeding, or the cache. It is the value the operator controls.
 
 **Intended logic vs what is there.** Intended: `model.context_length` in config.yaml should
 equal (or be safely below) the live `n_ctx` so the resolver returns priority 0 and the turn
@@ -229,7 +244,7 @@ Part A (context pin) — test surface:
 - The resolver contract (read-only, no test of installed Hermes code): the observable
   behaviour is that a set `model.context_length` short-circuits resolution at priority 0 and
   is re-read from the live config at each inbound/turn. Verified by reading
-  `model_metadata.py:2245`, `gateway/run_inbound.py:1656`/`1705`,
+  `model_metadata.py:2245`, `gateway/run_inbound.py:1652`/`1705`,
   `gateway/run_turn.py:647`, and `agent/agent_init.py:1773`. Not unit-tested in this repo —
   the seam is the gateway's resolved context at request time (see Testing decisions).
 - **No install.sh test for Part A.** The pin is a live config value, not an install-time
@@ -267,7 +282,7 @@ Part A:
    gateway's live resolution at `/new`/turn time). The live resolver then applies it at
    priority 0 on the next turn. No source change required.
 2. Document (in the adapter plan, next to A2) the live-path mechanism: priority-0 override
-   (`model_metadata.py:2245`), the inbound/turn re-read (`gateway/run_inbound.py:1656`), the
+   (`model_metadata.py:2245`), the inbound/turn re-read (`gateway/run_inbound.py:1652`), the
    runtime setter (`agent/agent_init.py:1773`), and the disagreement warning
    (`agent/context_pin.py:56`). This is the "why it works" note for the next operator.
 3. The numeric value is a deployment value, not a code constant. No hardcoded token count in
@@ -347,7 +362,7 @@ Live smoke (the one thing a unit test cannot prove):
 
 - [ ] Operator sets `model.context_length` in `~/.hermes/config.yaml` to the live `n_ctx`
       (a live config value, applied at priority 0 on the next turn).
-- [ ] Live resolver reads the pin at inbound/turn time (`gateway/run_inbound.py:1656`) and
+- [ ] Live resolver reads the pin at inbound/turn time (`gateway/run_inbound.py:1652`) and
       applies it — verified by reading the live call sites and by the live smoke, not by
       patching Hermes.
 - [ ] The plan doc records the live-path mechanism (priority-0 override, live re-read,
