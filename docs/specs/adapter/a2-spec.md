@@ -1,6 +1,7 @@
-# A2 — Pin `model.context_length` below the live `n_ctx` + silence the dead mesh step POST
+# A2 — Automatic per-conversation context discovery + silence the dead mesh step POST
 
-Status: DRAFT (for review)
+Status: DRAFT v2 (supersedes the manual-pin draft; operator ruling 2026-10-08: the
+adapter must find the context automatically per conversation, not rely on a manual pin)
 Card: A2 from `docs/specs/adapter/tasks.md`
 Unblocks: A4 (keystone) depends on a clean peer-facing turn; A2 removes the two things that
 currently break or muddy that turn (silent context overflow, and a dead HTTP round-trip on
@@ -14,20 +15,22 @@ Both root causes below are verified against the live source as of this writing.
 
 Two independent defects, both invisible to the operator until a turn goes wrong:
 
-**Part A — the context window is not pinned.** A long multi-tool turn on the local
-qwen3.8-27b can exceed the model's *actually allocated* `n_ctx` while Hermes believes the
-window is the much larger declared training window. When that happens the model's context
-overflows mid-turn: the turn is dropped or the model emits a truncated/garbled tail, and
-nothing surfaces it on the mesh (the adapter already swallows the failure into a bare text
-reply). The operator sees a turn that "just stopped working" with no signal for why.
+**Part A — context discovery is manual, and the automatic path is not proven durable.**
+A long multi-tool turn can exceed the model's *actually allocated* `n_ctx` while Hermes
+believes the window is the much larger declared training window. When that happens the
+model's context overflows mid-turn: the turn is dropped or the model emits a truncated/
+garbled tail, and nothing surfaces it on the mesh (the adapter already swallows the
+failure into a bare text reply). The operator sees a turn that "just stopped working"
+with no signal for why.
 
-Intended behaviour in one sentence: **Hermes resolves the context window to the value the
-llama.cpp slot is actually allocated (`n_ctx`), not the declared model window, so a turn
-that would overflow is caught before it happens instead of failing silently mid-stream.**
+Intended behaviour in one sentence: **the gateway discovers the context window
+automatically from the serving endpoint on every conversation — Hermes resolves to the
+value the llama.cpp slot is actually allocated (`n_ctx`), not the declared model window —
+so a turn that would overflow is caught before it happens, with no operator pin required.**
 
-Observable symptom: long turns on the local 27B occasionally return a truncated or empty
-reply with no error surfaced; the gateway log shows a context-window mismatch only in
-retrospective, not at request time.
+Observable symptom: long turns occasionally return a truncated or empty reply with no
+error surfaced; the gateway log shows a context-window mismatch only in retrospective,
+not at request time.
 
 **Part B — every tool step makes a dead HTTP POST.** For every tool step in a mesh turn, the
 `mesh-tool-events` hook fires and POSTs a step summary to `CONTROL_URL` (module constant,
@@ -48,93 +51,86 @@ but it is a hot-path defect that A6 (tool-step parity) must not inherit.
 
 ## 2. Root cause (diagnosis)
 
-### Part A — why the window is not pinned
+### Part A — why automatic discovery was believed broken, and what live verification shows
 
-The context window is resolved by `get_model_context_length()` in the installed Hermes
-(`~/.hermes/hermes-agent/agent/model_metadata.py:2245`). The resolution order, verbatim from
-the docstring:
+The resolver is `get_model_context_length()` in the installed Hermes
+(`~/.hermes/hermes-agent/agent/model_metadata.py:2245`). Resolution order, verbatim from
+its docstring:
 
 > "Resolution order: 0 config override / MoA aggregator / model_overrides /
 > custom_providers / endpoint-scoped; 1 persistent cache ...; 2-3 custom endpoints
 > (/models, local probe, Ollama); ... 8 hardcoded defaults; 9 256K fallback."
 
-The **priority-0 explicit config override** is the lever A2 uses. First statement in the
-function body (model_metadata.py:2245, top of the function):
+The earlier (superseded) draft claimed the automatic path falls back to the *declared*
+training window and proposed a manual priority-0 pin (`model.context_length` in
+config.yaml) as the fix. **That diagnosis was wrong on this endpoint, and the operator
+ruled against the manual design: the adapter must find the context automatically.**
+Live verification on the serving llama.cpp endpoint (2026-10-08):
 
-```python
-# 0. Explicit config override — user knows best
-if isinstance(config_context_length, int) and config_context_length > 0:
-    return config_context_length
-```
+1. The endpoint's `/v1/models` reports the **runtime** window, not the GGUF training max:
+   the model entry carries `meta: {n_ctx: 65536}`.
+2. `/props` answers `default_generation_settings.n_ctx = 65536` with a `model_alias` that
+   matches the served model.
+3. Calling the installed resolver directly —
+   `get_model_context_length(<served-model>, base_url=<endpoint>/v1)` — returns **65536**,
+   matching the live slot exactly.
 
-i.e. a `model.context_length` in `config.yaml` is returned **immediately, before any
-cache, probe, or default**. That is exactly the behaviour we want: it pins the window to a
-known-correct value and bypasses the lower-priority probes that would otherwise report the
-declared training window (larger than the live slot).
+Why the automatic path works here, at file:line:
 
-**This is a LIVE path, not an install-time one.** The gateway reads `model.context_length`
-from config.yaml **at every inbound/turn**, not once at install:
-- `gateway/run_inbound.py:1652` (`_inbound_model_context_length`) reads
-  `model.context_length` from the live gateway config and passes it as
-  `config_context_length` into `get_model_context_length_async` (run_inbound.py:1705).
-- `gateway/run_turn.py:647` reads it into `hs.config_context_length` and
-  `run_turn.py:743` passes it to `get_model_context_length_async` on the turn path.
-- There is a runtime setter, `set_config_context_length(agent, value)`
-  (`agent/agent_init.py:1773`), that updates `agent._config_context_length` and the
-  compressor's copy without a restart.
-- A disagreement guard already exists: `warn_once_on_pin_disagreement`
-  (`agent/context_pin.py:56`) compares the pin against the advertised window and warns once
-  when they differ.
+- Custom-endpoint step 2 (`_resolve_custom_endpoint_context_length`,
+  model_metadata.py:~1215) probes `/models`; `_parse_models_payload` extracts the first
+  int from `_CONTEXT_LENGTH_KEYS` (model_metadata.py:414) which **includes `n_ctx`** — so
+  the runtime window is read straight off the endpoint.
+- The local probe (`_query_local_context_length_uncached`, model_metadata.py:1566+)
+  queries llama.cpp `/props` via `_llamacpp_context` (model_metadata.py:1586) — the
+  runtime `n_ctx`, answered even for a lazily-loaded model — and
+  `_openai_models_list_context` (model_metadata.py:1602) prefers `meta.n_ctx` over
+  `n_ctx_train` explicitly ("Runtime n_ctx ... beats n_ctx_train, which can exceed what
+  the server allocates").
+- The endpoint qualifies as local: `is_local_endpoint` (model_metadata.py:~680) counts
+  Tailscale CGNAT addresses as local, so the tailnet endpoint gets the llama.cpp probe
+  treatment.
+- Persistence: `_probe_local_context_length` (model_metadata.py:648) caches a positive
+  probe into `~/.hermes/context_length_cache.yaml` (`save_context_length`,
+  model_metadata.py:1143), keyed `model@base_url`.
+- **Staleness is handled**: `_reconcile_local_cached_context_length` (model_metadata.py:
+  659) re-probes a cached local entry and overwrites it when the live value differs —
+  the docstring names exactly our scenario: "operators restart vLLM/Ollama with a new
+  --max-model-len / num_ctx under the same id." A failed probe keeps the disk entry; a
+  live value below `MINIMUM_CONTEXT_LENGTH` invalidates rather than persists.
+- Per-conversation application: the gateway re-reads resolution at every inbound/turn
+  (`gateway/run_inbound.py:1652`, `gateway/run_turn.py:647` → `743` passes it to
+  `get_model_context_length_async`), so each conversation gets the endpoint's current
+  window with no per-session setup.
 
-So the operator does **not** need install-time resolution. They surface the live `n_ctx`
-(via `/props`, the server banner, or the `/new`-time resolution the gateway already does),
-set `model.context_length` to that value, and the next turn applies it immediately. The pin
-is a config value with a live resolver, not a value baked in at install.
+**The residual gap (what A2 must actually do).** The automatic chain is real but has
+silent failure modes that must not be inherited by the adapter:
 
-**The defect is that nothing sets the override.** The live `~/.hermes/config.yaml` `model:`
-block is:
+- `_resolve_endpoint_context_length` returns the value **without persisting it** for the
+  custom-endpoint path (contrast the novita path at model_metadata.py:2209, which calls
+  `save_context_length` on a hit). If the `/props` probe path is ever unavailable, the
+  fallback chain can land on the declared window or the 256K default.
+- `_apply_llamacpp_props` (model_metadata.py:974) only rewrites the cache when the
+  `/v1/models` payload carries `owned_by: "llamacpp"` (model_metadata.py:1072). The live
+  endpoint does **not** report `owned_by` at all, so that reconcile path never fires here
+  — the working path is the local-probe one, and its correctness depends on
+  `is_local_endpoint` continuing to classify the endpoint as local.
+- The whole chain ends in probe-down to `DEFAULT_FALLBACK_CONTEXT` (256K) with only an
+  `logger.info` when detection fails — silent on the mesh (the adapter swallows it into a
+  bare reply, A8 note).
 
-```yaml
-model:
-  default: <local-model>
-  provider: custom
-  base_url: <local-llamacpp-endpoint>
-  api_mode: chat_completions
-```
+So Part A is no longer "set a pin". It is: **prove the automatic discovery end-to-end on
+the live endpoint (done, above), document the mechanism and its failure modes (this
+spec), and add one adapter-side verification so a resolved window is never silently
+absurd.** The invariant from the card survives unchanged: the adapter never asserts a
+context window it has not verified against the serving endpoint. The verification, not a
+manual number, is the adapter's job.
 
-No `context_length` key. So the resolver falls through priority 0 and lands on the
-endpoint-scoped / local-probe / cache / default path. On a llama.cpp endpoint the resolver
-*does* have a reconcile path: `_apply_llamacpp_props` (model_metadata.py:974) reads the
-allocated `n_ctx` from `/props` (or `/v1/props`) and overwrites the cached `context_length`
-with it (model_metadata.py:990-991, 1003). So the resolver can report the correct live slot
-when that path fires.
-
-But that reconcile path is **conditional**, and it can silently miss: it only rewrites the
-cache when `n_ctx` and a `model_alias` are both present and the alias is already in the cache
-(model_metadata.py:990-991); it skips unloaded children in router mode (model_metadata.py:
-"unloaded children are skipped"); it falls back to `/props` only if `/v1/props` errors; and if
-the endpoint isn't recognized as a llamacpp server, or the props call 404s, or the model_alias
-isn't in cache, the rewrite never happens. In those cases the resolver falls back to the
-endpoint's declared window (the GGUF `context_length` / `model_info.*.context_length`, the
-model's trained max, model_metadata.py:570-591, 915) — which is ≥ the live slot. A turn whose
-prompt+tools+output exceed the live `n_ctx` therefore overflows, and the adapter swallows it
-(A8 note: the adapter swallows gateway exceptions into a bare text reply).
-
-The pin is the deterministic complement: `model.context_length` is priority 0 and is read
-from the live config at every inbound/turn, so it does not depend on the reconcile path
-firing, the props call succeeding, or the cache. It is the value the operator controls.
-
-**Intended logic vs what is there.** Intended: `model.context_length` in config.yaml should
-equal (or be safely below) the live `n_ctx` so the resolver returns priority 0 and the turn
-is size-checked against the real slot. What is there: no such key, so the resolver trusts
-whatever the endpoint/probe reports (the declared window), which is ≥ the live slot.
-
-**Where the live value comes from.** The operator reads `n_ctx` from the running llama.cpp
-endpoint (`/props` or the server banner) — or simply lets the gateway's own live resolution
-surface it at `/new`/turn time and reads the result. The pin is `n_ctx` (the full allocated
-window) or, conservatively, `n_ctx` minus a margin reserved for the next turn's growth.
-This is a *deployment* value, not a code constant: the operator sets the number, the
-resolver applies it live.
+`model.context_length` remains available as an *escape hatch* only (priority 0,
+model_metadata.py:2245; runtime setter `set_config_context_length`,
+agent/agent_init.py:1773; disagreement warning `warn_once_on_pin_disagreement`,
+agent/context_pin.py:56). It is not part of the A2 design and must stay unset on this
+deployment so the automatic path is the single source of truth.
 
 ### Part B — why every step POSTs to a dead URL
 
@@ -193,62 +189,64 @@ configured).
 
 ## 3. User stories
 
-Core behaviour:
-- **US-1.** As an operator running the mesh adapter, I want to set `model.context_length`
-  to the live `n_ctx` so that a turn that would overflow the allocated slot is caught by
+Core behaviour (Part A, automatic discovery):
+- **US-1.** As an operator, I want the adapter/gateway to discover the context window
+  automatically from the serving endpoint for every conversation, with no manual pin and
+  no per-session setup, so a turn that would overflow the allocated slot is caught by
   Hermes before it runs instead of failing silently mid-stream.
-- **US-2.** As an operator, I want the pin to be a **live** config value: I set it (via
-  whatever command surfaces `n_ctx`, e.g. the `/new`-time resolution), and the next turn
-  applies it immediately — no install-time read and no restart.
-- **US-3.** As an operator, I want the pin to be a *deployment* value I read from the
-  endpoint (`/props` → `n_ctx`), not a guess, and I want the mechanism (priority-0 override
-  at `model_metadata.py:2245`) documented so I understand it wins over the probes.
+- **US-2.** As an operator, I want discovery to track the live slot: if I restart llama.cpp
+  with a different `n_ctx` under the same model id, the next conversation uses the new
+  value without a config edit or restart of the gateway (the reconcile path,
+  model_metadata.py:659).
+- **US-3.** As an operator, I want the resolved window to be the value the endpoint
+  actually allocates (`meta.n_ctx` from `/v1/models`, `/props`
+  `default_generation_settings.n_ctx`), never the GGUF trained max or a 256K fallback.
+- **US-4.** As an operator, I want the adapter to verify the window it is about to rely
+  against the serving endpoint at turn time, and to log (not silently swallow) when the
+  resolved value disagrees with what the endpoint reports. The adapter asserts no context
+  window it has not verified.
 
 Correctness and precision:
-- **US-4.** As an operator, if I change `model.context_length` while a session is running,
-  the change takes effect from the next turn (the resolver reads the live config at
-  inbound/turn time), and the existing `warn_once_on_pin_disagreement` warns me once if the
-  new pin disagrees with the advertised window.
-- **US-5.** As an operator, I want the step hook to be a no-op when
+- **US-5.** As an operator, if I do set `model.context_length` as an escape hatch, it wins
+  (priority 0) and `warn_once_on_pin_disagreement` warns once about the disagreement — but
+  the default deployment leaves it unset.
+- **US-6.** As an operator, I want the step hook to be a no-op when
   `HERMES_MESH_CONTROL_URL` is unset, so a fresh adapter install (which sets no control URL)
   performs zero dead HTTP calls on the tool-step hot path.
-- **US-6.** As an operator, I want the step hook to *still work* (POST steps) when I do set
+- **US-7.** As an operator, I want the step hook to *still work* (POST steps) when I do set
   `HERMES_MESH_CONTROL_URL` to a live control server, so the fix does not break the
   legitimate audit path.
 
 Edge and degenerate states:
-- **US-7.** As an operator, if I leave `model.context_length` unset (e.g. I haven't read
-  `n_ctx` yet), the resolver falls through to the probe/cache/default path exactly as
-  before — the pin must not break the no-pin case.
-- **US-8.** As an operator, if I set `HERMES_MESH_CONTROL_URL` to an empty string or an
+- **US-8.** As an operator, if the endpoint is unreachable at resolution time, the probe
+  keeps the last cached value (probe-failure does not wipe the disk entry) rather than
+  falling to a 256K default mid-conversation.
+- **US-9.** As an operator, if I set `HERMES_MESH_CONTROL_URL` to an empty string or an
   obviously-invalid value, the hook treats it as "no control server" (no-op), not as a URL
   to POST to.
-- **US-9.** As an operator, the `/step` and `/step/full` events (and any other `_post` call
+- **US-10.** As an operator, the `/step` and `/step/full` events (and any other `_post` call
   in the hook) must share one "is a control server configured?" decision, so I don't get a
   partial audit trail (some events sent, others not).
-
-Negative / unusual data:
-- **US-10.** As an operator, if `n_ctx` is read from `/props` and the endpoint reports a
-  value *smaller* than the declared window, the pin uses the smaller (live) value — the pin
-  is what the slot actually holds, never the declared max.
-- **US-11.** As an operator, the pin is an integer token count (tokens, not characters or
-  bytes); the resolver consumes `config_context_length` as `int` and compares `> 0`, so a
-  non-positive or non-integer value is simply ignored (treated as "no pin") rather than
-  erroring.
-
----
+- **US-11.** As an operator, if llama.cpp is reloaded with a smaller `n_ctx` than a
+  previously cached value, the smaller (live) value wins — the window is what the slot
+  actually holds, never the larger remembered one.
 
 ## 4. Test seams
 
-Part A (context pin) — test surface:
-- The resolver contract (read-only, no test of installed Hermes code): the observable
-  behaviour is that a set `model.context_length` short-circuits resolution at priority 0 and
-  is re-read from the live config at each inbound/turn. Verified by reading
-  `model_metadata.py:2245`, `gateway/run_inbound.py:1652`/`1705`,
-  `gateway/run_turn.py:647`, and `agent/agent_init.py:1773`. Not unit-tested in this repo —
-  the seam is the gateway's resolved context at request time (see Testing decisions).
-- **No install.sh test for Part A.** The pin is a live config value, not an install-time
-  write. (An optional convenience write in `install.sh` is out of scope; see below.)
+Part A (automatic discovery) — test surface:
+- Live-endpoint contract (verified 2026-10-08, re-run as the acceptance smoke): the
+  serving endpoint's `/v1/models` reports `meta.n_ctx` and `/props` reports
+  `default_generation_settings.n_ctx`, and the installed resolver
+  (`get_model_context_length(model, base_url)`) returns that exact value. Not unit-tested
+  in this repo — a unit test cannot prove the live endpoint's behaviour; the seam is the
+  live smoke plus the adapter-side verification hook.
+- Adapter-side verification (the only new code in Part A): where the adapter surfaces or
+  depends on a resolved window (e.g. `/status` output, turn-init metadata), it compares
+  the resolved value against the endpoint's reported `n_ctx` and logs a warning on
+  disagreement. Pure-logic comparison lives in a pure module (no rns/lxmf imports —
+  `scripts/check_imports.py` guard) and is unit-testable with a stubbed endpoint reader.
+- **No install.sh test and no config write for Part A.** The pin is not part of the
+  design; nothing in install.sh or config.yaml may set `model.context_length`.
 
 Part B (dead step POST) — test surface:
 - `~/.hermes/hooks/mesh-tool-events/handler.py`:
@@ -277,20 +275,23 @@ Part B (dead step POST) — test surface:
 ## 5. Implementation decisions
 
 Part A:
-1. The fix is **operational, not code**: the operator sets `model.context_length` in
-   `~/.hermes/config.yaml` to the live `n_ctx` (read from `/props` or surfaced by the
-   gateway's live resolution at `/new`/turn time). The live resolver then applies it at
-   priority 0 on the next turn. No source change required.
-2. Document (in the adapter plan, next to A2) the live-path mechanism: priority-0 override
-   (`model_metadata.py:2245`), the inbound/turn re-read (`gateway/run_inbound.py:1652`), the
-   runtime setter (`agent/agent_init.py:1773`), and the disagreement warning
-   (`agent/context_pin.py:56`). This is the "why it works" note for the next operator.
-3. The numeric value is a deployment value, not a code constant. No hardcoded token count in
-   source; no install-time read.
-4. **Out of scope (no gold-plating):** an optional `install.sh` convenience that writes a
-   default `model.context_length`. It is not needed for the fix (the live path covers it),
-   and it would introduce a value the operator may not have verified against the live
-   `n_ctx`. Revisit only if the operator wants a bootstrap default.
+1. The fix is **verification, not a pin**: leave `model.context_length` unset; the
+   automatic discovery chain (custom-endpoint `/models` probe with `n_ctx` in
+   `_CONTEXT_LENGTH_KEYS`, llama.cpp `/props` local probe, `model@base_url` disk cache,
+   live re-probe on cached entries) is the design. It is proven working on the live
+   endpoint (see §2 grounding: the installed resolver returned the live `n_ctx` exactly).
+2. Add a small adapter-side verification: when the adapter reports or relies on a context
+   window, compare it against the endpoint-reported `n_ctx` (same
+   `/v1/models` `meta.n_ctx` / `/props` shape) and log a single warning line on
+   disagreement. This makes the card invariant executable: the adapter never asserts a
+   window it has not verified. It must not block or rewrite the gateway's own resolution.
+3. Document the failure modes (done in §2): the un-persisted custom-endpoint hit, the
+   `owned_by: "llamacpp"` gate that never fires on this endpoint, and the probe-down to
+   256K behind only a logger.info. These are the reasons the verification step exists.
+4. **Out of scope (no gold-plating):** patching Hermes' resolver, changing
+   `_resolve_endpoint_context_length` persistence upstream, or an install.sh convenience
+   that writes `model.context_length`. If an override is ever needed, the priority-0
+   escape hatch already exists and is documented in §2.
 
 Part B:
 1. Introduce a single `_control_server_configured()` predicate in `handler.py`. It returns
@@ -321,9 +322,10 @@ Prefactoring needed: none. Part A is operational (config value + docs); Part B i
 ## 6. Testing decisions
 
 Test file naming and location:
-- Part A: no in-repo unit test (the seam is the gateway's live resolution, verified by
-  reading the live call sites and by the live smoke below). The deliverable is the operator
-  setting the config value + the plan doc note.
+- Part A: `tests/test_context_verification.py` for the adapter-side comparison (pure
+  module: endpoint-reported `n_ctx` vs resolved window; agree / disagree / endpoint
+  unreachable ⇒ no warning spam, no gateway interference). The live resolver itself is
+  verified by the live smoke, not unit-tested.
 - Part B: `tests/test_mesh_tool_events_control_url.py` (handler.py — drives the
   control-URL predicate and the two `_post` call sites with env set/unset/empty/invalid).
 
@@ -331,9 +333,11 @@ Test framework and runner: the project's existing runner (pytest, matching the s
 `tests/` layout). No new framework.
 
 What "passing" means:
-- Part A: operator has set `model.context_length` to the live `n_ctx`; a turn sized near
-  the pinned window does not truncate mid-stream; the gateway resolves the pinned value at
-  request time (confirmed by the live smoke and by the resolver's priority-0 path).
+- Part A: with `model.context_length` unset, the gateway resolves to the endpoint's live
+  `n_ctx` (live smoke: resolver value == `/props` `n_ctx` == `/v1/models` `meta.n_ctx`);
+  a turn sized near the window compresses instead of truncating; the adapter-side check
+  logs zero disagreements on a healthy endpoint and exactly one warning when a stubbed
+  endpoint disagrees with the resolved value.
 - Part B: with `HERMES_MESH_CONTROL_URL` unset, empty, or invalid, the predicate is False
   and both `_post` call sites perform **zero** HTTP calls (assert via a monkeypatched
   `_post` that is never called). With a valid URL, the predicate is True and each call site
@@ -346,30 +350,37 @@ Feedback loop (the test that goes red on THIS bug before the fix):
   drive `_handle_step` for one tool and assert `_post` was **not** called. On the current
   code (no URL gate; token present) `_post` *is* called (to the dead default URL) → the
   assertion fails red. After the gate, it passes green.
-- Part A has no red-before unit test (it is a config value + live resolution); the feedback
-  loop is the live smoke (next section).
+- Part A red-before: drive the adapter-side verification with a stub endpoint reporting
+  `n_ctx = 8192` against a resolved window of `262144` (the probe-down fallback value).
+  On the current code there is no comparison at all, so no warning is emitted → the
+  assertion "exactly one disagreement warning" fails red. After the check, it passes green.
 
 Live smoke (the one thing a unit test cannot prove):
-- After the operator sets the pin, run one long multi-tool turn on the mesh and confirm
-  (a) no mid-stream truncation on a turn sized near the pinned window, and (b) the gateway
-  log shows zero failed step-POST warnings during the turn. This is the operator's
-  acceptance check; it is not automatable in-repo, so it is listed as the manual
-  verification step in `tasks.md` A2.
+- Run one long multi-tool turn on the mesh with no pin set and confirm (a) the gateway
+  resolves to the live `n_ctx` (compare against `/props`), (b) no mid-stream truncation on
+  a turn sized near the window, and (c) the gateway log shows zero failed step-POST
+  warnings during the turn. This is the operator's acceptance check; it is not automatable
+  in-repo, so it is listed as the manual verification step in `tasks.md` A2.
 
 ---
 
 ## Acceptance (maps to tasks.md A2)
 
-- [ ] Operator sets `model.context_length` in `~/.hermes/config.yaml` to the live `n_ctx`
-      (a live config value, applied at priority 0 on the next turn).
-- [ ] Live resolver reads the pin at inbound/turn time (`gateway/run_inbound.py:1652`) and
-      applies it — verified by reading the live call sites and by the live smoke, not by
-      patching Hermes.
-- [ ] The plan doc records the live-path mechanism (priority-0 override, live re-read,
-      runtime setter, disagreement warning).
+- [ ] `model.context_length` is **unset** in `~/.hermes/config.yaml`; discovery is fully
+      automatic (verified: the installed resolver returns the endpoint's live `n_ctx`
+      exactly — 65536 on the current llama.cpp slot).
+- [ ] A reload of llama.cpp with a different `n_ctx` under the same model id is picked up
+      by the next conversation via the reconcile path (`_reconcile_local_cached_context_length`)
+      — no config edit, no gateway restart.
+- [ ] Adapter-side context verification exists: resolved window vs endpoint-reported
+      `n_ctx`, one warning line on disagreement, in a pure module (import-guard clean),
+      covered by `tests/test_context_verification.py`.
+- [ ] The plan doc records the automatic-discovery mechanism and its failure modes
+      (un-persisted custom-endpoint hit, `owned_by` gate not firing on this endpoint,
+      probe-down to 256K) so the next operator does not re-diagnose it.
 - [ ] `HERMES_MESH_CONTROL_URL` unset ⇒ the hook performs zero step POSTs (both `_post`
       call sites no-op).
 - [ ] `HERMES_MESH_CONTROL_URL` set to a valid URL ⇒ `/step` and `/step/full` still POST
       (regression guard for the legitimate audit path).
-- [ ] Live smoke: one long mesh turn, no mid-stream truncation, no failed step-POST
-      warnings in the gateway log.
+- [ ] Live smoke: one long mesh turn, no pin set, resolved window == live `n_ctx`, no
+      mid-stream truncation, no failed step-POST warnings in the gateway log.
