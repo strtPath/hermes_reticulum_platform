@@ -4,8 +4,9 @@ The pure module `src/hermes_reticulum/core/context_verify.py` (verdict:
 `match` / `mismatch` / `endpoint-unavailable`, exactly one warning per
 distinct mismatch pair, none when the endpoint is unreachable) is delivered
 with tests (`tests/test_context_verification.py`). The integration is
-**deferred** per a2-spec.md §5 fallback ("deliver the verified pure module +
-tests + a short note explaining the recommended wire-in point").
+**deferred** per the Part A integration decision recorded in a2-spec.md §5:
+deliver the verified pure module + tests + this wire-in note, and treat the
+actual wiring as a separate decision (see the prerequisite below).
 
 ## Recommended wire-in point
 

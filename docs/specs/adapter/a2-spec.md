@@ -305,6 +305,24 @@ Part B:
    once with the current payload and the existing timeout / token / `logger.warning`
    semantics unchanged (US-6, sibling invariant).
 
+Part A integration decision (deferred, agreed):
+5. The Part A.2 verification ships as the verified pure module
+   (`src/hermes_reticulum/core/context_verify.py` + tests) with the wire-in
+   point documented in `a2-context-verify-wire-in.md`. The wiring itself is a
+   **separate decision**, not part of A2: its two inputs (`read_endpoint_n_ctx`
+   and the gateway-resolved window) do not exist in the repo yet and must not
+   be guessed. Until both exist, `verify_context_window` degrades safely to
+   `endpoint-unavailable` with zero warnings.
+
+Part A integration decision (deferred, agreed):
+5. The adapter-side verification from Part A.2 ships as the verified pure module
+   (`src/hermes_reticulum/core/context_verify.py` + tests) with the wire-in point
+   documented in `a2-context-verify-wire-in.md`. The actual wiring is a **separate
+   decision**, not part of A2: the two inputs it needs (`read_endpoint_n_ctx` and
+   the gateway-resolved window) do not exist in the repo yet and must not be
+   guessed. Until both exist, `verify_context_window` degrades safely to
+   `endpoint-unavailable` with zero warnings.
+
 Explicitly NOT being changed (out of scope, no gold-plating):
 - The `mesh-tool-gate` pre-exec plugin (different component; do not touch).
 - The adapter's send/receive/identity/command paths (A4/A5/A6 territory).
