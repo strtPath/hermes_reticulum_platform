@@ -5,6 +5,13 @@ Drafted 2026-10-11 with the user via grilling rounds; every ruling below is the 
 Governing precedent: `spec.md` section 17.8 (silent-drop superseded by the 2026-09-30
 ruling) and `plan.md` section 21.3 item 3.
 
+The decided ruling, restated inline (from spec.md 17.8, decision text 21.3): the
+adapter replies with an automated rejection instead of dropping — the canned literal
+`⛔ Access not authorized.` on the original bridge path (`core/acl.py` denies, the caller
+returns the literal reply text, Hermes is never reached). Authorization is a code-level
+allowlist decision and must never be delegated to the model, so an unauthorized peer
+cannot prompt-inject its way into a turn.
+
 ## 1. Problem
 
 Today an inbound from a peer outside the allowlist is silently dropped in
@@ -88,6 +95,16 @@ deny(source_hash):
 ```
 
 `REJECTION_TEXT = "⛔ Access not authorized."` as a module constant.
+
+Current vs target (every divergence below is a required code change on this card):
+
+| Concern | Current behavior (evidence) | Target behavior (ruling) |
+|---|---|---|
+| Allowlist miss | Silent drop, debug log only: `_dispatch_inbound` allowlist branch (adapter.py:440-447) | Canned rejection send + host-local full-hash log (D2/D5) |
+| Allow-all default | `_allowlist()` returns None on unset/empty env -> allow-all, defers to gateway (adapter.py:828-840) | Closed default; allow-all only via explicit `HERMES_RETICULUM_ALLOW_ALL=true` (D3) |
+| ACL dialects | Three readers: adapter `_allowlist()`/`_in_allowlist()`, `core/acl.py` `AccessControl`, gateway authz via registration (registration.py:154-155) | Adapter gate reuses `AccessControl`; gateway re-check reads the same envs (D1, section 4.1) |
+| Rejection rate | No throttle exists (no reply at all today) | Per-destination cooldown, default 300s (D4) |
+| Empty-allowlist boot | No warning exists | Loud host-side startup warning (D6) |
 
 The adapter gate becomes the authoritative gate (D1/D2). It must implement the same
 semantics as `core/acl.py`: blocklist priority, then allow-all opt-in, then allowlist,
@@ -178,3 +195,48 @@ implementation notes if so.
 - `verification.md`: A3 row added.
 - Skill `rns-hermes-endpoint-bridge`: gate semantics (single .env gate, closed default,
   cooldown, D7 desync signal) folded into the ACL reference.
+
+## 9. Review amendments (2026-10-12 subagent spec review, applied)
+
+- R1 (MAJOR, applied in 4.1): a current-vs-target table was added so no reader mistakes
+  the spec's rejection semantics for existing behavior. Every row is a required change.
+- R2 (MAJOR, applied in 4.6): the allow-all interaction with rejection is now explicit.
+- R3 (MINOR, applied in 1): the superseding ruling from spec.md 17.8/21.3 is restated
+  inline so a cold reader of this file alone sees the decided behavior.
+- R4 (MINOR, applied in 4.7): ordering rule for malformed vs unauthorized inbound.
+- R5 (NIT, applied in 4.8): observable effects of a rejection are enumerated.
+
+### 4.6 Allow-all interaction with rejection (settles the reviewer's open question)
+
+`HERMES_RETICULUM_ALLOW_ALL=true` admits every peer at the gate, so no rejection ever
+fires: the two are mutually exclusive by construction, not competing paths. There is no
+"allow_all + rejection" hybrid state to define. Consequences:
+- The cooldown map stays empty in open mode (no denies to throttle).
+- The startup warning (D6) checks closed mode only; open mode logs an informational line
+  naming allow-all as active (public-instance operators should see it in the log).
+- Acceptance: criterion 4 (open mode admits) plus a new case asserting zero rejection
+  sends while allow-all is true.
+
+### 4.7 Ordering: malformed check before ACL check (settles the reviewer's open question)
+
+Order in `_dispatch_inbound` stays: parse/normalize first, then ACL. Rationale:
+- No parseable source hash means no destination to reply to (D8), regardless of who the
+  peer is; a malformed inbound from an allowlisted peer must also stay a silent drop.
+- The canned rejection fires only for a well-formed inbound with a real source hash that
+  is unauthorized.
+- Chunked inbound: the ACL gate runs per inbound LXMF delivery like today (a chunk is an
+  inbound event). Rejection is identity-based, not content-based, so a rejected peer's
+  chunks each hit the gate; the cooldown map makes that at most one reply per window.
+- Test naming: extend `tests/test_reticulum_adapter.py` allowlist tests (the
+  `test_allowlisted_peer_is_admitted` group) with the rejection cases; malformed-drop
+  tests stay untouched as regression guards for D8.
+
+### 4.8 Observable effects of a rejection (enumerated)
+
+| Effect | Surface | Test hook |
+|---|---|---|
+| Canned reply `⛔ Access not authorized.` | Peer-visible, LXMF status reply via transport seam | unit: assert outbound send payload |
+| Host log line with full source hash + deny reason | Host-local log only | unit: caplog sweep (criterion 2) |
+| Cooldown suppression log line (deny, no send) | Host-local log only | unit: second send within window asserts no outbound |
+| No gateway session, no model call | Absence of `deliver_inbound` call | unit: spy on deliver_inbound |
+| Control server `/status` acl mode | `closed`/`open` as today | existing `tests/test_control_server.py` acl tests stay green |
