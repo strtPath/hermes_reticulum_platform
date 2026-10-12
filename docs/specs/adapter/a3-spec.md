@@ -132,12 +132,17 @@ from `HERMES_RETICULUM_REJECT_COOLDOWN_S` (default 300; invalid values clamp lik
 existing gate-timeout validation). No persistence: a restart resets the map, which is
 acceptable (worst case one extra rejection after restart).
 
-Memory bound: expired entries are pruned, they do not live until restart. Prune pass
-on each deny: drop every entry whose deadline has passed before evaluating this deny
-(a deadline in the past can never suppress a future reply, so pruning is behavior-
-neutral). The map is then bounded by peers denied within the last cooldown window, not
-by total distinct peers seen since boot. Unit test: deny from N distinct synthetic
-hashes spread beyond the window, assert the map size stays bounded.
+Memory bound: expired entries are pruned; they do not live until restart. Pruning is
+scheduled, NOT a full scan per deny (a scan per deny would make flooded denied peers
+add work to `_drain_loop`, which handles allowed messages on the same task). Required
+shape: deadlines ordered by expiry (e.g. a heap of (deadline, hash) beside the map, or
+an expiry-ordered dict) plus a periodic prune on the adapter's existing event/heartbeat
+cadence, popping entries whose deadline has passed. A deny then costs: one map lookup,
+possibly one heap push. The map is bounded by peers denied within the last cooldown
+window, not by total distinct peers seen since boot. Unit tests: (a) deny from N
+distinct synthetic hashes spread beyond the window, assert the map size stays bounded;
+(b) a flood of denies from many hashes does not grow per-message deny cost observed by
+an allowed message on the same drain task.
 
 ### 4.3 Rejection send path
 
@@ -158,12 +163,15 @@ No change to gateway authz itself (it already reads the same envs via the regist
 fields). The current adapter code has no post-delivery signal at all: `deliver_inbound`
 (adapter.py:465) hands the event to the gateway handler and returns without inspecting
 the outcome, so a gateway-side deny of an adapter-admitted peer is invisible today.
-Required change on this card: the adapter logs a desync line naming the gateway deny
-after `deliver_inbound` for a peer the adapter admitted. Implementation note: the
-gateway's deny path is unobservable from the adapter's current seam shape, so this
-needs an adapter-side observation of the authz outcome (or a gateway hook that reports
-it); the exact mechanism is an implementation choice, the observable effect is a card
-requirement. Flag in implementation notes which mechanism was chosen.
+Required change on this card: the adapter inspects the outcome of `deliver_inbound`
+instead of discarding it. If the gateway handler reports a deny for a peer the adapter
+admitted, the adapter logs a desync line naming the gateway deny AND sends D7's canned
+reply to that peer through the transport seam (4.3), subject to the same cooldown and
+the D6 suppression rule. Mechanism: the gateway handler's result is already returned to
+the adapter and currently dropped; the implementation reads that result (or, if the
+result shape cannot carry a deny, wraps the call with a gateway hook that reports the
+authz outcome). The exact mechanism is an implementation choice; the observable effect,
+criterion 10, is not optional.
 
 ## 5. Acceptance criteria (Given/When/Then)
 
@@ -177,12 +185,15 @@ requirement. Flag in implementation notes which mechanism was chosen.
    any peer sends, Then the peer is denied (closed default), the peer receives NO reply
    (D6 suppression precedes the canned reply), and the host startup log warns that the
    allowlist is empty.
-4. Given `HERMES_RETICULUM_ALLOW_ALL=true`, When any peer sends, Then the peer is
-   admitted (open mode is explicit opt-in only).
+4. Given `HERMES_RETICULUM_ALLOW_ALL=true` and no blocklist entry matching, When any
+   peer sends, Then the peer is admitted (open mode is explicit opt-in only) and zero
+   rejection sends occur.
 5. Given peer B was rejected at time t, When B sends again at t+1min, Then the deny is
    logged and no second rejection is sent; at t+5min+ a rejection is sent again.
 6. Given a blocklisted hash (when blocklist support is wired into the adapter gate),
-   When it sends, Then it is denied even if also present in the allowlist.
+   When it sends, Then it is denied even if also present in the allowlist, and the deny
+   carries the canned reply under the cooldown rules even when
+   `HERMES_RETICULUM_ALLOW_ALL=true` (blocklist priority outranks allow-all).
 7. Given an inbound with no parseable source hash, When it arrives, Then it is dropped
    silently as today (no reply).
 8. Given allowlist matching with uppercase/colon-formatted hashes in the env, When the
@@ -190,6 +201,10 @@ requirement. Flag in implementation notes which mechanism was chosen.
 9. Existing tests (`test_allowlisted_peer_is_admitted`,
    `test_allowlist_matching_is_case_and_colon_tolerant`) stay green; any test relying on
    allow-all-on-unset-env behavior is re-expressed against the new closed default.
+10. Given the adapter admits a peer and the gateway authz then denies the delivered
+    event, When the delivery outcome is inspected, Then the adapter logs a desync line
+    naming the gateway deny and sends the canned reply to that peer via the transport
+    seam (cooldown and D6 suppression apply).
 
 ## 6. Out of scope (this card)
 
@@ -252,9 +267,9 @@ seam, host-side log, cooldown applies to it like any other rejection. Consequenc
   deny source).
 - The startup warning (D6) checks closed mode only; open mode logs an informational
   line naming allow-all as active (public-instance operators should see it in the log).
-- Acceptance: criterion 4 (open mode admits non-blocklisted peers) plus a new case
-  asserting zero rejection sends while allow-all is true AND no blocklist entry
-  matches, and criterion 6's deny in open mode carries the canned reply.
+- Acceptance: criterion 4 (open mode admits non-blocklisted peers, zero rejection
+  sends) and criterion 6 (a blocklist deny in open mode is a full deny carrying the
+  canned reply).
 
 ### 4.7 Ordering: malformed check before ACL check (settles the reviewer's open question)
 
