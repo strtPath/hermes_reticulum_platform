@@ -89,10 +89,19 @@ Replace the drop branch in `_dispatch_inbound` with:
 ```
 deny(source_hash):
     log full hash (host-local)
-    if cooldown allows: send canned REJECTION_TEXT via the transport seam
-    else: suppress reply (already logged)
+    if misconfigured_boot (closed mode, empty allowlist):
+        suppress reply entirely            # D6: strangers get nothing
+    elif cooldown allows:
+        send canned REJECTION_TEXT via the transport seam
+    else:
+        suppress reply (already logged)
     return  # never call deliver_inbound
 ```
+
+D6 precedence rule: the empty-allowlist suppression overrides the cooldown and the
+canned reply. While the boot is misconfigured (closed mode with no entries), every
+deny logs host-side and sends nothing to any peer. The canned reply only fires for a
+configured gate (allowlist non-empty, or allow-all open mode).
 
 `REJECTION_TEXT = "⛔ Access not authorized."` as a module constant.
 
@@ -123,6 +132,13 @@ from `HERMES_RETICULUM_REJECT_COOLDOWN_S` (default 300; invalid values clamp lik
 existing gate-timeout validation). No persistence: a restart resets the map, which is
 acceptable (worst case one extra rejection after restart).
 
+Memory bound: expired entries are pruned, they do not live until restart. Prune pass
+on each deny: drop every entry whose deadline has passed before evaluating this deny
+(a deadline in the past can never suppress a future reply, so pruning is behavior-
+neutral). The map is then bounded by peers denied within the last cooldown window, not
+by total distinct peers seen since boot. Unit test: deny from N distinct synthetic
+hashes spread beyond the window, assert the map size stays bounded.
+
 ### 4.3 Rejection send path
 
 The rejection goes directly through the adapter's outbound transport seam (the same
@@ -139,10 +155,15 @@ empty, `logger.warning` naming the env var to set. Peers get nothing.
 ### 4.5 Gateway-side (D7)
 
 No change to gateway authz itself (it already reads the same envs via the registration
-fields). The adapter's admission log at `deliver_inbound` time stays; if the gateway
-then denies an adapter-admitted peer, that log line names the desync. No new gateway
-code on this card unless probing shows the gateway deny is unobservable; flag in
-implementation notes if so.
+fields). The current adapter code has no post-delivery signal at all: `deliver_inbound`
+(adapter.py:465) hands the event to the gateway handler and returns without inspecting
+the outcome, so a gateway-side deny of an adapter-admitted peer is invisible today.
+Required change on this card: the adapter logs a desync line naming the gateway deny
+after `deliver_inbound` for a peer the adapter admitted. Implementation note: the
+gateway's deny path is unobservable from the adapter's current seam shape, so this
+needs an adapter-side observation of the authz outcome (or a gateway hook that reports
+it); the exact mechanism is an implementation choice, the observable effect is a card
+requirement. Flag in implementation notes which mechanism was chosen.
 
 ## 5. Acceptance criteria (Given/When/Then)
 
@@ -153,8 +174,9 @@ implementation notes if so.
    message text appears nowhere in gateway-visible output; only the source hash appears,
    host-local.
 3. Given `HERMES_RETICULUM_ALLOWED_USERS` unset or empty and ALLOW_ALL not true, When
-   any peer sends, Then the peer is denied (closed default), and the host startup log
-   warns that the allowlist is empty.
+   any peer sends, Then the peer is denied (closed default), the peer receives NO reply
+   (D6 suppression precedes the canned reply), and the host startup log warns that the
+   allowlist is empty.
 4. Given `HERMES_RETICULUM_ALLOW_ALL=true`, When any peer sends, Then the peer is
    admitted (open mode is explicit opt-in only).
 5. Given peer B was rejected at time t, When B sends again at t+1min, Then the deny is
@@ -206,16 +228,33 @@ implementation notes if so.
 - R4 (MINOR, applied in 4.7): ordering rule for malformed vs unauthorized inbound.
 - R5 (NIT, applied in 4.8): observable effects of a rejection are enumerated.
 
+Review amendments (2026-10-12 greptile pass on PR #15, applied):
+
+- R6 (P2, applied in 4.1 + acceptance 3): D6 precedence made explicit - empty-allowlist
+  boot suppresses the canned reply for all peers; the reply only fires for a configured
+  gate.
+- R7 (P2, applied in 4.6): open-mode wording corrected - blocklist priority outranks
+  allow-all, so a blocklist deny in open mode is a full deny (canned reply + cooldown).
+- R8 (P2, applied in 4.5): the gateway desync signal is now a required adapter-side
+  change, not a hoped-for existing log line; `deliver_inbound` has no post-delivery
+  outcome signal today (verified at adapter.py:465).
+- R9 (P2, applied in 4.2): cooldown map prunes expired entries on each deny so memory
+  is bounded by the cooldown window, not by distinct peers seen since boot.
+
 ### 4.6 Allow-all interaction with rejection (settles the reviewer's open question)
 
-`HERMES_RETICULUM_ALLOW_ALL=true` admits every peer at the gate, so no rejection ever
-fires: the two are mutually exclusive by construction, not competing paths. There is no
-"allow_all + rejection" hybrid state to define. Consequences:
-- The cooldown map stays empty in open mode (no denies to throttle).
-- The startup warning (D6) checks closed mode only; open mode logs an informational line
-  naming allow-all as active (public-instance operators should see it in the log).
-- Acceptance: criterion 4 (open mode admits) plus a new case asserting zero rejection
-  sends while allow-all is true.
+`HERMES_RETICULUM_ALLOW_ALL=true` admits every peer that is not blocklisted, so the
+only rejection that can fire in open mode is a blocklist deny: blocklist priority
+outranks allow-all, exactly as in `core/acl.py` (acceptance criterion 6). A blocklist
+deny in open mode is a full deny under section 4.1: canned reply via the transport
+seam, host-side log, cooldown applies to it like any other rejection. Consequences:
+- The cooldown map stays empty in open mode unless a blocklisted peer sends (the only
+  deny source).
+- The startup warning (D6) checks closed mode only; open mode logs an informational
+  line naming allow-all as active (public-instance operators should see it in the log).
+- Acceptance: criterion 4 (open mode admits non-blocklisted peers) plus a new case
+  asserting zero rejection sends while allow-all is true AND no blocklist entry
+  matches, and criterion 6's deny in open mode carries the canned reply.
 
 ### 4.7 Ordering: malformed check before ACL check (settles the reviewer's open question)
 
