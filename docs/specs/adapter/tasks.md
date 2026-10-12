@@ -23,7 +23,7 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | Card | Build | Blocked by | Acceptance (headline) | Status |
 |---|---|---|---|---|
 | A1 | Docs foundation: spec split, step cards, PII quarantine rule, findings docs, the registration `_bool_conv` fix | - | public sweep is clean; spec + cards reviewable | done |
-| A2 | Pin context length; silence the dead step POST | A1 | overflow turns stop; log noise stops | open |
+| A2 | Automatic per-conversation context discovery; silence the dead step POST | A1 | resolved window == live n_ctx, no pin; log noise stops | open |
 | A3 | Automated ACL rejection (code gate, canned reply, zero model involvement) | A1 | unauthorized peer gets `⛔ Access not authorized.` and nothing else | open |
 | A4 | Command feedback verification + terse render + send-failure truth | A1 | `/status`, `/resume`, `/new`-confirm all visibly answered on the phone | open |
 | A5 | `/new` ack names new session id + auto-title | A4 | peer can find the new session after `/new` | open |
@@ -96,19 +96,32 @@ Rules, all enforced *before writing*, not during the push sweep:
    logs are clean by construction. This touches the logging story and awaits the peer's
    ruling before it becomes a card.
 
-## Card A2: Context pin + step-POST noise
+## Card A2: Automatic context discovery + step-POST noise
 
-**Build:** Pin `model.context_length` below the serving endpoint's live `n_ctx`; stop
-`mesh-tool-gate`'s step POSTs to the deleted control server (gate the POST on the server's
-presence or unset `HERMES_MESH_CONTROL_URL`).
-**Spec basis:** §18 in `plan.md` (root causes: declared window > endpoint slot; dead POST flood);
-invariant: the adapter never asserts a context window it has not verified against the serving
-endpoint.
+**Build:** Leave `model.context_length` unset; the gateway's automatic discovery chain
+(custom-endpoint `/models` probe, llama.cpp `/props` local probe, `model@base_url` disk
+cache, live re-probe on cached entries) is the design — verified working on the live
+endpoint (2026-10-08: installed resolver returned the live `n_ctx` exactly). Add a small
+adapter-side verification: compare the resolved window against the endpoint-reported
+`n_ctx` and log one warning line on disagreement, in a pure module. Operator ruling
+2026-10-08: the adapter must find the context automatically per conversation, not rely on
+a manual pin. Separately: stop the `mesh-tool-events` *hook*'s step POSTs to the deleted
+control server by gating both `_post` call sites on a single "control server configured?"
+predicate (`HERMES_MESH_CONTROL_URL` unset/empty/invalid ⇒ no-op). Do NOT touch the
+`mesh-tool-gate` pre-exec plugin — different component (see `a2-spec.md` §4 sibling
+invariants).
+**Spec basis:** `a2-spec.md` v2 (root causes: silent probe-down to the 256K fallback; dead
+POST flood); invariant: the adapter never asserts a context window it has not verified
+against the serving endpoint — verification, not a number, is the adapter's job.
 **Blocked by:** A1 (config docs land first).
 **Acceptance:**
-- Given a llama.cpp slot of `n_ctx = 8192`, When the adapter declares a window, Then it
-  declares a value strictly below 8192 and a turn that would overflow degrades by compression
-  instead of failing.
+- Given `model.context_length` unset and a live llama.cpp endpoint, When a conversation's
+  turn resolves its window, Then the resolved value equals the endpoint's live `n_ctx`
+  (`/props` and `/v1/models` `meta.n_ctx`), and a turn sized near the window compresses
+  instead of truncating.
+- Given a stub endpoint reporting `n_ctx` far below the resolved window, When the adapter
+  verification runs, Then exactly one disagreement warning appears (red-before: today no
+  comparison exists, so none appears).
 - Given the adapter model running (no bridge control server), When a guarded turn executes,
   Then zero `Connection refused` lines appear from step pushes.
 
