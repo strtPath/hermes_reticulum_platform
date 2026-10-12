@@ -1,0 +1,180 @@
+# A3 Spec: Automated ACL rejection
+
+Card: A3 (`tasks.md` "Card A3"). Branch: `step/A3-acl-rejection`.
+Drafted 2026-10-11 with the user via grilling rounds; every ruling below is the user's.
+Governing precedent: `spec.md` section 17.8 (silent-drop superseded by the 2026-09-30
+ruling) and `plan.md` section 21.3 item 3.
+
+## 1. Problem
+
+Today an inbound from a peer outside the allowlist is silently dropped in
+`_dispatch_inbound` (adapter.py, allowlist check around line 440): a debug log, no reply.
+Section 17.8 ruled that behavior superseded. The original bridge answered unauthorized
+peers with the canned literal `⛔ Access not authorized.` (`core/acl.py` deny -> `cli.py`
+reply, Hermes never reached). A3 restores that behavior on the adapter path with a hard
+guarantee: zero model involvement.
+
+Two gates exist today and the card never said how they relate:
+
+1. Adapter gate: `_dispatch_inbound` -> `_allowlist()` / `_in_allowlist()`, reads
+   `HERMES_RETICULUM_ALLOWED_USERS` via `platform_gate_env`, drops on deny.
+2. Gateway authz gate: platform registration passes
+   `allowed_users_env="HERMES_RETICULUM_ALLOWED_USERS"` and
+   `allow_all_env="HERMES_RETICULUM_ALLOW_ALL"` (registration.py:154-155), so the
+   gateway's own authz layer re-checks the same envs after `deliver_inbound`.
+
+A third reader exists on the standalone/CLI path: `core/acl.py` `AccessControl`, which
+already implements fail-closed semantics (allow-all is opt-in via
+`HERMES_RETICULUM_ALLOW_ALL`, default is allowlist/closed) and blocklist priority.
+
+## 2. Rulings (user decisions, this draft)
+
+- D1 Single gate. Exactly one gate lets a peer talk to the LLM: the user's hash in
+  Hermes' .env (`HERMES_RETICULUM_ALLOWED_USERS`). That env is the single source of
+  truth. The gateway's generic per-platform allowed-users list is NOT a second, separate
+  gate; the gateway authz layer reads the same env values (it already does, via the
+  registration fields). No peer must pass two independent lists.
+- D2 Adapter owns the rejection send. The adapter denies AND the adapter sends the
+  canned reply. Gateway authz stays defense-in-depth only (see D7).
+- D3 Fail closed. Empty or unset `HERMES_RETICULUM_ALLOWED_USERS` means nobody talks to
+  the LLM until a hash is added. Allow-all only by explicit opt-in
+  `HERMES_RETICULUM_ALLOW_ALL=true`. This aligns the adapter with `core/acl.py` and the
+  control server's acl mode (which already defaults to closed); the adapter's current
+  "None allowlist -> allow-all -> defer to gateway" behavior is removed.
+- D4 Throttle. Per-destination rejection cooldown, default 5 minutes, env
+  `HERMES_RETICULUM_REJECT_COOLDOWN_S`. During cooldown, later messages from the same
+  peer are still denied but silently suppressed: log the deny, send nothing. The
+  throttle is a LoRa congestion guard first, a nuisance guard second.
+- D5 Host-side logging. Denials log the full 32-hex source hash, host-local only: the
+  operator needs it to diagnose a mistyped allowlist. It never crosses to the peer, never
+  enters a prompt, a system note, or any model-visible lane. Peer-visible surface stays
+  hash-free; the canned reply carries no identity.
+- D6 Misconfigured boot. Boot in closed mode with an empty allowlist: loud startup
+  warning on the host; denied peers get nothing (no "operator misconfigured" hint leaks
+  to strangers).
+- D7 Defense-in-depth edge. If a peer passes the adapter gate but the gateway authz layer
+  still drops it (two layers out of sync: a config bug, not a policy), the peer receives
+  the canned rejection, and the host log names it as a gateway-side deny so the desync is
+  visible as a bug signal.
+- D8 Malformed inbound unchanged. No parseable source hash -> silent drop as today
+  (there is no identity to reply to). The rejection reply fires only for a real source
+  hash that is present and unauthorized.
+
+## 3. Invariants
+
+- I1 (security, from the card): an unauthorized peer's message text never enters a
+  prompt, a system note, or a model-visible log lane. Only the destination hash is
+  logged (host-local).
+- I2 (zero model involvement): the denial path calls no gateway handler, no session, no
+  LLM. The reply is a literal string constant, not model output.
+- I3 (single truth): exactly one authorization decision is made per inbound from exactly
+  one source of truth (`HERMES_RETICULUM_ALLOWED_USERS` / `HERMES_RETICULUM_ALLOW_ALL` in
+  Hermes' .env). The gateway-side re-check must agree with the adapter gate by
+  construction (same envs); disagreement is a bug, logged as such (D7).
+- I4 (bandwidth): at most one rejection per cooldown window per destination.
+
+## 4. Design
+
+### 4.1 Decision point
+
+Replace the drop branch in `_dispatch_inbound` with:
+
+```
+deny(source_hash):
+    log full hash (host-local)
+    if cooldown allows: send canned REJECTION_TEXT via the transport seam
+    else: suppress reply (already logged)
+    return  # never call deliver_inbound
+```
+
+`REJECTION_TEXT = "⛔ Access not authorized."` as a module constant.
+
+The adapter gate becomes the authoritative gate (D1/D2). It must implement the same
+semantics as `core/acl.py`: blocklist priority, then allow-all opt-in, then allowlist,
+default closed. Preferred implementation: reuse `AccessControl` from `core/acl.py`
+behind the adapter gate instead of the hand-rolled `_allowlist()`/`_in_allowlist()`
+pair, so the repo has one ACL implementation, not three dialects. (`_allowlist()`
+currently returns None on unset env -> allow-all; that path is deleted per D3.)
+`platform_gate_env` multiplex-safety is kept: the gate reads envs the same way the
+registration does.
+
+### 4.2 Cooldown
+
+`dict[source_hash, monotonic_deadline]` in adapter memory. On deny: if now >= deadline
+(or unseen), send and set deadline = now + cooldown; else suppress. Cooldown seconds
+from `HERMES_RETICULUM_REJECT_COOLDOWN_S` (default 300; invalid values clamp like the
+existing gate-timeout validation). No persistence: a restart resets the map, which is
+acceptable (worst case one extra rejection after restart).
+
+### 4.3 Rejection send path
+
+The rejection goes directly through the adapter's outbound transport seam (the same
+path `send()` uses for content), NOT through `deliver_inbound` -> gateway -> turn ->
+`send_reply`. It must not create a gateway session, must not touch session history, and
+must not be recorded as a conversation turn. It may be recorded in outbound outcome
+bookkeeping so a failed rejection send is visible in logs (non-fatal).
+
+### 4.4 Startup warning (D6)
+
+At adapter connect (or registration env validation): if closed mode and the allowlist is
+empty, `logger.warning` naming the env var to set. Peers get nothing.
+
+### 4.5 Gateway-side (D7)
+
+No change to gateway authz itself (it already reads the same envs via the registration
+fields). The adapter's admission log at `deliver_inbound` time stays; if the gateway
+then denies an adapter-admitted peer, that log line names the desync. No new gateway
+code on this card unless probing shows the gateway deny is unobservable; flag in
+implementation notes if so.
+
+## 5. Acceptance criteria (Given/When/Then)
+
+1. Given `HERMES_RETICULUM_ALLOWED_USERS` lists hash A, When peer B (absent) sends any
+   text, Then B receives exactly `⛔ Access not authorized.` and no Hermes turn runs
+   (no session activity, no model call).
+2. Given the rejection path, When its logs are swept, Then the unauthorized peer's
+   message text appears nowhere in gateway-visible output; only the source hash appears,
+   host-local.
+3. Given `HERMES_RETICULUM_ALLOWED_USERS` unset or empty and ALLOW_ALL not true, When
+   any peer sends, Then the peer is denied (closed default), and the host startup log
+   warns that the allowlist is empty.
+4. Given `HERMES_RETICULUM_ALLOW_ALL=true`, When any peer sends, Then the peer is
+   admitted (open mode is explicit opt-in only).
+5. Given peer B was rejected at time t, When B sends again at t+1min, Then the deny is
+   logged and no second rejection is sent; at t+5min+ a rejection is sent again.
+6. Given a blocklisted hash (when blocklist support is wired into the adapter gate),
+   When it sends, Then it is denied even if also present in the allowlist.
+7. Given an inbound with no parseable source hash, When it arrives, Then it is dropped
+   silently as today (no reply).
+8. Given allowlist matching with uppercase/colon-formatted hashes in the env, When the
+   comparison runs, Then it matches case- and colon-tolerantly (existing behavior kept).
+9. Existing tests (`test_allowlisted_peer_is_admitted`,
+   `test_allowlist_matching_is_case_and_colon_tolerant`) stay green; any test relying on
+   allow-all-on-unset-env behavior is re-expressed against the new closed default.
+
+## 6. Out of scope (this card)
+
+- Peer-facing wording beyond the canned literal (no explanations, no hints).
+- Blocklist UI / management commands.
+- NomadNet-side rendering of the rejection.
+- A8 live wire check (separate verification item).
+
+## 7. Verification plan
+
+- Unit tests in `tests/test_reticulum_adapter.py` for criteria 1-9 using the synthetic
+  hashes already used in the suite (`aabbccdd`, `deadbeef`, `0badc0de` pattern).
+- A log-sweep test: denial-path logs contain no message text (criterion 2), mirroring
+  the card's acceptance line.
+- `scripts/check_imports.py` stays green (rns/lxmf stay out of pure-logic modules).
+- Live check (manual, after merge): send from a non-allowlisted Sideband client, confirm
+  the canned reply and the host-side log line; confirm the allowlisted client is
+  unaffected.
+
+## 8. Docs and skill updates shipped with this card
+
+- `tasks.md`: A3 row status -> done on merge; A2 row status -> closed (loose end from
+  the #14 merge; docs travel with the branch).
+- `spec.md` section 17.8: point at this spec as the implementing ruling record.
+- `verification.md`: A3 row added.
+- Skill `rns-hermes-endpoint-bridge`: gate semantics (single .env gate, closed default,
+  cooldown, D7 desync signal) folded into the ACL reference.
