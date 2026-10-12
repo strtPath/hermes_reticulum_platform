@@ -248,13 +248,21 @@ Review amendments (2026-10-12 greptile pass on PR #15, applied):
 - R6 (P2, applied in 4.1 + acceptance 3): D6 precedence made explicit - empty-allowlist
   boot suppresses the canned reply for all peers; the reply only fires for a configured
   gate.
-- R7 (P2, applied in 4.6): open-mode wording corrected - blocklist priority outranks
-  allow-all, so a blocklist deny in open mode is a full deny (canned reply + cooldown).
+- R7 (P2, applied in 4.6 + acceptance 4/6): open-mode wording corrected - blocklist
+  priority outranks allow-all, so a blocklist deny in open mode is a full deny (canned
+  reply + cooldown). The second greptile pass re-flagged the same conflict at the
+  acceptance text; criteria 4 and 6 now carry the qualified wording directly.
 - R8 (P2, applied in 4.5): the gateway desync signal is now a required adapter-side
   change, not a hoped-for existing log line; `deliver_inbound` has no post-delivery
-  outcome signal today (verified at adapter.py:465).
-- R9 (P2, applied in 4.2): cooldown map prunes expired entries on each deny so memory
-  is bounded by the cooldown window, not by distinct peers seen since boot.
+  outcome signal today (verified at adapter.py:465). The second greptile pass required
+  the D7 reply path be specified, not just the log: 4.5 now specifies inspecting the
+  delivery outcome and sending the canned reply on a gateway deny, with acceptance
+  criterion 10 added for that path.
+- R9 (P2, applied in 4.2): cooldown map prunes expired entries so memory is bounded by
+  the cooldown window, not by distinct peers seen since boot. The second greptile pass
+  flagged prune-per-deny as a hot-path cost shared with `_drain_loop` (verified: the
+  drain loop at adapter.py:391 handles allowed messages on the same task); 4.2 now
+  requires expiry-ordered storage with scheduled pruning, O(1) per deny.
 
 ### 4.6 Allow-all interaction with rejection (settles the reviewer's open question)
 
