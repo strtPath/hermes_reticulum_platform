@@ -136,13 +136,20 @@ Memory bound: expired entries are pruned; they do not live until restart. Prunin
 scheduled, NOT a full scan per deny (a scan per deny would make flooded denied peers
 add work to `_drain_loop`, which handles allowed messages on the same task). Required
 shape: deadlines ordered by expiry (e.g. a heap of (deadline, hash) beside the map, or
-an expiry-ordered dict) plus a periodic prune on the adapter's existing event/heartbeat
-cadence, popping entries whose deadline has passed. A deny then costs: one map lookup,
-possibly one heap push. The map is bounded by peers denied within the last cooldown
-window, not by total distinct peers seen since boot. Unit tests: (a) deny from N
-distinct synthetic hashes spread beyond the window, assert the map size stays bounded;
-(b) a flood of denies from many hashes does not grow per-message deny cost observed by
-an allowed message on the same drain task.
+an expiry-ordered dict) plus a dedicated cleanup task: an asyncio loop started in
+`connect()` alongside `_drain_task` and cancelled in `disconnect()` the same way
+`_drain_task` is. It must not depend on incoming events: the adapter has no general
+heartbeat (the transport's announce timer runs separately and never wakes
+`_drain_loop`), so cleanup tied to inbound traffic would leave expired entries in
+memory while the adapter is idle. Loop period: a fixed bounded interval (default 60s,
+capped at the cooldown window); each tick pops heap entries whose deadline has passed.
+A deny then costs: one map lookup, possibly one heap push. The map is bounded by peers
+denied within the last cooldown window, not by total distinct peers seen since boot.
+Unit tests: (a) deny from N distinct synthetic hashes spread beyond the window, assert
+the map size stays bounded after a cleanup tick; (b) a flood of denies from many hashes
+does not grow per-message deny cost observed by an allowed message on the same drain
+task; (c) with no inbound traffic at all, a cleanup tick still removes expired entries
+(fake clock advancing past the period while the queue stays empty).
 
 ### 4.3 Rejection send path
 
@@ -262,7 +269,11 @@ Review amendments (2026-10-12 greptile pass on PR #15, applied):
   the cooldown window, not by distinct peers seen since boot. The second greptile pass
   flagged prune-per-deny as a hot-path cost shared with `_drain_loop` (verified: the
   drain loop at adapter.py:391 handles allowed messages on the same task); 4.2 now
-  requires expiry-ordered storage with scheduled pruning, O(1) per deny.
+  requires expiry-ordered storage with scheduled pruning, O(1) per deny. The third
+  greptile pass correctly noted the adapter has no general heartbeat to piggyback on
+  (verified: `_drain_loop` waits on the queue, the announce timer lives in the
+  transport); 4.2 now specifies a dedicated cleanup task started by `connect()` and
+  cancelled by `disconnect()`, with an idle-adapter unit test.
 
 ### 4.6 Allow-all interaction with rejection (settles the reviewer's open question)
 
