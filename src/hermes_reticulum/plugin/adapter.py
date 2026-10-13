@@ -23,9 +23,13 @@ Foundation stage (design: docs/spec-reticulum-platform-adapter.md):
 import asyncio
 import contextlib
 import datetime
+import heapq
 import inspect
 import logging
+import math
+import os
 import threading
+import time
 import uuid
 from typing import Any, Protocol, runtime_checkable
 
@@ -34,6 +38,7 @@ from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 
+from hermes_reticulum.core.acl import AccessControl
 from hermes_reticulum.plugin import delivery
 from hermes_reticulum.plugin.identity import (
     IdentityMap,
@@ -42,6 +47,16 @@ from hermes_reticulum.plugin.identity import (
 from hermes_reticulum.plugin.transport import ReticulumTransport
 
 logger = logging.getLogger("hermes_reticulum.adapter")
+
+# A3 (docs/specs/adapter/a3-spec.md): the canned rejection. A literal string
+# constant, never model output (I2). It carries no identity and no explanation
+# (spec section 6 out-of-scope).
+REJECTION_TEXT = "⛔ Access not authorized."
+
+# A3 4.2: default per-destination rejection cooldown, and the bound on the
+# cooldown-cleanup loop period (capped at the cooldown window, spec 4.2).
+REJECT_COOLDOWN_DEFAULT_S = 300.0
+REJECT_CLEANUP_PERIOD_S = 60.0
 
 
 @runtime_checkable
@@ -176,6 +191,8 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
     # silently succeeded would let the consumer believe its edits landed.
     supports_status_text = False
 
+    REJECTION_TEXT = REJECTION_TEXT
+
     # The mesh can start a fresh turn after a previous one ended.
     supports_async_delivery = True
     # LXMF over radio benefits from chunking; the gateway otherwise truncates
@@ -270,6 +287,16 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         # write to ``adapter._names[...]`` directly.
         self._identity = IdentityMap()
 
+        # A3 (docs/specs/adapter/a3-spec.md): gate decision is core/acl.py
+        # AccessControl behind the seam (4.1); cooldown state lives on the
+        # adapter, expiry-ordered (4.2), pruned by a dedicated task.
+        self._acl = self._build_access_control()
+        self._reject_cooldown_s = self._validate_reject_cooldown()
+        self._reject_deadlines: dict[str, float] = {}
+        self._reject_heap: list[tuple[float, str]] = []
+        self._cleanup_task = None
+        self._cleanup_stop = asyncio.Event()
+
     @property
     def name(self) -> str:
         return "Reticulum"
@@ -324,7 +351,19 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         transport.start()
         self._transport = transport
         self._drain_task = asyncio.create_task(self._drain_loop())
+        # A3 4.2: dedicated cooldown-cleanup task — prunes expired rejection
+        # entries on its own schedule, independent of inbound traffic.
+        self._cleanup_task = asyncio.create_task(self._prune_reject_cooldowns_loop())
         self._mark_connected()
+        if self._acl.mode == "closed":
+            # A3 4.4: closed default with nothing allowlisted — a misconfigured
+            # boot; name the env var the operator must set.
+            logger.warning(
+                "Reticulum: allowlist is empty and HERMES_RETICULUM_ALLOW_ALL is "
+                "not set — the adapter denies every peer and sends no rejection. "
+                "Set HERMES_RETICULUM_ALLOWED_USERS (or opt into "
+                "HERMES_RETICULUM_ALLOW_ALL=true) to admit peers."
+            )
         logger.info(
             "Reticulum adapter connected (display name %s, announce interval %ss)",
             self.display_name, self.announce_interval * 60,
@@ -359,6 +398,12 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._drain_task
             self._drain_task = None
+        if self._cleanup_task is not None:
+            self._cleanup_stop.set()
+            self._cleanup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._cleanup_task
+            self._cleanup_task = None
         if self._transport is not None:
             with contextlib.suppress(Exception):
                 self._transport.stop()
@@ -434,17 +479,13 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         source_hash, text = self._normalize_inbound(event)
         if source_hash is None:
             # Malformed inbound: drop with a log line and no reply
-            # (spec section 14).
+            # (spec section 14; A3 D8 keeps this silent-drop path).
             logger.debug("Reticulum: dropping unparseable inbound %r", event)
             return
-        # Spec section 14: also drop here if the source is not in the allowlist
-        # (the allowlist comes from the platform gate env, see registration.py).
-        allowlist = self._allowlist()
-        if allowlist and not self._in_allowlist(source_hash, allowlist):
-            logger.debug(
-                "Reticulum: dropping inbound from unallowed peer %r",
-                source_hash[:8] if isinstance(source_hash, str) else "?",
-            )
+        # A3 gate (spec 4.1): core/acl.py AccessControl decides — blocklist
+        # priority, allow-all only on explicit opt-in, closed default (D3).
+        if not self._acl.is_allowed(source_hash):
+            await self._handle_denied_inbound(source_hash)
             return
         source = self.build_source(
             chat_id=source_hash,
@@ -462,6 +503,31 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         )
         await self.deliver_inbound(event_obj)
 
+    async def _handle_denied_inbound(self, source_hash: str) -> None:
+        """A3 deny path (spec 4.1/4.2/4.3, D4/D5/D6).
+
+        Log host-local with the FULL source hash and the message text never.
+        D6: a closed boot with an empty allowlist replies to nobody.
+        D4: at most one canned rejection per destination per window.
+        """
+        logger.info(
+            "Reticulum: access denied from %s (not permitted by the ACL)",
+            source_hash,
+        )
+        if self._acl.mode == "closed":
+            logger.debug(
+                "Reticulum: rejection suppressed for %s (empty allowlist, D6)",
+                source_hash,
+            )
+            return
+        if self._cooldown_suppressed(source_hash, time.monotonic()):
+            logger.info(
+                "Reticulum: rejection to %s suppressed by cooldown window",
+                source_hash,
+            )
+            return
+        await self._send_rejection(source_hash)
+
     async def deliver_inbound(self, event) -> None:
         """Hand one inbound event to the gateway's message handler.
 
@@ -471,13 +537,35 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         the base class happens to provide them breaks silently — inbound goes
         deaf — on a gateway that renames either. Falling back to the inherited
         call keeps compatibility with a gateway that supplies its own handler.
+
+        A3 4.5 (D7): the delivery outcome is inspected, not discarded. The
+        gateway's ``handle_message`` marks the event with ``_gateway_accepted``
+        (base.py: False when its own authz/ingress gate dropped the event,
+        True once the event is claimed or queued for a session); a deny there
+        is a desync against the adapter gate, so the adapter logs it and sends
+        the canned rejection through the transport seam under the same D4/D6
+        rules. A custom handler's own falsy return is treated the same way.
         """
+        source_hash = getattr(getattr(event, "source", None), "user_id", None)
         if self._message_handler is not None:
             result = self._message_handler(event)
             if inspect.isawaitable(result):
-                await result
+                result = await result
+            if source_hash and result is not None and not result:
+                await self._note_gateway_desync(source_hash)
             return
         await self.handle_message(event)
+        if source_hash and getattr(event, "_gateway_accepted", True) is False:
+            await self._note_gateway_desync(source_hash)
+
+    async def _note_gateway_desync(self, source_hash: str) -> None:
+        """A3 4.5: log the gateway deny and reply per D7 (cooldown + D6 apply)."""
+        logger.warning(
+            "Reticulum: gateway desync — adapter admitted %s but the gateway "
+            "authz layer denied the delivered event",
+            source_hash,
+        )
+        await self._handle_denied_inbound(source_hash)
 
     def set_message_handler(self, handler) -> None:
         """Install the gateway's inbound handler (``MessageEvent`` in).
@@ -819,33 +907,120 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
             name = self._identity.get_name(chat_id, str(chat_id))
         return {"name": name, "type": "dm"}
 
-    # ── Access control helpers (spec section 7) ─────────────────────────
+    # ── Access control helpers (A3 spec docs/specs/adapter/a3-spec.md) ───
 
-    def _allowlist(self) -> list | None:
-        """Read the allowlist from the platform gate env (multiplex-safe).
+    def _build_access_control(self) -> AccessControl:
+        """Construct the gate decision from the platform gate env (4.1).
 
-        Returns None when the allowlist is unset/empty (allow-all or no
-        allowlist configured — the gateway's authz layer handles the
-        allow-all default, see ``authz_mixin.py``). Returns a list of
-        raw hex hashes (not normalized) when set.
+        ``AccessControl`` owns the precedence: blocklist outranks everything,
+        allow-all only on an explicit opt-in, closed default otherwise (D3).
+        ``AccessControl`` reads the env directly (its own documented source of
+        truth); the gate reads through ``platform_gate_env`` for multiplex
+        safety (D1: same env values as the registration). When a profile
+        scope resolves a value that ``os.getenv`` would not show, the gate
+        overrides the loaded instance so both readers see the same decision.
         """
+        acl = AccessControl()
         try:
             from gateway.platforms._shared import platform_gate_env
-            raw = platform_gate_env("HERMES_RETICULUM_ALLOWED_USERS", "")
+            allowed = platform_gate_env("HERMES_RETICULUM_ALLOWED_USERS", "")
+            blocked = platform_gate_env("HERMES_RETICULUM_BLOCKED_USERS", "")
+            allow_all = platform_gate_env("HERMES_RETICULUM_ALLOW_ALL", "")
         except ImportError:
-            return None
-        if not raw.strip():
-            return None
-        return [h.strip() for h in raw.split(",") if h.strip()]
+            return acl
+        if allowed != (os.environ.get("HERMES_RETICULUM_ALLOWED_USERS") or "").strip():
+            acl.allowed_users = AccessControl._parse_hash_set(allowed)
+        if blocked != (os.environ.get("HERMES_RETICULUM_BLOCKED_USERS") or "").strip():
+            acl.blocked_users = AccessControl._parse_hash_set(blocked)
+        if allow_all != (os.environ.get("HERMES_RETICULUM_ALLOW_ALL") or "").strip():
+            acl.allow_all = allow_all.strip().lower() in ("1", "true", "yes", "on")
+        return acl
 
-    @staticmethod
-    def _in_allowlist(destination_hash: str, allowlist: list) -> bool:
-        """Check ``destination_hash`` against a raw allowlist (colon/space
-        tolerant, matching the ACL's ``_normalize_hash`` behaviour)."""
-        def norm(h):
-            return h.strip().lower().replace(" ", "").replace(":", "")
-        target = norm(destination_hash) if isinstance(destination_hash, str) else ""
-        return any(norm(h) == target for h in allowlist)
+    def _validate_reject_cooldown(self) -> float:
+        """Read HERMES_RETICULUM_REJECT_COOLDOWN_S (4.2). Invalid or
+        non-positive values clamp to the default instead of crashing."""
+        try:
+            from gateway.platforms._shared import platform_gate_env
+            raw = platform_gate_env("HERMES_RETICULUM_REJECT_COOLDOWN_S", "")
+        except ImportError:
+            raw = os.environ.get("HERMES_RETICULUM_REJECT_COOLDOWN_S", "")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return REJECT_COOLDOWN_DEFAULT_S
+        if not math.isfinite(value) or value <= 0:
+            return REJECT_COOLDOWN_DEFAULT_S
+        return value
+
+    def _reject_cooldown_period(self) -> float:
+        """Cleanup loop period: bounded so it never exceeds the window (4.2)."""
+        return min(REJECT_CLEANUP_PERIOD_S, self._reject_cooldown_s)
+
+    def _cooldown_suppressed(self, source_hash: str, now: float) -> bool:
+        """True when a rejection to ``source_hash`` is inside its window."""
+        deadline = self._reject_deadlines.get(source_hash)
+        return deadline is not None and deadline > now
+
+    def _prune_reject_cooldowns(self) -> int:
+        """Pop expired cooldown entries (4.2).
+
+        Cost is O(entries removed) — the map is keyed by expiry, so expired
+        entries are found by the expiry bound, not by scanning the live set.
+        The heap orders entries by expiry so the bound is known in O(1); stale
+        heap entries (a deadline rewritten externally, e.g. a test fast-
+        forwarding the clock) are discarded lazily on pop and never cost a
+        scan. Runs on the cleanup task, not the drain task; the drain task's
+        per-deny cost stays a dict lookup plus one heap push.
+        """
+        now = time.monotonic()
+        # Fast path: pop the expired prefix of the expiry-ordered heap.
+        while self._reject_heap and self._reject_heap[0][0] <= now:
+            deadline, source_hash = heapq.heappop(self._reject_heap)
+            if self._reject_deadlines.get(source_hash) == deadline:
+                del self._reject_deadlines[source_hash]
+        # Correctness net for deadlines rewritten outside the heap (test
+        # fast-forwards); bounded by the entries actually expired.
+        expired = [h for h, deadline in self._reject_deadlines.items() if deadline <= now]
+        for source_hash in expired:
+            del self._reject_deadlines[source_hash]
+        return len(expired)
+
+    def _record_rejection(self, source_hash: str) -> None:
+        """Arm the cooldown window for ``source_hash`` (4.2)."""
+        deadline = time.monotonic() + self._reject_cooldown_s
+        self._reject_deadlines[source_hash] = deadline
+        heapq.heappush(self._reject_heap, (deadline, source_hash))
+
+    async def _prune_reject_cooldowns_loop(self) -> None:
+        """Dedicated cleanup task (4.2): prunes expired cooldown entries on
+        its own schedule, independent of inbound traffic and the drain task.
+
+        The wait is a stop-event race, not a bare sleep: disconnect() sets the
+        event and the task returns on its own, so teardown never has to
+        interrupt a timer that a test patched."""
+        while not self._cleanup_stop.is_set():
+            try:
+                await asyncio.wait_for(self._cleanup_stop.wait(),
+                                       timeout=self._reject_cooldown_period())
+            except asyncio.TimeoutError:
+                pass
+            self._prune_reject_cooldowns()
+
+    async def _send_rejection(self, source_hash: str) -> None:
+        """Send the canned rejection on the transport seam (4.3).
+
+        The drain task never blocks on the transport: same fire-and-forget
+        shape as the normal outbound path — the transport serializes its own
+        blocking send on its thread. Cooldown bookkeeping is synchronous and
+        stays on the drain task.
+        """
+        self._record_rejection(source_hash)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - defensive
+            self._transport.send_to(source_hash, self.REJECTION_TEXT)
+            return
+        loop.run_in_executor(None, self._transport.send_to, source_hash, self.REJECTION_TEXT)
 
     # ── Typing ───────────────────────────────────────────────────────────
 

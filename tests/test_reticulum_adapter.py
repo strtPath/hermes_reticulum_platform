@@ -10,6 +10,7 @@ No test here asserts on platform lists or command counts (spec section 10).
 """
 
 import asyncio
+import logging
 import os
 import sys
 import threading
@@ -300,6 +301,7 @@ async def test_multi_part_send_paces_between_chunks():
 
     adapter = make_adapter()
     assert await adapter.connect() is True
+    _freeze_cleanup_loop(adapter)
     # Swap the transport AFTER connecting so send()'s is_connected gate passes,
     # while the path answer still comes from this fake.
     adapter._transport = _TransportReportingPath(direct=False)
@@ -326,11 +328,13 @@ async def test_foreign_callback_reaches_handle_message_exactly_once(monkeypatch)
     delivered to handle_message exactly once, then the drain task ends
     cleanly on disconnect.
 
-    The allowlist is pinned empty: the adapter consults it on every inbound
-    event, so an operator's configured allowlist would otherwise decide this
-    test's verdict and their peer hash would appear in the failure output.
+    The allowlist is pinned to a synthetic peer: the adapter consults it on
+    every inbound event, so an operator's configured allowlist would
+    otherwise decide this test's verdict and their peer hash would appear in
+    the failure output. (A3 D3 made the unset default closed — allow-all is
+    no longer an unset-env behavior.)
     """
-    monkeypatch.delenv("HERMES_RETICULUM_ALLOWED_USERS", raising=False)
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", "0" * 32)
     monkeypatch.delenv("HERMES_RETICULUM_ALLOW_ALL", raising=False)
     recorder = HandlerRecorder()
     factory = CountingFactory()
@@ -750,4 +754,470 @@ async def test_cancel_arriving_as_worker_succeeds_records_success(monkeypatch):
         "a successful send must not be recorded as failed by a racing cancel"
     )
     assert adapter.delivery_stats["failed"] == 0
+    await adapter.disconnect()
+
+
+# ── A3: automated ACL rejection (docs/specs/adapter/a3-spec.md) ───────────
+# The rejection-path group extends the allowlist gating above. Synthetic
+# hashes follow the suite's existing pattern (no real identities).
+
+
+class GatewayAuthzDenier:
+    """Stand-in for the gateway authz layer denying an admitted event (D7)."""
+
+    def __init__(self):
+        self.events = []
+
+    def __call__(self, event):
+        self.events.append(event)
+        return False
+
+
+async def _wait_for(pred, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pred():
+            return True
+        await asyncio.sleep(0.05)
+    return False
+
+
+async def _settle(seconds=0.5):
+    await asyncio.sleep(seconds)
+
+
+def _freeze_cleanup_loop(adapter) -> None:
+    """Park the cooldown-cleanup task so a test's asyncio.sleep patch (or a
+    fake clock) cannot drive it; the test cancels it explicitly."""
+    adapter._cleanup_task.cancel()
+
+
+@pytest.fixture(autouse=True)
+def _a3_isolate_env(monkeypatch):
+    """A3 tests own their gate env; never inherit a host's real allowlist."""
+    for name in (
+        "HERMES_RETICULUM_ALLOWED_USERS",
+        "HERMES_RETICULUM_BLOCKED_USERS",
+        "HERMES_RETICULUM_ALLOW_ALL",
+        "HERMES_RETICULUM_REJECT_COOLDOWN_S",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+PEER_A = "aabbccdd" * 4
+PEER_B = "deadbeef" * 4
+PEER_C = "0badc0de" * 4
+PEER_D = "11223344" * 4
+
+
+@pytest.mark.asyncio
+async def test_a3_01_unlisted_peer_receives_canned_rejection(monkeypatch, caplog):
+    """Criterion 1: peer B (absent from the allowlist) gets exactly the canned
+    literal and no Hermes turn runs (no handler call, no session)."""
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_A)
+    recorder = HandlerRecorder()
+    factory = CountingFactory()
+    adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
+    adapter.set_message_handler(recorder)
+    assert await adapter.connect() is True
+
+    factory.transport._inbound_cb(PEER_B, "let me in")
+    assert await _wait_for(lambda: any(
+        dest == PEER_B and text == adapter.REJECTION_TEXT
+        for dest, text in adapter._transport.sent
+    ))
+    await _settle()
+    assert adapter._transport.sent == [(PEER_B, adapter.REJECTION_TEXT)]
+    assert recorder.events == [], "denied inbound must not reach the gateway handler"
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a3_02_rejection_logs_never_carry_peer_message_text(monkeypatch, caplog):
+    """Criterion 2 (log sweep): the denied message text appears in no log
+    record; only the full source hash appears, host-local."""
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_A)
+    recorder = HandlerRecorder()
+    factory = CountingFactory()
+    adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
+    adapter.set_message_handler(recorder)
+    assert await adapter.connect() is True
+
+    secret_text = "top secret payload never seen by a model"
+    factory.transport._inbound_cb(PEER_B, secret_text)
+    await _settle()
+
+    for record in caplog.records:
+        assert secret_text not in record.getMessage()
+    # The full source hash IS present host-local (D5: operator needs it).
+    assert any(PEER_B in record.getMessage() for record in caplog.records)
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a3_03_unset_allowlist_denies_everyone_with_no_reply(monkeypatch, caplog):
+    """Criterion 3 (D3 + D6): allowlist unset and ALLOW_ALL not true -> any
+    peer is denied, receives NO reply (D6 suppression precedes the canned
+    reply), and the host startup log warns naming the env var to set."""
+    caplog.set_level(logging.WARNING)
+    recorder = HandlerRecorder()
+    factory = CountingFactory()
+    adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
+    adapter.set_message_handler(recorder)
+    assert await adapter.connect() is True
+
+    assert any(
+        "HERMES_RETICULUM_ALLOWED_USERS" in record.getMessage()
+        for record in caplog.records
+    ), "startup must warn that the allowlist is empty"
+
+    factory.transport._inbound_cb(PEER_B, "hello?")
+    await _settle()
+    assert adapter._transport.sent == [], "D6: denied peers get nothing"
+    assert recorder.events == []
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a3_04_empty_allowlist_string_also_suppresses(monkeypatch):
+    """Criterion 3 variant: ALLOWED_USERS set but blank is the same closed,
+    misconfigured boot: deny, no reply."""
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", "  ")
+    factory = CountingFactory()
+    adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
+    adapter.set_message_handler(HandlerRecorder())
+    assert await adapter.connect() is True
+    factory.transport._inbound_cb(PEER_B, "hello?")
+    await _settle()
+    assert adapter._transport.sent == []
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a3_05_allow_all_admits_everyone_with_zero_rejections(monkeypatch):
+    """Criterion 4: ALLOW_ALL=true admits any non-blocklisted peer; zero
+    rejection sends occur."""
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOW_ALL", "true")
+    recorder = HandlerRecorder()
+    factory = CountingFactory()
+    adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
+    adapter.set_message_handler(recorder)
+    assert await adapter.connect() is True
+
+    for peer in (PEER_B, PEER_C):
+        factory.transport._inbound_cb(peer, f"hi from {peer}")
+    assert await _wait_for(lambda: len(recorder.events) == 2)
+    await _settle()
+    assert adapter._transport.sent == []
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a3_06_cooldown_suppresses_second_rejection_then_resumes(monkeypatch):
+    """Criterion 4 (D4): rejected at t; a second deny at t+1min logs but sends
+    nothing; after the window a rejection goes out again."""
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_A)
+    monkeypatch.setenv("HERMES_RETICULUM_REJECT_COOLDOWN_S", "300")
+    factory = CountingFactory()
+    adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
+    adapter.set_message_handler(HandlerRecorder())
+    assert await adapter.connect() is True
+
+    factory.transport._inbound_cb(PEER_B, "first")
+    assert await _wait_for(lambda: len(adapter._transport.sent) == 1)
+
+    # +1 minute (inside the window): deny logged, nothing sent.
+    factory.transport._inbound_cb(PEER_B, "second")
+    await _settle()
+    assert len(adapter._transport.sent) == 1, "cooldown must suppress the second reply"
+
+    # Fast-forward past the window and deny again: a reply goes out again.
+    adapter._reject_deadlines[PEER_B] -= adapter._reject_cooldown_s + 1
+    factory.transport._inbound_cb(PEER_B, "third")
+    assert await _wait_for(lambda: len(adapter._transport.sent) == 2)
+    assert adapter._transport.sent[1] == (PEER_B, adapter.REJECTION_TEXT)
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a3_07_invalid_cooldown_clamps_to_default(monkeypatch):
+    """D4: HERMES_RETICULUM_REJECT_COOLDOWN_S invalid -> clamp to the default
+    300 rather than crash or take a nonsense value."""
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_A)
+    monkeypatch.setenv("HERMES_RETICULUM_REJECT_COOLDOWN_S", "not-a-number")
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+    assert adapter._reject_cooldown_s == 300
+    await adapter.disconnect()
+
+    monkeypatch.setenv("HERMES_RETICULUM_REJECT_COOLDOWN_S", "-5")
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+    assert adapter._reject_cooldown_s == 300
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a3_08_blocklist_outranks_allowlist(monkeypatch):
+    """Criterion 6: a blocklisted hash is denied even when also allowlisted,
+    with the canned reply under the cooldown rules."""
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_B)
+    monkeypatch.setenv("HERMES_RETICULUM_BLOCKED_USERS", PEER_B)
+    recorder = HandlerRecorder()
+    factory = CountingFactory()
+    adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
+    adapter.set_message_handler(recorder)
+    assert await adapter.connect() is True
+
+    factory.transport._inbound_cb(PEER_B, "I'm on both lists")
+    assert await _wait_for(lambda: len(adapter._transport.sent) == 1)
+    assert adapter._transport.sent == [(PEER_B, adapter.REJECTION_TEXT)]
+    assert recorder.events == []
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a3_09_blocklist_deny_in_open_mode_is_full_deny(monkeypatch):
+    """Criterion 6 (R7): blocklist priority outranks allow-all; in open mode a
+    blocklisted peer gets the canned reply, while non-blocklisted peers are
+    admitted."""
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOW_ALL", "true")
+    monkeypatch.setenv("HERMES_RETICULUM_BLOCKED_USERS", PEER_C)
+    recorder = HandlerRecorder()
+    factory = CountingFactory()
+    adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
+    adapter.set_message_handler(recorder)
+    assert await adapter.connect() is True
+
+    factory.transport._inbound_cb(PEER_B, "open mode peer")
+    factory.transport._inbound_cb(PEER_C, "blocked peer")
+    assert await _wait_for(lambda: len(recorder.events) == 1)
+    await _settle()
+    assert recorder.events[0].source.user_id == PEER_B
+    assert adapter._transport.sent == [(PEER_C, adapter.REJECTION_TEXT)]
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a3_10_malformed_inbound_stays_silent_drop(monkeypatch):
+    """Criterion 7 (D8): no parseable source hash -> dropped silently, no
+    reply, even though the gate is configured and could reply to someone."""
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_A)
+    factory = CountingFactory()
+    adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
+    adapter.set_message_handler(HandlerRecorder())
+    assert await adapter.connect() is True
+
+    factory.transport._inbound_cb("not-a-real-hash", "garbage")
+    factory.transport._inbound_cb("", "no source")
+    await _settle()
+    assert adapter._transport.sent == []
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a3_11_rejection_gate_matching_is_case_and_colon_tolerant(monkeypatch):
+    """Criterion 8: a peer listed in colon/uppercase form is admitted; the
+    normalized comparison drives the deny decision too."""
+    formatted = ":".join(("ab" * 16).upper()[i:i + 2] for i in range(0, 32, 2))
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", formatted.upper())
+    recorder = HandlerRecorder()
+    factory = CountingFactory()
+    adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
+    adapter.set_message_handler(recorder)
+    assert await adapter.connect() is True
+
+    factory.transport._inbound_cb(("ab" * 16).lower(), "hi")
+    assert await _wait_for(lambda: len(recorder.events) == 1)
+    await _settle()
+    assert adapter._transport.sent == []
+    await adapter.disconnect()
+
+
+# ── A3 4.2: cooldown map memory bound ─────────────────────────────────────
+
+
+def _synthetic_denied_hashes(n):
+    return [("%08x" % i) * 4 for i in range(1, n + 1)]
+
+
+def _seed_cooldowns(adapter, expired: int, live: int) -> list[str]:
+    """Seed the cooldown state through the adapter's own record path (heap +
+    map stay consistent), then fast-forward the fake clock: expired entries
+    pushed past the window, live entries left inside it."""
+    hashes = _synthetic_denied_hashes(expired + live)
+    for h in hashes:
+        adapter._record_rejection(h)
+    now = time.monotonic()
+    for h in hashes[:expired]:
+        adapter._reject_deadlines[h] = now - 1.0
+    for h in hashes[expired:]:
+        adapter._reject_deadlines[h] = now + adapter._reject_cooldown_s
+    return hashes
+
+
+@pytest.mark.asyncio
+async def test_a3_12_cooldown_map_stays_bounded_after_cleanup_tick(monkeypatch):
+    """4.2(a): denies from N distinct hashes spread beyond the window; after a
+    cleanup tick the map holds only the entries still inside the window."""
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_A)
+    monkeypatch.setenv("HERMES_RETICULUM_REJECT_COOLDOWN_S", "300")
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+
+    # Seed 500 synthetic cooldown entries: 400 already expired, 100 live.
+    hashes = _seed_cooldowns(adapter, expired=400, live=100)
+    live = hashes[400:]
+    assert len(adapter._reject_deadlines) == 500
+
+    adapter._prune_reject_cooldowns()
+
+    assert len(adapter._reject_deadlines) == 100
+    assert set(adapter._reject_deadlines) == set(live)
+    # Live entries must still be cooldown-suppressed; expired ones not.
+    now = time.monotonic()
+    assert all(adapter._cooldown_suppressed(h, now) for h in live)
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a3_13_deny_flood_does_not_grow_allowed_message_cost(monkeypatch):
+    """4.2(b): a flood of denies from many hashes (each deny followed by a
+    cleanup pass) must not make an allowed message on the same drain task
+    cost more than a baseline allowed message. Deny cost is a map lookup plus
+    at most one heap push; pruning is scheduled, not per-deny scan work on
+    the drain task."""
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_A)
+    monkeypatch.setenv("HERMES_RETICULUM_REJECT_COOLDOWN_S", "300")
+    recorder = HandlerRecorder()
+    factory = CountingFactory()
+    adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
+    adapter.set_message_handler(recorder)
+    assert await adapter.connect() is True
+
+    # Baseline: one allowed message through the drain task.
+    t0 = time.perf_counter()
+    factory.transport._inbound_cb(PEER_A, "baseline")
+    assert await _wait_for(lambda: len(recorder.events) == 1)
+    baseline = time.perf_counter() - t0
+
+    # Flood: 300 distinct denied peers, each with a cleanup tick interleaved.
+    flood0 = time.perf_counter()
+    for h in _synthetic_denied_hashes(300):
+        factory.transport._inbound_cb(h, "flood")
+    await _settle(1.0)
+    flood = time.perf_counter() - flood0
+
+    # Allowed message AFTER the flood: must land as fast as the baseline
+    # (generous bound: the drain task must not have accumulated per-deny scan
+    # work; a full-map scan per deny would show up here).
+    assert len(recorder.events) == 1
+    assert len(adapter._transport.sent) == 300, "each flooded peer got one rejection"
+    t1 = time.perf_counter()
+    factory.transport._inbound_cb(PEER_A, "after flood")
+    assert await _wait_for(lambda: len(recorder.events) == 2)
+    after = time.perf_counter() - t1
+    assert after < max(baseline * 10, 1.0), (
+        f"allowed message slowed after the flood: baseline={baseline:.3f}s "
+        f"after={after:.3f}s (flood window {flood:.3f}s)"
+    )
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a3_14_cleanup_task_prunes_while_adapter_is_idle(monkeypatch):
+    """4.2(c): with NO inbound traffic at all, the dedicated cleanup task still
+    removes expired entries while the queue stays empty."""
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_A)
+    monkeypatch.setenv("HERMES_RETICULUM_REJECT_COOLDOWN_S", "300")
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+    assert adapter._cleanup_task is not None and not adapter._cleanup_task.done()
+
+    # Seed entries whose deadlines are already in the past; the adapter
+    # receives no inbound events after that.
+    _seed_cooldowns(adapter, expired=20, live=0)
+
+    # Shorten only the loop period so the next tick arrives promptly. The
+    # seeded deadlines are already behind the real monotonic clock, so the
+    # tick prunes them with no help from the drain task.
+    #
+    # Do NOT freeze time.monotonic here. The asyncio event loop reads its own
+    # clock through the same function, so a constant makes _run_once compute a
+    # fresh positive timeout on every pass and no timer callback ever fires:
+    # the task under test never wakes and the test hangs instead of failing.
+    monkeypatch.setattr(adapter, "_reject_cooldown_period", lambda: 0.05)
+
+    assert await _wait_for(lambda: len(adapter._reject_deadlines) == 0, timeout=10.0), (
+        "cleanup task must prune expired entries on an idle adapter"
+    )
+    cleanup_task = adapter._cleanup_task
+    await adapter.disconnect()
+    assert cleanup_task.cancelled()
+    assert adapter._cleanup_task is None
+
+
+# ── A3 4.5 / criterion 10: gateway desync signal (D7) ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a3_15_gateway_deny_of_admitted_peer_gets_canned_reply(monkeypatch, caplog):
+    """Criterion 10: the adapter admits a peer, the gateway authz layer then
+    denies the delivered event; the adapter logs a desync line naming the
+    gateway deny and sends the canned reply via the transport seam."""
+    caplog.set_level(logging.WARNING)
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_B)
+    factory = CountingFactory()
+    adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
+    adapter.set_message_handler(GatewayAuthzDenier())
+    assert await adapter.connect() is True
+
+    factory.transport._inbound_cb(PEER_B, "I passed the adapter gate")
+    assert await _wait_for(lambda: any(
+        dest == PEER_B and text == adapter.REJECTION_TEXT
+        for dest, text in adapter._transport.sent
+    ))
+    assert any(
+        "gateway desync" in record.getMessage().lower()
+        for record in caplog.records
+    ), "desync line naming the gateway deny must be logged"
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a3_16_gateway_deny_respects_cooldown(monkeypatch):
+    """Criterion 10 qualifier: the D7 reply obeys the same cooldown — a second
+    gateway deny inside the window logs but sends nothing."""
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_B)
+    monkeypatch.setenv("HERMES_RETICULUM_REJECT_COOLDOWN_S", "300")
+    factory = CountingFactory()
+    adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
+    adapter.set_message_handler(GatewayAuthzDenier())
+    assert await adapter.connect() is True
+
+    factory.transport._inbound_cb(PEER_B, "first")
+    assert await _wait_for(lambda: len(adapter._transport.sent) == 1)
+    factory.transport._inbound_cb(PEER_B, "second")
+    await _settle()
+    assert len(adapter._transport.sent) == 1
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a3_17_gateway_deny_in_empty_allowlist_boot_is_silent(monkeypatch, caplog):
+    """Criterion 10 qualifier: D6 suppression applies to the desync path too —
+    but an empty-allowlist boot never admits anyone, so this exercises the
+    allow-all-open boot with the gateway denying: D6 checks CLOSED mode only,
+    so the canned reply still fires in open mode."""
+    caplog.set_level(logging.WARNING)
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOW_ALL", "true")
+    factory = CountingFactory()
+    adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
+    adapter.set_message_handler(GatewayAuthzDenier())
+    assert await adapter.connect() is True
+
+    factory.transport._inbound_cb(PEER_B, "open mode, gateway denies")
+    assert await _wait_for(lambda: len(adapter._transport.sent) == 1)
+    assert adapter._transport.sent == [(PEER_B, adapter.REJECTION_TEXT)]
     await adapter.disconnect()
