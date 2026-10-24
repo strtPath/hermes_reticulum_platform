@@ -36,9 +36,13 @@ already implements fail-closed semantics (allow-all is opt-in via
 
 ## 2. Rulings (user decisions, this draft)
 
-- D1 Single gate. Exactly one gate lets a peer talk to the LLM: the user's hash in
-  Hermes' .env (`HERMES_RETICULUM_ALLOWED_USERS`). That env is the single source of
-  truth. The gateway's generic per-platform allowed-users list is NOT a second, separate
+- D1 Single gate. Exactly one gate lets a peer talk to the LLM: the user's hash, read
+  profile-scoped from `HERMES_RETICULUM_ALLOWED_USERS` via `platform_gate_env` (the
+  gateway's multiplex-safe per-profile reader). In a single-profile deployment that
+  resolves to the `.env`; under `gateway.multiplex_profiles` each profile may bridge its
+  own value from its config.yaml — so two profiles on one box carry different ACLs (and,
+  with the per-profile identity knobs, separate mesh identities). That scoped value is
+  the single source of truth. The gateway's generic per-platform allowed-users list is NOT a second, separate
   gate; the gateway authz layer reads the same env values (it already does, via the
   registration fields). No peer must pass two independent lists.
 - D2 Adapter owns the rejection send. The adapter denies AND the adapter sends the
@@ -48,6 +52,15 @@ already implements fail-closed semantics (allow-all is opt-in via
   `HERMES_RETICULUM_ALLOW_ALL=true`. This aligns the adapter with `core/acl.py` and the
   control server's acl mode (which already defaults to closed); the adapter's current
   "None allowlist -> allow-all -> defer to gateway" behavior is removed.
+- AMENDMENT (owner ruling, 2026-10-24): D1/I3 are amended to require PROFILE-SCOPED
+  reads, not a process-global `.env`. Rationale — per-profile Reticulum identity and
+  per-profile ACL is an intended goal (each Hermes profile = one mesh identity peers
+  talk to individually), and the mesh leans TCP transports, so co-resident multi-profile
+  bridges are the target topology. This supersedes the earlier same-day reading of the
+  ACL knobs as `.env`-only, and aligns with spec.md:99-101 ("never `os.getenv` directly")
+  and spec.md:17.5. The single source of truth is the PROFILE-SCOPED config
+  (via `platform_gate_env`); every A3 reader calls `AccessControl.parse_allow_all` etc.
+  through it so the adapter gate and gateway authz gate agree by construction (D7).
 - D4 Throttle. Per-destination rejection cooldown, default 5 minutes, env
   `HERMES_RETICULUM_REJECT_COOLDOWN_S`. During cooldown, later messages from the same
   peer are still denied but silently suppressed: log the deny, send nothing. The
@@ -75,8 +88,9 @@ already implements fail-closed semantics (allow-all is opt-in via
 - I2 (zero model involvement): the denial path calls no gateway handler, no session, no
   LLM. The reply is a literal string constant, not model output.
 - I3 (single truth): exactly one authorization decision is made per inbound from exactly
-  one source of truth (`HERMES_RETICULUM_ALLOWED_USERS` / `HERMES_RETICULUM_ALLOW_ALL` in
-  Hermes' .env). The gateway-side re-check must agree with the adapter gate by
+  one source of truth (`HERMES_RETICULUM_ALLOWED_USERS` / `HERMES_RETICULUM_ALLOW_ALL`,
+  read profile-scoped via `platform_gate_env`; single-profile == `.env`, multiplex ==
+  per-profile bridged values). The gateway-side re-check must agree with the adapter gate by
   construction (same envs); disagreement is a bug, logged as such (D7).
 - I4 (bandwidth): at most one rejection per cooldown window per destination.
 

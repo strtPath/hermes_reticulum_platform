@@ -23,10 +23,15 @@ Foundation stage (design: docs/spec-reticulum-platform-adapter.md):
 import asyncio
 import contextlib
 import datetime
+import heapq
 import inspect
 import logging
+import math
+import os
 import threading
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Protocol, runtime_checkable
 
 from gateway.config import Platform
@@ -34,6 +39,7 @@ from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 
+from hermes_reticulum.core.acl import AccessControl
 from hermes_reticulum.plugin import delivery
 from hermes_reticulum.plugin.identity import (
     IdentityMap,
@@ -42,6 +48,23 @@ from hermes_reticulum.plugin.identity import (
 from hermes_reticulum.plugin.transport import ReticulumTransport
 
 logger = logging.getLogger("hermes_reticulum.adapter")
+
+# A3 (docs/specs/adapter/a3-spec.md): the canned rejection. A literal string
+# constant, never model output (I2). It carries no identity and no explanation
+# (spec section 6 out-of-scope).
+REJECTION_TEXT = "⛔ Access not authorized."
+
+# A3 4.2: default per-destination rejection cooldown, and the bound on the
+# cooldown-cleanup loop period (capped at the cooldown window, spec 4.2).
+REJECT_COOLDOWN_DEFAULT_S = 300.0
+REJECT_CLEANUP_PERIOD_S = 60.0
+
+# Part C (Greptile P1-2/P1-3): the rejection send runs on a DEDICATED single
+# worker with a BOUNDED queue, so a flood of denied peers can never starve
+# allowed replies (replies never wait behind the rejection backlog). When the
+# queue is full the rejection is dropped — the cooldown is already armed, so
+# the peer stays silent for the whole window regardless.
+REJECT_QUEUE_MAX = 8
 
 
 @runtime_checkable
@@ -176,6 +199,8 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
     # silently succeeded would let the consumer believe its edits landed.
     supports_status_text = False
 
+    REJECTION_TEXT = REJECTION_TEXT
+
     # The mesh can start a fresh turn after a previous one ended.
     supports_async_delivery = True
     # LXMF over radio benefits from chunking; the gateway otherwise truncates
@@ -270,6 +295,27 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         # write to ``adapter._names[...]`` directly.
         self._identity = IdentityMap()
 
+        # A3 (docs/specs/adapter/a3-spec.md): gate decision is core/acl.py
+        # AccessControl behind the seam (4.1); cooldown state lives on the
+        # adapter, expiry-ordered (4.2), pruned by a dedicated task.
+        self._acl = self._build_access_control()
+        self._reject_cooldown_s = self._validate_reject_cooldown()
+        self._reject_deadlines: dict[str, float] = {}
+        self._reject_heap: list[tuple[float, str]] = []
+        self._cleanup_task = None
+        self._cleanup_stop = asyncio.Event()
+
+        # Part C (Greptile P1-2/P1-3): rejection-send lifecycle. A bounded queue
+        # fed by _send_rejection, drained by a single worker task onto a
+        # DEDICATED single-thread executor — kept entirely apart from reply
+        # traffic so a flood of denied peers can never starve allowed replies.
+        # Created in connect(), torn down in disconnect().
+        self._reject_queue: asyncio.Queue | None = None
+        self._reject_in_flight: set[asyncio.Future] = set()
+        self._reject_stop = asyncio.Event()
+        self._reject_sender_task: asyncio.Task | None = None
+        self._reject_executor: ThreadPoolExecutor | None = None
+
     @property
     def name(self) -> str:
         return "Reticulum"
@@ -324,7 +370,31 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         transport.start()
         self._transport = transport
         self._drain_task = asyncio.create_task(self._drain_loop())
+        # A3 4.2: dedicated cooldown-cleanup task — prunes expired rejection
+        # entries on its own schedule, independent of inbound traffic.
+        # Clear the stop-event first (P1-1): disconnect() sets it on teardown,
+        # and a reconnect must not leave the new task exiting immediately —
+        # that would strand _reject_deadlines/_reject_heap growth (Greptile P1-1).
+        self._cleanup_stop.clear()
+        self._cleanup_task = asyncio.create_task(self._prune_reject_cooldowns_loop())
+        # Part C: the rejection worker + its dedicated executor are per-connect.
+        self._reject_stop.clear()
+        self._reject_queue = asyncio.Queue(maxsize=REJECT_QUEUE_MAX)
+        self._reject_in_flight = set()
+        self._reject_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="reject"
+        )
+        self._reject_sender_task = asyncio.create_task(self._reject_sender_loop())
         self._mark_connected()
+        if self._acl.mode == "closed":
+            # A3 4.4: closed default with nothing allowlisted — a misconfigured
+            # boot; name the env var the operator must set.
+            logger.warning(
+                "Reticulum: allowlist is empty and HERMES_RETICULUM_ALLOW_ALL is "
+                "not set — the adapter denies every peer and sends no rejection. "
+                "Set HERMES_RETICULUM_ALLOWED_USERS (or opt into "
+                "HERMES_RETICULUM_ALLOW_ALL=true) to admit peers."
+            )
         logger.info(
             "Reticulum adapter connected (display name %s, announce interval %ss)",
             self.display_name, self.announce_interval * 60,
@@ -350,15 +420,42 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop the drain task and the transport. Safe to call before connect."""
         self._mark_disconnected()
+        # Stop pulling new rejections FIRST (so nothing new is submitted), then
+        # wait for what already went to the executor, then shut it down. A
+        # rejection send counts in _sends_in_flight like any other, so the idle
+        # wait below covers it with no new machinery (Part C, P1-3).
+        if self._reject_sender_task is not None:
+            self._reject_stop.set()
+            self._reject_sender_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._reject_sender_task
+            self._reject_sender_task = None
+        if self._reject_queue is not None:
+            pending = self._reject_queue.qsize()
+            if pending:
+                # Bounded queue dropped, not drained: the cooldowns were already
+                # armed, so those peers stay silent regardless.
+                logger.debug("Reticulum: dropping %d queued rejection(s)", pending)
+            self._reject_queue = None
         # Wait for any in-flight send to finish before tearing the transport
         # down. send_to() runs in a worker thread; stopping the transport under
         # it makes an in-flight reply fail after its connection check passed.
+        # (Covers already-submitted rejection sends too.)
         await self._await_sends_idle()
         if self._drain_task is not None:
             self._drain_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._drain_task
             self._drain_task = None
+        if self._cleanup_task is not None:
+            self._cleanup_stop.set()
+            self._cleanup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._cleanup_task
+            self._cleanup_task = None
+        if self._reject_executor is not None:
+            self._reject_executor.shutdown(wait=True)
+            self._reject_executor = None
         if self._transport is not None:
             with contextlib.suppress(Exception):
                 self._transport.stop()
@@ -434,17 +531,13 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         source_hash, text = self._normalize_inbound(event)
         if source_hash is None:
             # Malformed inbound: drop with a log line and no reply
-            # (spec section 14).
+            # (spec section 14; A3 D8 keeps this silent-drop path).
             logger.debug("Reticulum: dropping unparseable inbound %r", event)
             return
-        # Spec section 14: also drop here if the source is not in the allowlist
-        # (the allowlist comes from the platform gate env, see registration.py).
-        allowlist = self._allowlist()
-        if allowlist and not self._in_allowlist(source_hash, allowlist):
-            logger.debug(
-                "Reticulum: dropping inbound from unallowed peer %r",
-                source_hash[:8] if isinstance(source_hash, str) else "?",
-            )
+        # A3 gate (spec 4.1): core/acl.py AccessControl decides — blocklist
+        # priority, allow-all only on explicit opt-in, closed default (D3).
+        if not self._acl.is_allowed(source_hash):
+            await self._handle_denied_inbound(source_hash)
             return
         source = self.build_source(
             chat_id=source_hash,
@@ -462,6 +555,31 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         )
         await self.deliver_inbound(event_obj)
 
+    async def _handle_denied_inbound(self, source_hash: str) -> None:
+        """A3 deny path (spec 4.1/4.2/4.3, D4/D5/D6).
+
+        Log host-local with the FULL source hash and the message text never.
+        D6: a closed boot with an empty allowlist replies to nobody.
+        D4: at most one canned rejection per destination per window.
+        """
+        logger.info(
+            "Reticulum: access denied from %s (not permitted by the ACL)",
+            source_hash,
+        )
+        if self._acl.mode == "closed":
+            logger.debug(
+                "Reticulum: rejection suppressed for %s (empty allowlist, D6)",
+                source_hash,
+            )
+            return
+        if self._cooldown_suppressed(source_hash, time.monotonic()):
+            logger.info(
+                "Reticulum: rejection to %s suppressed by cooldown window",
+                source_hash,
+            )
+            return
+        await self._send_rejection(source_hash)
+
     async def deliver_inbound(self, event) -> None:
         """Hand one inbound event to the gateway's message handler.
 
@@ -471,13 +589,35 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         the base class happens to provide them breaks silently — inbound goes
         deaf — on a gateway that renames either. Falling back to the inherited
         call keeps compatibility with a gateway that supplies its own handler.
+
+        A3 4.5 (D7): the delivery outcome is inspected, not discarded. The
+        gateway's ``handle_message`` marks the event with ``_gateway_accepted``
+        (base.py: False when its own authz/ingress gate dropped the event,
+        True once the event is claimed or queued for a session); a deny there
+        is a desync against the adapter gate, so the adapter logs it and sends
+        the canned rejection through the transport seam under the same D4/D6
+        rules. A custom handler's own falsy return is treated the same way.
         """
+        source_hash = getattr(getattr(event, "source", None), "user_id", None)
         if self._message_handler is not None:
             result = self._message_handler(event)
             if inspect.isawaitable(result):
-                await result
+                result = await result
+            if source_hash and result is not None and not result:
+                await self._note_gateway_desync(source_hash)
             return
         await self.handle_message(event)
+        if source_hash and getattr(event, "_gateway_accepted", True) is False:
+            await self._note_gateway_desync(source_hash)
+
+    async def _note_gateway_desync(self, source_hash: str) -> None:
+        """A3 4.5: log the gateway deny and reply per D7 (cooldown + D6 apply)."""
+        logger.warning(
+            "Reticulum: gateway desync — adapter admitted %s but the gateway "
+            "authz layer denied the delivered event",
+            source_hash,
+        )
+        await self._handle_denied_inbound(source_hash)
 
     def set_message_handler(self, handler) -> None:
         """Install the gateway's inbound handler (``MessageEvent`` in).
@@ -819,33 +959,177 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
             name = self._identity.get_name(chat_id, str(chat_id))
         return {"name": name, "type": "dm"}
 
-    # ── Access control helpers (spec section 7) ─────────────────────────
+    # ── Access control helpers (A3 spec docs/specs/adapter/a3-spec.md) ───
 
-    def _allowlist(self) -> list | None:
-        """Read the allowlist from the platform gate env (multiplex-safe).
+    def _build_access_control(self) -> AccessControl:
+        """Construct the gate decision from the platform gate env (A3 4.1).
 
-        Returns None when the allowlist is unset/empty (allow-all or no
-        allowlist configured — the gateway's authz layer handles the
-        allow-all default, see ``authz_mixin.py``). Returns a list of
-        raw hex hashes (not normalized) when set.
+        ``AccessControl`` owns the precedence: blocklist outranks everything,
+        allow-all only on an explicit opt-in, closed default otherwise (D3).
+        The injected reader is the gateway's ``platform_gate_env`` so every ACL
+        knob comes from the SAME profile-scoped source the registration/authz
+        gate uses (D1, spec.md:99-101). One reader means the two gates agree by
+        construction, so there is no second reader to reconcile afterwards — the
+        old compare-and-override block is gone (a single reader + one shared
+        parser, A3 4.1). Standalone/CI-without-a-gateway falls back to
+        ``os.getenv`` (the default reader) and behaviour is unchanged.
         """
         try:
             from gateway.platforms._shared import platform_gate_env
-            raw = platform_gate_env("HERMES_RETICULUM_ALLOWED_USERS", "")
+            return AccessControl(get_env=platform_gate_env)
         except ImportError:
-            return None
-        if not raw.strip():
-            return None
-        return [h.strip() for h in raw.split(",") if h.strip()]
+            return AccessControl()
 
-    @staticmethod
-    def _in_allowlist(destination_hash: str, allowlist: list) -> bool:
-        """Check ``destination_hash`` against a raw allowlist (colon/space
-        tolerant, matching the ACL's ``_normalize_hash`` behaviour)."""
-        def norm(h):
-            return h.strip().lower().replace(" ", "").replace(":", "")
-        target = norm(destination_hash) if isinstance(destination_hash, str) else ""
-        return any(norm(h) == target for h in allowlist)
+    def _validate_reject_cooldown(self) -> float:
+        """Read HERMES_RETICULUM_REJECT_COOLDOWN_S (4.2). Invalid or
+        non-positive values clamp to the default instead of crashing."""
+        try:
+            from gateway.platforms._shared import platform_gate_env
+            raw = platform_gate_env("HERMES_RETICULUM_REJECT_COOLDOWN_S", "")
+        except ImportError:
+            raw = os.environ.get("HERMES_RETICULUM_REJECT_COOLDOWN_S", "")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return REJECT_COOLDOWN_DEFAULT_S
+        if not math.isfinite(value) or value <= 0:
+            return REJECT_COOLDOWN_DEFAULT_S
+        return value
+
+    def _reject_cooldown_period(self) -> float:
+        """Cleanup loop period: bounded so it never exceeds the window (4.2)."""
+        return min(REJECT_CLEANUP_PERIOD_S, self._reject_cooldown_s)
+
+    def _cooldown_suppressed(self, source_hash: str, now: float) -> bool:
+        """True when a rejection to ``source_hash`` is inside its window."""
+        deadline = self._reject_deadlines.get(source_hash)
+        return deadline is not None and deadline > now
+
+    def _prune_reject_cooldowns(self) -> int:
+        """Pop expired cooldown entries (4.2).
+
+        Cost is O(expired), not O(all peers): the map is keyed by expiry, and
+        the heap orders entries by expiry so the bound is known in O(1). The
+        heap and map are updated atomically in ``_record_rejection``, so the
+        heap is the complete authority on what is live; there is deliberately
+        NO fallback full-map scan (P2-4) — it could never find an entry the
+        heap missed, it just paid an O(all peers) pass every tick. Stale heap
+        entries (a deadline rewritten externally, e.g. a test fast-forwarding
+        the clock) are discarded lazily on pop and never cost a scan. Runs on
+        the cleanup task, not the drain task; the drain task's per-deny cost
+        stays a dict lookup plus one heap push.
+        """
+        now = time.monotonic()
+        count = 0
+        while self._reject_heap and self._reject_heap[0][0] <= now:
+            deadline, source_hash = heapq.heappop(self._reject_heap)
+            if self._reject_deadlines.get(source_hash) == deadline:
+                del self._reject_deadlines[source_hash]
+                count += 1
+            else:
+                # A stale heap entry for a rewritten deadline: the live deadline
+                # in the map belongs to a newer heap entry, so this pop is an
+                # overcount, not a drop. (Kept under DEBUG: silent in prod.)
+                logger.debug("Reticulum: dropped stale cooldown heap entry for %s", source_hash)
+        return count
+
+    def _record_rejection(self, source_hash: str) -> None:
+        """Arm the cooldown window for ``source_hash`` (4.2)."""
+        deadline = time.monotonic() + self._reject_cooldown_s
+        self._reject_deadlines[source_hash] = deadline
+        heapq.heappush(self._reject_heap, (deadline, source_hash))
+
+    async def _prune_reject_cooldowns_loop(self) -> None:
+        """Dedicated cleanup task (4.2): prunes expired cooldown entries on
+        its own schedule, independent of inbound traffic and the drain task.
+
+        The wait is a stop-event race, not a bare sleep: disconnect() sets the
+        event and the task returns on its own, so teardown never has to
+        interrupt a timer that a test patched."""
+        while not self._cleanup_stop.is_set():
+            try:
+                await asyncio.wait_for(self._cleanup_stop.wait(),
+                                       timeout=self._reject_cooldown_period())
+            except TimeoutError:
+                pass
+            self._prune_reject_cooldowns()
+
+    async def _send_rejection(self, source_hash: str) -> None:
+        """Enqueue the canned rejection (4.3) — never blocks the drain task.
+
+        The blocking ``send_to`` runs on a DEDICATED single-thread executor
+        (Part C, P1-2/P1-3), not the shared default pool replies use, so a flood
+        of denied peers cannot starve an allowed reply. The queue is bounded
+        (``REJECT_QUEUE_MAX``): on overflow the rejection is dropped with a
+        warning. That is the deliberate degradation — the cooldown was already
+        armed, so the peer stays silent for the whole window either way, and a
+        reply must never queue behind the rejection backlog.
+        """
+        self._record_rejection(source_hash)
+        queue = self._reject_queue
+        if queue is None:
+            # Never connected (or already torn down): nothing to schedule on.
+            return
+        try:
+            queue.put_nowait(source_hash)
+        except asyncio.QueueFull:
+            logger.warning(
+                "Reticulum: rejection queue full (%d) dropping rejection to %s",
+                REJECT_QUEUE_MAX, source_hash,
+            )
+
+    async def _reject_sender_loop(self) -> None:
+        """Single worker draining the bounded rejection queue (Part C).
+
+        One hash in, one blocking ``send_to`` onto the dedicated executor. The
+        send is counted in ``_sends_in_flight`` (via ``_send_lock``) and held in
+        ``_reject_in_flight`` until it finishes — so a rejection send is visible
+        to ``disconnect()``'s idle wait instead of being fire-and-forget. A
+        dedicated one-worker executor means P1-2's unbounded backlog is gone:
+        the queue caps what can wait, and there is only ever one thread to run
+        on anyway.
+        """
+        loop = asyncio.get_running_loop()
+        queue = self._reject_queue
+        if queue is None:  # pragma: no cover - worker only exists after connect
+            return
+        while not self._reject_stop.is_set():
+            source_hash = await queue.get()
+            transport = self._transport
+            if transport is None:
+                # Transport torn down while this was queued; drop the send.
+                continue
+            try:
+                inner = loop.run_in_executor(
+                    self._reject_executor, transport.send_to,
+                    source_hash, self.REJECTION_TEXT,
+                )
+                with self._send_lock:
+                    self._sends_in_flight += 1
+                self._reject_in_flight.add(inner)
+                inner.add_done_callback(self._reject_send_done)
+                # Shield keeps the future alive under cancellation: disconnect()
+                # cancels this worker task mid-send, and without the shield the
+                # cancel ALSO cancels the run_in_executor future, so the
+                # done-callback zeroes _sends_in_flight before the worker
+                # thread finishes and shutdown(wait=True) would block the whole
+                # event loop until send_to() returns (Part C, P1 shutdown pause).
+                # Shielded, the callback fires only on real completion, so the
+                # idle wait below holds until the thread is done.
+                await asyncio.shield(inner)
+            except asyncio.CancelledError:
+                # disconnect(): the already-submitted send keeps running on its
+                # thread; the done-callback still decrements the count. Re-raise
+                # so the worker task ends (no new pulls).
+                raise
+
+    def _reject_send_done(self, fut: asyncio.Future) -> None:
+        """Rejection send finished (loop thread). Releases its accounting."""
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            fut.result()
+        self._reject_in_flight.discard(fut)
+        with self._send_lock:
+            self._sends_in_flight -= 1
 
     # ── Typing ───────────────────────────────────────────────────────────
 

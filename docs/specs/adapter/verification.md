@@ -46,10 +46,20 @@ Merged in PR #13 (squash `efef313`, base `dev`).
 
 ## Card A3: Automated ACL rejection
 
+Spec: `docs/specs/adapter/a3-spec.md` (the implementing ruling record).
+
 | # | Acceptance criterion | Evidence | Result | Gap |
 |---|---|---|---|---|
-| 1 | Unauthorized peer gets `⛔ Access not authorized.` and nothing else |  |  |  |
-| 2 | Rejection is a deterministic gate before the model (no prompt-injection path) |  |  |  |
+| 1 | Unauthorized peer gets `⛔ Access not authorized.` and nothing else | `test_a3_01_unlisted_peer_receives_canned_rejection` | pass | - |
+| 2 | Rejection is a deterministic gate before the model (no prompt-injection path) | `test_a3_02_rejection_logs_never_carry_peer_message_text` | pass | - |
+| 3 | Cooldown: repeat denies inside 300 s do not re-send; the reply returns after expiry | `test_a3_06_cooldown_suppresses_second_rejection_then_resumes` | pass | - |
+| 4 | Closed default: unset/empty gate denies, allow-all only by explicit opt-in | `test_a3_03_unset_allowlist_denies_everyone_with_no_reply`, `test_a3_04_empty_allowlist_string_also_suppresses`, `test_a3_05_allow_all_admits_everyone_with_zero_rejections` | pass | - |
+| 5 | Blocklist outranks allow-all; a blocklist deny is a full deny | `test_a3_08_blocklist_outranks_allowlist`, `test_a3_09_blocklist_deny_in_open_mode_is_full_deny` | pass | - |
+| 6 | Malformed inbound is dropped before ACL evaluation (ordering rule) | `test_a3_10_malformed_inbound_stays_silent_drop` | pass | - |
+| 7 | Cooldown storage is expiry-ordered and bounded by the window | `test_a3_12_cooldown_map_stays_bounded_after_cleanup_tick` | pass | - |
+| 8 | Deny flood does not raise per-allowed-message cost | `test_a3_13_deny_flood_does_not_grow_allowed_message_cost` | pass | - |
+| 9 | Dedicated cleanup task runs while the adapter is idle; cancelled on disconnect | `test_a3_14_cleanup_task_prunes_while_adapter_is_idle` | pass | - |
+| 10 | Gateway deny desync: adapter logs the desync line and sends the canned reply | `test_a3_15_gateway_deny_of_admitted_peer_gets_canned_reply`, `test_a3_16_gateway_deny_respects_cooldown`, `test_a3_17_gateway_deny_in_empty_allowlist_boot_is_silent` | pass | - |
 
 ## Card A4: Command feedback + terse render + send truth
 
