@@ -10,6 +10,7 @@ No test here asserts on platform lists or command counts (spec section 10).
 """
 
 import asyncio
+import heapq
 import logging
 import os
 import sys
@@ -22,7 +23,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import pytest
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 
+from hermes_reticulum.core.acl import AccessControl
 from hermes_reticulum.plugin.adapter import (
+    REJECT_QUEUE_MAX,
     FakeTransport,
     ReticulumPlatformAdapter,
     Transport,
@@ -1039,21 +1042,31 @@ async def test_a3_11_rejection_gate_matching_is_case_and_colon_tolerant(monkeypa
 
 
 def _synthetic_denied_hashes(n):
-    return [("%08x" % i) * 4 for i in range(1, n + 1)]
+    return [(f"{i:08x}") * 4 for i in range(1, n + 1)]
 
 
 def _seed_cooldowns(adapter, expired: int, live: int) -> list[str]:
-    """Seed the cooldown state through the adapter's own record path (heap +
-    map stay consistent), then fast-forward the fake clock: expired entries
-    pushed past the window, live entries left inside it."""
+    """Seed the cooldown state with the heap and map kept consistent, then
+    fast-forward the fake clock: expired entries pushed past the window, live
+    entries left inside it.
+
+    The heap is the authority for what is live (P2-4: the prune is O(expired),
+    heap-only — no full-map scan). So the seeded deadlines are written to BOTH
+    the map and the heap; seeding only the map would leave the heap holding the
+    original future deadline and the prune would correctly see nothing expired.
+    """
     hashes = _synthetic_denied_hashes(expired + live)
-    for h in hashes:
-        adapter._record_rejection(h)
     now = time.monotonic()
+    adapter._reject_deadlines.clear()
+    adapter._reject_heap.clear()
     for h in hashes[:expired]:
         adapter._reject_deadlines[h] = now - 1.0
     for h in hashes[expired:]:
         adapter._reject_deadlines[h] = now + adapter._reject_cooldown_s
+    # Rebuild the heap from the map so both structures agree on deadlines.
+    for h, deadline in adapter._reject_deadlines.items():
+        adapter._reject_heap.append((deadline, h))
+    heapq.heapify(adapter._reject_heap)
     return hashes
 
 
@@ -1113,7 +1126,16 @@ async def test_a3_13_deny_flood_does_not_grow_allowed_message_cost(monkeypatch):
     # (generous bound: the drain task must not have accumulated per-deny scan
     # work; a full-map scan per deny would show up here).
     assert len(recorder.events) == 1
-    assert len(adapter._transport.sent) == 300, "each flooded peer got one rejection"
+    # The rejection backlog is BOUNDED (Part C): the queue caps at
+    # REJECT_QUEUE_MAX and the single worker drains it, so under a 300-peer
+    # flood some rejections are dropped by design (the cooldown was still
+    # armed). What must hold: some were sent, none were enqueued unboundedly,
+    # and the flood never grew near the offered count.
+    sent = len(adapter._transport.sent)
+    assert 0 < sent <= 300, f"rejection sends looked wrong: {sent}"
+    if adapter._reject_queue is not None:
+        assert adapter._reject_queue.qsize() <= REJECT_QUEUE_MAX
+        assert sent < 300, "flood of 300 must overflow the bounded rejection queue"
     t1 = time.perf_counter()
     factory.transport._inbound_cb(PEER_A, "after flood")
     assert await _wait_for(lambda: len(recorder.events) == 2)
@@ -1220,4 +1242,198 @@ async def test_a3_17_gateway_deny_in_empty_allowlist_boot_is_silent(monkeypatch,
     factory.transport._inbound_cb(PEER_B, "open mode, gateway denies")
     assert await _wait_for(lambda: len(adapter._transport.sent) == 1)
     assert adapter._transport.sent == [(PEER_B, adapter.REJECTION_TEXT)]
+    await adapter.disconnect()
+
+
+# ── Part A (P1-1, P2-4) + Part B (single reader) + Part C (bounded worker) ─
+# Regression tests for the Greptile findings; each locks the contracted
+# behaviour so a later "optimisation" cannot silently reintroduce the bug.
+
+
+@pytest.mark.asyncio
+async def test_a3_15_reconnect_starts_fresh_cleanup_and_rejection_worker(monkeypatch):
+    """P1-1: a reconnect must start a FRESH cleanup task (stop cleared) and a
+    FRESH rejection worker. If the reconnect reused an already-set stop event,
+    the new cleanup task would exit on its first tick and cooldowns would never
+    be pruned again; the rejection stream would likewise stall."""
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_A)
+    monkeypatch.setenv("HERMES_RETICULUM_REJECT_COOLDOWN_S", "300")
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+
+    _seed_cooldowns(adapter, expired=0, live=5)
+    first_cleanup = adapter._cleanup_task
+    first_worker = adapter._reject_sender_task
+    assert first_worker is not None and not first_worker.done()
+
+    # The watcher's recovery path: tear down and re-initialise from scratch.
+    assert await adapter.connect(is_reconnect=True) is True
+
+    # Prior per-connect state was torn down...
+    assert first_cleanup is not None and first_cleanup.done()
+    assert first_worker is not None and first_worker.done()
+    # ...and a fresh worker lifecycle exists (own queue + executor + cleared stop).
+    assert adapter._cleanup_task is not None and not adapter._cleanup_task.done()
+    assert adapter._reject_sender_task is not None and not adapter._reject_sender_task.done()
+    assert adapter._reject_queue is not None
+    assert adapter._reject_executor is not None
+    assert adapter._reject_in_flight == set()
+
+    # The new cleanup task actually prunes (proves its stop event was cleared):
+    # seed expired entries on the new lifecycle and confirm they go.
+    _seed_cooldowns(adapter, expired=5, live=0)
+    monkeypatch.setattr(adapter, "_reject_cooldown_period", lambda: 0.05)
+    assert await _wait_for(lambda: len(adapter._reject_deadlines) == 0, timeout=10.0), (
+        "reconnect must leave the cleanup task armed so cooldowns keep pruning"
+    )
+    await adapter.disconnect()
+
+
+class _CountingDeadlines(dict):
+    """dict that counts full-map iterations (P2-4: the prune must not scan)."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.scans = {"items": 0, "values": 0, "keys": 0}
+
+    def items(self):
+        self.scans["items"] += 1
+        return super().items()
+
+    def values(self):
+        self.scans["values"] += 1
+        return super().values()
+
+    def keys(self):
+        self.scans["keys"] += 1
+        return super().keys()
+
+
+@pytest.mark.asyncio
+async def test_a3_16_prune_never_scans_live_peers(monkeypatch):
+    """P2-4: cleaning expired cooldowns costs O(expired), never a pass over the
+    whole map. The prune works off the heap (map lookups + deletes only); any
+    full-map iteration would trip the counters and fail here."""
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_A)
+    monkeypatch.setenv("HERMES_RETICULUM_REJECT_COOLDOWN_S", "300")
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+
+    _seed_cooldowns(adapter, expired=5, live=100)
+    wrapped = _CountingDeadlines(adapter._reject_deadlines)
+    adapter._reject_deadlines = wrapped
+
+    pruned = adapter._prune_reject_cooldowns()
+
+    assert pruned == 5
+    assert len(adapter._reject_deadlines) == 100
+    assert wrapped.scans == {"items": 0, "values": 0, "keys": 0}, (
+        "heap-only prune must not iterate the live peer map (P2-4)"
+    )
+    await adapter.disconnect()
+
+
+# ── Part B: one shared parser, injected profile-scoped reader ──────────────
+
+
+def test_acl_parse_allow_all_truthiness():
+    """The single parser accepts exactly the {true,1,yes,on} family and FAILS
+    CLOSED on anything else (including empty / unknown), no matter which reader
+    (env or profile scope) supplied the value."""
+    for truthy in ("true", "TRUE", " 1 ", "yes", "on", "ON"):
+        assert AccessControl.parse_allow_all(truthy) is True, repr(truthy)
+    for falsy in ("false", "0", "no", "off", "", None, "banana"):
+        assert AccessControl.parse_allow_all(falsy) is False, repr(falsy)
+
+
+def test_access_control_injected_reader_is_used():
+    """The config reader is injected, so the core never imports the gateway and
+    tests (and standalone use) can supply any (name, default) callable. The
+    injected reader wins over os.getenv by construction."""
+    reader_env = {
+        "HERMES_RETICULUM_ALLOW_ALL": "on",
+        "HERMES_RETICULUM_ALLOWED_USERS": "aabbccddeeff00112233445566778899",
+        "HERMES_RETICULUM_BLOCKED_USERS": "",
+    }
+    os.environ["HERMES_RETICULUM_ALLOW_ALL"] = "true"  # must be ignored
+    try:
+        acl = AccessControl(get_env=lambda name, default: reader_env.get(name, default))
+        assert acl.allow_all is True
+        assert acl.allowed_users == {"aabbccddeeff00112233445566778899"}
+        assert acl.blocked_users == set()
+    finally:
+        del os.environ["HERMES_RETICULUM_ALLOW_ALL"]
+    # And the default (no reader) still reads the environment.
+    acl = AccessControl()
+    assert acl.allow_all is False
+
+
+@pytest.mark.asyncio
+async def test_build_access_control_reads_profile_scoped_env(monkeypatch):
+    """Part B (spec.md:99-101): the gate reads ACL knobs through the SAME
+    profile-scoped reader the gateway authz side uses, never raw os.getenv.
+    A value resolvable only in profile scope (ALLOW_ALL=on, invisible to
+    os.getenv) must win; the old compare-and-override is gone."""
+    import gateway.platforms._shared as shared
+    from gateway.platforms._shared import platform_gate_env as real_gate_env
+
+    def fake_gate_env(name, default=""):
+        if name == "HERMES_RETICULUM_ALLOW_ALL":
+            return "on"  # present in profile scope, absent from os.environ
+        return real_gate_env(name, default)
+
+    monkeypatch.setattr(shared, "platform_gate_env", fake_gate_env)
+    adapter = make_adapter()
+    acl = adapter._build_access_control()
+    assert acl.allow_all is True
+    assert not os.environ.get("HERMES_RETICULUM_ALLOW_ALL"), (
+        "scenario must really be invisible to os.getenv"
+    )
+
+
+# ── Part C: dedicated bounded rejection worker + in-flight accounting ──────
+
+
+@pytest.mark.asyncio
+async def test_a3_17_rejection_send_uses_dedicated_executor_and_counts_in_flight(monkeypatch):
+    """Part C (Greptile P1-2/P1-3): a rejection send must run on the DEDICATED
+    single-thread executor (thread name 'reject-*'), NOT the shared pool that
+    replies use, and must be counted in _sends_in_flight + tracked in
+    _reject_in_flight so disconnect() waits for it instead of tearing the
+    transport down mid-send."""
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_A)
+    monkeypatch.setenv("HERMES_RETICULUM_REJECT_COOLDOWN_S", "300")
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+
+    started = threading.Event()
+    release = threading.Event()
+    seen_threads = []
+    orig = adapter._transport.send_to
+
+    def blocking_send(h, payload):
+        seen_threads.append(threading.current_thread().name)
+        started.set()
+        release.wait(timeout=5)
+        return orig(h, payload)
+
+    adapter._transport.send_to = blocking_send
+
+    denied = _synthetic_denied_hashes(1)[0]
+    adapter._transport._inbound_cb(denied, "deny")
+    assert await _wait_for(lambda: started.is_set(), timeout=5.0), (
+        "rejection send must actually start"
+    )
+
+    # While the blocking send is in flight it is counted and tracked, so a
+    # concurrent disconnect() would wait for it (it must never be dropped).
+    assert adapter._sends_in_flight >= 1
+    assert len(adapter._reject_in_flight) >= 1
+
+    release.set()
+    assert await _wait_for(lambda: adapter._sends_in_flight == 0, timeout=5.0)
+    assert await _wait_for(lambda: len(adapter._transport.sent) >= 1)
+    assert seen_threads and all(name.startswith("reject") for name in seen_threads), (
+        "rejection sends must run on the dedicated reject-* executor thread"
+    )
     await adapter.disconnect()

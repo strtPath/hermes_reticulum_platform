@@ -9,6 +9,7 @@ Supports:
 
 import logging
 import os
+from collections.abc import Callable
 
 logger = logging.getLogger("hermes_reticulum.acl")
 
@@ -26,23 +27,42 @@ class AccessControl:
       - HERMES_RETICULUM_BLOCKED_USERS=hex1,hex2 → blocklist
     """
 
-    def __init__(self):
+    # The one set of truthy values for HERMES_RETICULUM_ALLOW_ALL. Every reader
+    # goes through parse_allow_all: the env load here and the adapter's
+    # injected profile-scoped reader must agree, so selecting a profile cannot
+    # flip the meaning of the setting (A3 4.1).
+    ALLOW_ALL_TRUTHY = ("true", "1", "yes", "on")
+
+    def __init__(self, get_env: Callable[[str, str], str] | None = None):
+        # The config reader is injected, so this core module never imports the
+        # gateway. The adapter passes the gateway's profile-scoped
+        # ``platform_gate_env`` (multiplex-safe, spec.md:99-101); the default is
+        # plain ``os.getenv`` for standalone use and tests. Both share the same
+        # (name, default) call shape, so a reader can be swapped without the
+        # parse logic changing.
+        self._get = get_env if get_env is not None else os.getenv
         self._load_config()
 
+    @classmethod
+    def parse_allow_all(cls, raw: str | None) -> bool:
+        """Parse the allow-all setting; empty or unknown values stay closed."""
+        return str(raw or "").strip().lower() in cls.ALLOW_ALL_TRUTHY
+
     def _load_config(self):
-        """Load ACL config from environment variables."""
+        """Load ACL config from the injected reader (default: env vars)."""
         # Allow-all mode — FAIL CLOSED. Default is deny-by-default (allowlist
         # mode), matching README/env.example. Open mode must be opted into
         # explicitly with HERMES_RETICULUM_ALLOW_ALL=true.
-        allow_all = os.getenv("HERMES_RETICULUM_ALLOW_ALL", "false").lower()
-        self.allow_all = allow_all in ("true", "1", "yes")
+        self.allow_all = self.parse_allow_all(
+            self._get("HERMES_RETICULUM_ALLOW_ALL", "false")
+        )
 
         # Allowlist
-        allowed_raw = os.getenv("HERMES_RETICULUM_ALLOWED_USERS", "")
+        allowed_raw = self._get("HERMES_RETICULUM_ALLOWED_USERS", "")
         self.allowed_users: set[str] = self._parse_hash_set(allowed_raw)
 
         # Blocklist
-        blocked_raw = os.getenv("HERMES_RETICULUM_BLOCKED_USERS", "")
+        blocked_raw = self._get("HERMES_RETICULUM_BLOCKED_USERS", "")
         self.blocked_users: set[str] = self._parse_hash_set(blocked_raw)
 
         logger.info(

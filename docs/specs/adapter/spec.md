@@ -676,6 +676,13 @@ can attach to the shared RNS instance) remains open.
 > gate via `core/acl.py` `AccessControl`, closed default, per-destination rejection
 > cooldown, host-local full-hash deny logs, and the D7 gateway-desync signal. The text
 > below records the pre-A3 gap and stays as history.
+>
+> **Amended 2026-10-24 (owner ruling):** the ACL knobs are read PROFILE-SCOPED via
+> `platform_gate_env` (single-profile == the `.env`; multiplex == per-profile bridged
+> values) — a single process-global `.env` is the source only in single-profile
+> deployments. Per-profile Reticulum identity + per-profile ACL is an intended goal
+> (mesh leans TCP; co-resident multi-profile bridges are target). See the dated
+> review-amendment in a3-spec.md §2.
 
 > **Ruled 2026-09-30 (peer):** this stays true only as a description of the *implemented*
 > code. The decided behaviour is an **explicit automated rejection** like the original bridge

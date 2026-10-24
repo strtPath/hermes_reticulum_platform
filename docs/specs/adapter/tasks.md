@@ -32,6 +32,7 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A8 | Ship `approvals.timeout: 900` with LoRa rationale | A1 | mesh approvals survive LoRa latency | done |
 | A9 | P-5 `/retry`, P-6 adapter-built `/status`, P-13 command audit | A4 | commands listed in §19.2 respond on the mesh | open |
 | A10 | P-8 `/clarify` verification, adapter-side plumbing only if gateway lacks it | A4 | `/clarify` resolves or a findings doc proves the gateway gap | open |
+| A11 | Per-profile mesh identity + ACL profile-scoping: one shared parser; ACL + identity read profile-scoped via `platform_gate_env` | A3 | two profiles on one box carry different identities + trust lists; no raw `os.getenv` in the A3 read path | open |
 
 ## Where the moved sections live
 
@@ -222,6 +223,37 @@ absent").
 **Blocked by:** A4.
 **Acceptance:** Given `/clarify`-style output is possible on the mesh, When probed from source
 or a live run, Then either it works or a findings doc names the gateway gap precisely.
+
+## Card A11: Per-profile mesh identity + ACL profile-scoping
+
+**Build:** (owner amendment 2026-10-24; full text in the main checkout at
+`docs/owner-amendment-2026-10-24-acl-profile-scoping.md`.) Make the four
+`HERMES_RETICULUM_*` ACL knobs reliably profile-scoped: one shared
+`AccessControl.parse_allow_all` / `ALLOW_ALL_TRUTHY` (`{true,1,yes,on}`) used at
+every authorization-decision point; the A3 read path goes through
+`platform_gate_env` (multiplex-safe), never raw `os.getenv`; co-resident profiles can
+each carry their own identity (`RETICULUM_DISPLAY_NAME`, already profile-scoped) and
+their own trust list.
+**Spec basis:** owner amendment 2026-10-24; spec.md:99-101 (never raw `os.getenv`);
+spec.md:17.5 (config read via `get_scoped_secret`); a3-spec.md D1/I3 as amended
+2026-10-24. Supersedes the earlier same-day "ACL .env-only" reading (the mesh leans
+TCP; co-resident multi-profile bridges are the target topology, so a process-global
+`.env` cannot own per-profile trust).
+**Blocked by:** A3 (builds on the shipped gate; lands the P2-5 correction).
+**Acceptance:**
+- Given two Hermes profiles on one box, When each bridges different
+  `HERMES_RETICULUM_ALLOWED_USERS` from its config.yaml, Then each profile's adapter
+  admits only its own allowlist (no cross-profile leak).
+- Given `HERMES_RETICULUM_ALLOW_ALL=on` set in process env and, separately, in a
+  profile scope, When the adapter evaluates the same peer, Then both produce the SAME
+  verdict (the by-source asymmetry is gone).
+- Given the adapter running, When the A3 config read path is swept, Then no `os.getenv`
+  appears as the deciding source for the four ACL knobs.
+- Given `core/acl.py` imported without the gateway package, When `parse_allow_all` is
+  called with a reader injected by the adapter, Then the parse resolves (core stays
+  gateway-import-free; tests inject).
+
+**Status:** open.
 
 ## Branch and PR workflow
 
