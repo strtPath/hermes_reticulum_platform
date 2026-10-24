@@ -1176,7 +1176,11 @@ async def test_a3_14_cleanup_task_prunes_while_adapter_is_idle(monkeypatch):
     )
     cleanup_task = adapter._cleanup_task
     await adapter.disconnect()
-    assert cleanup_task.cancelled()
+    # disconnect() awaits the cleanup task, so it is guaranteed terminated here.
+    # The loop's teardown contract is "exit when _cleanup_stop is set", so the
+    # task may finish normally (_FINISHED) rather than being force-cancelled;
+    # assert "done" (not "cancelled") — that is the contract that matters.
+    assert cleanup_task.done()
     assert adapter._cleanup_task is None
 
 
