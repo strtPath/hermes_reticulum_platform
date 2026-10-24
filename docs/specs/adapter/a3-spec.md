@@ -327,3 +327,59 @@ Order in `_dispatch_inbound` stays: parse/normalize first, then ACL. Rationale:
 | Cooldown suppression log line (deny, no send) | Host-local log only | unit: second send within window asserts no outbound |
 | No gateway session, no model call | Absence of `deliver_inbound` call | unit: spy on deliver_inbound |
 | Control server `/status` acl mode | `closed`/`open` as today | existing `tests/test_control_server.py` acl tests stay green |
+
+## 10. Implementation notes (landed 2026-10-24, PR #16)
+
+The gate shipped in PR #16 (merge `5828f86`). This section records the shipped
+shape so code, spec, and docs stay in sync, and so card A11 — which builds on
+this gate — starts from the delivered model rather than the earlier draft.
+Deviations below are decisions, not drift.
+
+**Admission and parsing.** One shared parser is the single source of truth for
+an allow-all verdict at every decision point: `AccessControl.parse_allow_all`
+with `ALLOW_ALL_TRUTHY = {"true", "1", "yes", "on"}`. The adapter
+(`_build_access_control`) hands `AccessControl` an injected, profile-scoped
+reader (`platform_gate_env`, multiplex-safe; plain `os.getenv` only as the
+ImportError fallback when the gateway package is absent).
+`ControlServer._acl_mode()` (the `/status` acl field) uses
+`AccessControl.parse_allow_all` too, so the status report and the admission gate
+agree by construction — including `on`, which a duplicated local tuple
+mis-reported as closed. The old compare-and-override block is deleted.
+
+**Rejection send path (P1-2 / P1-3).** Rejections never run on the shared reply
+worker: they go through a dedicated `ThreadPoolExecutor(max_workers=1,
+thread_name_prefix="reject")` fronted by an `asyncio.Queue(maxsize=
+REJECT_QUEUE_MAX=8)`. `_send_rejection` never blocks the inbound drain task — it
+`put_nowait`; on `QueueFull` the rejection is dropped with a warning (the
+cooldown is already armed and the peer is silent either way; a reply must never
+queue behind the rejection backlog). In-flight rejection sends count into
+`_sends_in_flight` so the disconnect teardown's idle wait covers them. The
+worker is created per-connect (including `connect(is_reconnect=True)`) and torn
+down in `disconnect()`; at shutdown the bounded queue is dropped, not drained
+(logged at debug).
+
+**Disconnect must not pause the event loop.** `disconnect()` cancels the reject
+worker mid-send without cancelling the underlying `run_in_executor` future: the
+send is awaited through `asyncio.shield`. Without the shield, cancelling the
+worker task also cancelled the future, so its done-callback zeroed
+`_sends_in_flight` before the worker thread finished, `_await_sends_idle()`
+returned early, and `shutdown(wait=True)` blocked the whole event loop until
+`send_to()` returned (up to ~15 s on a missing path). Shielded, the callback
+fires only on real completion and disconnect waits for the thread.
+Regression-locked by `test_a3_18` (fails with the shield removed).
+
+**Cleanup-teardown contract.** The cooldown-cleanup task's teardown is "exit
+when `_cleanup_stop` is set", not "force-cancel": `disconnect()` awaits the task,
+which may finish normally (`_FINISHED`) rather than cancelled — an
+`asyncio.wait_for` whose stop-event resolves its inner future can return
+cleanly. Tests therefore assert the task is **done** after disconnect
+(`.done()`), never `.cancelled()` — the guarantee disconnect actually provides.
+Reconnect clears `_cleanup_stop` so a reconnect never inherits a dead
+task/worker (P1-1); the cooldown prune is heap-only, O(expired), with no
+full-map fallback scan (P2-4).
+
+**Flood behavior (observable).** With a bounded reject queue the old "one
+rejection per flooded peer" contract no longer holds: a 300-peer flood must
+overflow. Tests assert `0 < sent <= 300`, `sent < 300` (overflow happened),
+`qsize() <= REJECT_QUEUE_MAX`, and that an allowed message still lands after the
+flood.

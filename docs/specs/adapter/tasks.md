@@ -24,7 +24,7 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 |---|---|---|---|---|
 | A1 | Docs foundation: spec split, step cards, PII quarantine rule, findings docs, the registration `_bool_conv` fix | - | public sweep is clean; spec + cards reviewable | done |
 | A2 | Automatic per-conversation context discovery; silence the dead step POST | A1 | resolved window == live n_ctx, no pin; log noise stops | closed (PR #14, merged 2026-10-12) |
-| A3 | Automated ACL rejection (code gate, canned reply, zero model involvement) | A1 | unauthorized peer gets `⛔ Access not authorized.` and nothing else | done |
+| A3 | Automated ACL rejection (code gate, canned reply, zero model involvement) | A1 | unauthorized peer gets `⛔ Access not authorized.` and nothing else | closed (PR #16, merged 2026-10-24) |
 | A4 | Command feedback verification + terse render + send-failure truth | A1 | `/status`, `/resume`, `/new`-confirm all visibly answered on the phone | open |
 | A5 | `/new` ack names new session id + auto-title | A4 | peer can find the new session after `/new` | open |
 | A6 | Tool-call visibility (step pusher) + `/verbose` (default on) | A4 | a 22-tool turn is no longer silent; `/verbose off` truncates like the CLI | open |
