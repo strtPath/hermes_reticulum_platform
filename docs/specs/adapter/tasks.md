@@ -253,6 +253,32 @@ TCP; co-resident multi-profile bridges are the target topology, so a process-glo
   called with a reader injected by the adapter, Then the parse resolves (core stays
   gateway-import-free; tests inject).
 
+**Handoff (2026-10-24, carry into this session):**
+- *Repro.* `uv sync --extra dev` then `uv pip install ruamel.yaml` (the local conftest
+  needs it). Lint with `uvx ruff check src/ tests/` — CI installs unpinned `ruff>=0.4`
+  (today 0.17.2, so UP032/UP035 are live) and runs ruff on `src/ tests/` only. Test the
+  adapter with `uv run pytest tests/test_reticulum_adapter.py`. The full suite locally
+  shows 2 benign `test_tool_emoji::TestParityWithInstalledGateway` drift failures CI does
+  not hit (CI stubs the Hermes gateway).
+- *Don't rebuild — shipped in A3 (PR #16):* the identity knobs
+  `RETICULUM_DISPLAY_NAME` / `RETICULUM_ANNOUNCE_INTERVAL` are already profile-scoped via
+  `_get_scoped_secret` (adapter ~L225); `_build_access_control` already injects the
+  `platform_gate_env` reader (`AccessControl(get_env=...)`, `import` fallback → `os.getenv`);
+  `ControlServer._acl_mode()` already shares `AccessControl.parse_allow_all`. A11 extends
+  and verifies those under a real two-profile broker — it does not rebuild them.
+- *Size this first.* Every acceptance criterion needs two Hermes profiles on one box
+  (`profiles/<name>/config.yaml` per profile, `multiplex_profiles` broker). Nothing in the
+  repo or the amendment notes shows an existing second profile or a multi-profile test
+  harness — confirm/build that setup before the criteria are provable, and keep the A3
+  PII rule in mind (no real peer hashes/display names in committed docs).
+- The amendment's "still open" item on the transport knobs stays open here: should
+  `platform_gate_env` also subsume `RETICULUM_DISPLAY_NAME` / `RETICULUM_ANNOUNCE_INTERVAL`,
+  or keep them on `_get_scoped_secret`?
+- *Lanes (2026-10-24):* canonical checkout `.../rns_hermes_endpoint_private`; `..._pr16` =
+  the shipped A3 impl (merged); `..._pr16b` untouched/off-limits; `pr-13-review` still holds
+  an unpushed Jev-doc commit (`c46d1d4`, move to dev pending). One card = one PR into `dev`,
+  squash-merged (see #13-17). PII-scan every staged diff before commit; author `strtPath`.
+
 **Status:** open.
 
 ## Branch and PR workflow
