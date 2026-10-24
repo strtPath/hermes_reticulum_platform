@@ -283,7 +283,11 @@ TCP; co-resident multi-profile bridges are the target topology, so a process-glo
 
 ## Branch and PR workflow
 
-- `adapter` is the integration branch every card merges into.
+- `dev` is the integration branch every card merges into (squash; see PRs #13-18).
+  The legacy `adapter` integration branch and its `feat/reticulum-platform-adapter`
+  predecessor were **deleted 2026-10-24** — their work was re-split into the card series
+  and is fully contained in `dev`. Other agents will not find them if they look; branch
+  from `dev`.
 - One card per branch (`step/A3-acl-rejection` style), one PR, review bot feedback on the PR,
   fixes pushed to the same branch. Card acceptance above is the PR's "done" definition.
 - No card merges while a blocked-by card is unmerged.
