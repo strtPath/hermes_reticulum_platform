@@ -42,7 +42,7 @@ assumptions no document states. Full explanation: `docs/spec-rns-hermes-endpoint
 | touching the approve/deny gate or step push | `docs/spec-approval-and-steppush.md` |
 | touching Reticulum/LXMF transport or the send queue | `docs/spec-transport-downlink.md` |
 | building the platform adapter | `docs/specs/adapter/spec.md` (design), `plan.md` (decisions), `tasks.md` (cards) |
-| picking up a build task | `docs/specs/adapter/tasks.md` (cards A1-A10, each one PR) |
+| picking up a build task | `docs/specs/adapter/tasks.md` (cards A1+, each one PR — that file is the live card index) |
 | about to commit or push | `docs/PII-RULES.md` (mandatory) |
 | doing a recurring procedure (PII sweep, lost-work audit, live testing) | `docs/skills/` |
 | babysitting a PR for the review bot | `docs/skills/babysit-pr-for-review-bot.md` |
@@ -111,8 +111,12 @@ failure mode in this project's history.
 
 ## Branches
 
-`main` is release, `dev` is integration, `adapter` is the integration branch for the
-platform-adapter work. Feature work for the adapter branches from `adapter`; one build card
-is one branch is one PR. Branch from the right base and confirm it first — feature branches
-here run far ahead of `dev`, so branching off whatever HEAD happens to be drags unrelated
-work into your diff.
+`main` is release, `dev` is integration — the single integration branch for the whole
+tree including the platform-adapter work. One build card is one branch is one PR,
+squash-merged into `dev`. The legacy `adapter` integration branch and its umbrella
+predecessor `feat/reticulum-platform-adapter` were **deleted 2026-10-24**: their work was
+re-split into the card series and squash-merged onto `dev`, and `dev` fully contains it
+(nothing from those branches is missing from `dev`). Do not go looking for them — other
+agents searching for an `adapter` branch won't find one; `dev` is canonical. Branch from
+the right base and confirm it first — feature branches here run far ahead of `dev`, so
+branching off whatever HEAD happens to be drags unrelated work into your diff.
