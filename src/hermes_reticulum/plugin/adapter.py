@@ -1100,15 +1100,23 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
                 # Transport torn down while this was queued; drop the send.
                 continue
             try:
-                fut = loop.run_in_executor(
+                inner = loop.run_in_executor(
                     self._reject_executor, transport.send_to,
                     source_hash, self.REJECTION_TEXT,
                 )
                 with self._send_lock:
                     self._sends_in_flight += 1
-                self._reject_in_flight.add(fut)
-                fut.add_done_callback(self._reject_send_done)
-                await fut
+                self._reject_in_flight.add(inner)
+                inner.add_done_callback(self._reject_send_done)
+                # Shield keeps the future alive under cancellation: disconnect()
+                # cancels this worker task mid-send, and without the shield the
+                # cancel ALSO cancels the run_in_executor future, so the
+                # done-callback zeroes _sends_in_flight before the worker
+                # thread finishes and shutdown(wait=True) would block the whole
+                # event loop until send_to() returns (Part C, P1 shutdown pause).
+                # Shielded, the callback fires only on real completion, so the
+                # idle wait below holds until the thread is done.
+                await asyncio.shield(inner)
             except asyncio.CancelledError:
                 # disconnect(): the already-submitted send keeps running on its
                 # thread; the done-callback still decrements the count. Re-raise

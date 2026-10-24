@@ -720,3 +720,30 @@ class TestCommandDispatcherAliases(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAclStatusMode(unittest.TestCase):
+    """_acl_mode() must use the shared ALLOW_ALL parser (core/acl.py), so the
+    /status report and the admission gate agree on the truthy set. A local
+    tuple that omitted "on" reported "closed" for a bridge that was actually
+    open — the wrong direction for a security report to be wrong in."""
+
+    def _mode(self, env):
+        s = ControlServer(port=0)  # not started; pure _acl_mode() logic
+        with mock.patch.dict(os.environ, env, clear=True):
+            return s._acl_mode()
+
+    def test_on_is_open(self):
+        self.assertEqual(self._mode({"HERMES_RETICULUM_ALLOW_ALL": "on"}), "open")
+
+    def test_true_is_open(self):
+        self.assertEqual(self._mode({"HERMES_RETICULUM_ALLOW_ALL": "true"}), "open")
+
+    def test_unset_defaults_closed(self):
+        self.assertEqual(self._mode({}), "closed")
+
+    def test_allowlist_mode(self):
+        self.assertEqual(
+            self._mode({"HERMES_RETICULUM_ALLOWED_USERS": "aabbccddeeff00112233445566778899"}),
+            "allowlist",
+        )

@@ -1441,3 +1441,61 @@ async def test_a3_17_rejection_send_uses_dedicated_executor_and_counts_in_flight
         "rejection sends must run on the dedicated reject-* executor thread"
     )
     await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a3_18_disconnect_mid_rejection_send_keeps_future_alive(monkeypatch):
+    """Part C (Greptile P1 "shutdown pauses the gateway"): disconnecting while a
+    rejection send is IN FLIGHT must not cancel the underlying run_in_executor
+    future.
+
+    Without the shield, cancelling the worker task ALSO cancels the future, so
+    its done-callback zeroes _sends_in_flight before the worker thread
+    finishes; _await_sends_idle() then returns early and
+    _reject_executor.shutdown(wait=True) blocks the whole event loop until
+    send_to() returns (up to ~15s on a missing path). With the shield the send
+    stays counted and tracked through the cancellation, so disconnect waits for
+    the thread instead of pausing the loop.
+    """
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_A)
+    monkeypatch.setenv("HERMES_RETICULUM_REJECT_COOLDOWN_S", "300")
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+
+    started = threading.Event()
+    release = threading.Event()
+    orig = adapter._transport.send_to
+
+    def blocking_send(h, payload):
+        started.set()
+        release.wait(timeout=5)
+        return orig(h, payload)
+
+    adapter._transport.send_to = blocking_send
+
+    denied = _synthetic_denied_hashes(1)[0]
+    adapter._transport._inbound_cb(denied, "deny")
+    assert await _wait_for(lambda: started.is_set(), timeout=5.0), (
+        "rejection send must actually start"
+    )
+    assert await _wait_for(lambda: adapter._sends_in_flight == 1, timeout=5.0)
+    tracked = next(iter(adapter._reject_in_flight))
+    assert not tracked.cancelled()
+
+    # Start disconnect while the send is blocked. It must neither complete nor
+    # cancel the tracked future (the shield keeps it alive past cancellation).
+    disconnect_task = asyncio.create_task(adapter.disconnect())
+    await asyncio.sleep(0.1)  # let the worker task's cancellation propagate
+    assert adapter._sends_in_flight == 1, (
+        "a mid-send rejection must stay counted until the thread finishes"
+    )
+    assert not tracked.cancelled(), (
+        "disconnect must not cancel the in-flight rejection send (shield)"
+    )
+    assert not disconnect_task.done(), (
+        "disconnect must wait for the in-flight send, not shut the loop down first"
+    )
+
+    release.set()
+    await asyncio.wait_for(disconnect_task, timeout=5.0)
+    assert adapter._sends_in_flight == 0

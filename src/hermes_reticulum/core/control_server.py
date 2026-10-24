@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from hermes_reticulum.core.acl import AccessControl
+
 logger = logging.getLogger("hermes_reticulum.control_server")
 
 
@@ -356,8 +358,13 @@ class ControlServer:
         # This status field is what an operator reads to check their own posture, so a
         # default of "true" here would report "open" on a correctly locked-down
         # deployment — the wrong direction for a security report to be wrong in.
-        allow_all = os.getenv("HERMES_RETICULUM_ALLOW_ALL", "false").lower()
-        if allow_all in ("true", "1", "yes"):
+        # Use the shared parser (core/acl.py) so the status report and the
+        # admission gate agree on the truthy set — including "on". A local
+        # tuple here drifted from AccessControl.ALLOW_ALL_TRUTHY and mis-
+        # reported "closed" for a bridge that was actually admitting peers.
+        if AccessControl.parse_allow_all(
+            os.getenv("HERMES_RETICULUM_ALLOW_ALL", "false")
+        ):
             return "open"
         allowed_raw = os.getenv("HERMES_RETICULUM_ALLOWED_USERS", "").strip()
         return "allowlist" if allowed_raw else "closed"
