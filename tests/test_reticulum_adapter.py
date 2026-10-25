@@ -1395,6 +1395,41 @@ async def test_build_access_control_reads_profile_scoped_env(monkeypatch):
     )
 
 
+def test_acl_knob_names_are_spelled_reticulum():
+    """Regression guard for the 2026-10-24 bridge outage: a misspelled key
+    (``HERMES_RETICUM_ALLOWED_USERS`` — missing the ``L``) silently emptied the
+    allowlist, so the bridge rejected every peer including the owner. The
+    canonical knob names must be spelled ``RETICULUM`` (with the L), and a
+    misspelled ``RETICUM`` variant must NEVER be read as a deciding source —
+    it fails closed (empty allowlist + allow_all=false), which is exactly the
+    silent-outage mode we are guarding against."""
+    canonical = {
+        "HERMES_RETICULUM_ALLOW_ALL",
+        "HERMES_RETICULUM_ALLOWED_USERS",
+        "HERMES_RETICULUM_BLOCKED_USERS",
+    }
+    misspelled = {
+        "HERMES_RETICUM_ALLOW_ALL",
+        "HERMES_RETICUM_ALLOWED_USERS",
+        "HERMES_RETICUM_BLOCKED_USERS",
+    }
+    # The parser only ever looks up the canonical names.
+    seen = set()
+
+    def recording_reader(name, default=""):
+        seen.add(name)
+        return default
+
+    AccessControl(get_env=recording_reader)
+    # The three ACL knobs AccessControl reads are exactly the canonical set.
+    assert canonical.issubset(seen), f"missing canonical knob(s): {canonical - seen}"
+    # No misspelled variant is ever consulted — if it were, the allowlist would
+    # silently empty (the outage). Fail closed means it must not even be asked.
+    assert not (misspelled & seen), (
+        f"misspelled RETICUM knob consulted: {misspelled & seen}"
+    )
+
+
 # ── Part C: dedicated bounded rejection worker + in-flight accounting ──────
 
 
