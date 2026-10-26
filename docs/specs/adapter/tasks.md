@@ -32,7 +32,7 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A8 | Ship `approvals.timeout: 900` with LoRa rationale | A1 | mesh approvals survive LoRa latency | done |
 | A9 | P-5 `/retry`, P-6 adapter-built `/status`, P-13 command audit | A4 | commands listed in §19.2 respond on the mesh | open |
 | A10 | P-8 `/clarify` verification, adapter-side plumbing only if gateway lacks it | A4 | `/clarify` resolves or a findings doc proves the gateway gap | open |
-| A11 | Per-profile mesh identity + ACL profile-scoping: one shared parser; ACL + identity read profile-scoped via `platform_gate_env` | A3 | two profiles on one box carry different identities + trust lists; no raw `os.getenv` in the A3 read path | open |
+| A11 | Per-profile mesh identity + ACL profile-scoping: one shared parser; ACL + identity read profile-scoped via `platform_gate_env` | A3 | two profiles on one box carry different identities + trust lists; no raw `os.getenv` in the A3 read path | in-review (guard shipped PR #21; harness exists; delivery confirmed, live two-profile broker open) |
 
 ## Where the moved sections live
 
@@ -279,7 +279,19 @@ TCP; co-resident multi-profile bridges are the target topology, so a process-glo
   an unpushed Jev-doc commit (`c46d1d4`, move to dev pending). One card = one PR into `dev`,
   squash-merged (see #13-17). PII-scan every staged diff before commit; author `strtPath`.
 
-**Status:** open.
+**Status:** in-review. Guard shipped merged PR #21 (2026-10-24): regression test
+`test_acl_knob_names_are_spelled_reticulum` pins canonical `RETICULUM` knob names and
+asserts the misspelled `RETICUM` variant is never consulted (live-outage class guard).
+Harness profile `mesh-test` exists on-device with a synthetic allowlist; no-leak and
+parser/reader criteria covered by the suite. Remaining for close: ruling the transport-knob
+question (keep on `_get_scoped_secret` vs fold into `platform_gate_env`), and a live
+two-profile multiplex broker run.
+
+**Delivery context (2026-10-26):** live single-profile adapter round-trip now confirmed
+end-to-end after a per-platform display fix (`display.platforms.reticulum.tool_progress:
+false` + `thinking_progress: false`); see
+`docs/mesh-bridge-findings-2026-10-26-adapter-live-delivery-one-shot.md`. That unblocks the
+live two-profile broker run this card still needs to close.
 
 ## Branch and PR workflow
 

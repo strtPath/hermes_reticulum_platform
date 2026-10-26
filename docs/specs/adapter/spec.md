@@ -711,6 +711,25 @@ replace the HTTP push with the gateway's own tool-event surface (`display.platfo
 `tool_progress: new`), which the 2026-09-26 findings document already identifies as the
 intended replacement. This is a separate, never-built feature, not a regression.
 
+**Correction (2026-10-26, `mesh-bridge-findings-2026-10-26-adapter-live-delivery-one-shot.md`):**
+before any progress surface is built, the *global* default (`display.tool_progress: all`)
+already streams tool-progress and thinking ticks to the mesh as separate one-shot LXMF
+messages, and that streaming marks the turn as delivered so the model's real reply is held.
+Fixed by the per-platform override down to **off** (not `new`):
+
+```yaml
+display:
+  platforms:
+    reticulum:
+      tool_progress: false
+      thinking_progress: false
+```
+
+`tool_progress: new` the original text proposes remains a *future* toggle for when a
+first-class progress surface exists; today the working setting is `false`. Also note: the
+memory-recall indicator (`agent/memory_manager.py` `describe_recall()`, a lifecycle status
+event) is transmitted as a real message on the one-shot mesh — see the findings doc.
+
 ### 17.10 `/new` and gateway command dispatch — verified 2026-09-29
 
 The draft claimed the gateway's command dispatch intercepts messages before the adapter's

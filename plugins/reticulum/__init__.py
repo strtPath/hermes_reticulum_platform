@@ -73,14 +73,37 @@ def _importable_dirs(root: str):
 
 
 def _extend_sys_path() -> None:
-    """Prepend the first directory that actually contains hermes_reticulum."""
-    for root in _roots():
-        for candidate in _importable_dirs(root):
+    """Prepend the first directory that actually contains hermes_reticulum,
+    AND the venv's site-packages (which holds RNS/LXMF and other deps).
+
+    An editable install puts hermes_reticulum in ``src/`` but its runtime
+    dependencies (RNS, LXMF, ruamel, ...) in ``<venv>/lib/python*/site-packages``.
+    Only extending the hermes_reticulum dir leaves those deps invisible to a
+    gateway Python that does not otherwise have them, so the platform import
+    fails (``No module named 'LXMF'``) and registration silently degrades to a
+    no-op. Add both: the dir with the package AND its sibling site-packages.
+    """
+    # Iterate roots in REVERSE so the highest-priority root (env override
+    # first in `_roots()`) is inserted LAST — i.e. at the FRONT of sys.path.
+    # Inserting each root at position 0 in declaration order would let a
+    # lower-priority root (e.g. a stale venv_path.txt entry) shadow the
+    # operator's HERMES_RETICULUM_VENV override and load the wrong deps.
+    for root in reversed(_roots()):
+        candidates = list(_importable_dirs(root))
+        for candidate in candidates:
             if not candidate or candidate in sys.path:
                 continue
             if os.path.isdir(os.path.join(candidate, "hermes_reticulum")):
                 sys.path.insert(0, candidate)
                 logger.debug("reticulum plugin: added %s to sys.path", candidate)
+        # Also add every site-packages dir under this root so runtime deps
+        # (RNS/LXMF/...) resolve even on an editable install.
+        for candidate in candidates:
+            if not candidate or candidate in sys.path:
+                continue
+            if candidate.endswith("site-packages") and os.path.isdir(candidate):
+                sys.path.insert(0, candidate)
+                logger.debug("reticulum plugin: added deps path %s to sys.path", candidate)
 
 
 def _noop_register(ctx) -> None:  # pragma: no cover - fallback path
