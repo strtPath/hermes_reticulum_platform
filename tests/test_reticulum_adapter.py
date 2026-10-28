@@ -1544,3 +1544,43 @@ async def test_a3_18_disconnect_mid_rejection_send_keeps_future_alive(monkeypatc
     release.set()
     await asyncio.wait_for(disconnect_task, timeout=5.0)
     assert adapter._sends_in_flight == 0
+
+
+# ── Per-conversation chunk tags ───────────────────────────────────────
+
+
+class TestChunkTags:
+    def test_tags_are_per_conversation(self):
+        adapter = make_adapter()
+        dest_a = "A" * 32
+        dest_b = "B" * 32
+        long_text = "word " * 250  # several LXMF blocks, forces chunking
+
+        parts_a1 = adapter._chunk_content(long_text, dest_a) or []
+        assert parts_a1[0].startswith("[p1 1/")
+        assert parts_a1[-1].startswith(f"[p1 {len(parts_a1)}/{len(parts_a1)}]")
+
+        parts_a2 = adapter._chunk_content(long_text, dest_a) or []
+        assert parts_a2[0].startswith("[p2 1/")
+
+        # A different conversation starts its own numbering at p1.
+        parts_b1 = adapter._chunk_content(long_text, dest_b) or []
+        assert parts_b1[0].startswith("[p1 1/")
+
+    def test_destination_case_is_normalized(self):
+        # LXMF hashes are case-insensitive hex: both spellings are one peer
+        # and must share one counter, or the chat sees repeated p1 labels.
+        adapter = make_adapter()
+        long_text = "word " * 250
+        parts_lower = adapter._chunk_content(long_text, "d" * 32) or []
+        parts_upper = adapter._chunk_content(long_text, "D" * 32) or []
+        assert parts_lower[0].startswith("[p1 1/")
+        assert parts_upper[0].startswith("[p2 1/")
+        assert len(adapter._chunk_tags) == 1
+
+    def test_single_part_send_consumes_the_conversation_counter(self):
+        adapter = make_adapter()
+        dest = "C" * 32
+        parts = adapter._chunk_content("short", dest)
+        assert parts == ["short"]  # fits: sent unchanged, no prefix
+        assert adapter._chunk_tags[dest.lower()] == 1

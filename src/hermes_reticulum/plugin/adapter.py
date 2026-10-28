@@ -274,10 +274,12 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         self._send_lock = threading.Lock()
         self._sends_in_flight = 0
 
-        # Per-send tag for the ``[p<N> i/N]`` chunk prefixes. Monotonic for the
-        # life of the adapter so a recipient can spot a dropped tail. Kept
-        # across reconnects alongside the pending set, for the same reason.
-        self._chunk_tag: int | None = None
+        # Per-conversation tag for the ``[p<N> i/N]`` chunk prefixes. Monotonic
+        # per destination hash so a recipient can spot a dropped tail, and the
+        # numbering stays meaningful within a chat instead of climbing across
+        # every chat on the adapter. Kept across reconnects alongside the
+        # pending set, for the same reason.
+        self._chunk_tags: dict[str, int] = {}
 
         # Inbound handler slot. Declared here rather than assumed from the base
         # class: see deliver_inbound() for why the adapter owns this hop.
@@ -699,7 +701,7 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         # long reply arrives as several parts instead of being refused or
         # silently truncated (spec section 14). A reply that fits comes back as
         # a single part and is sent unchanged.
-        parts = self._chunk_content(content)
+        parts = self._chunk_content(content, chat_id)
         if parts is None:
             return delivery.map_chunk_overflow(len(content.encode("utf-8")))
         if not parts:
@@ -851,18 +853,22 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
             else self.INTER_CHUNK_PROPAGATED_SECONDS
         )
 
-    def _chunk_content(self, content: str) -> list | None:
+    def _chunk_content(self, content: str, destination_hash: str) -> list | None:
         """Split outbound content for transmission.
 
         Returns the parts (a single-element list when the content fits), an
         empty list when chunking degenerates, or ``None`` when the content
-        cannot be carried at all. The tag is per-adapter monotonic so a
-        recipient can spot a dropped tail without any protocol change.
+        cannot be carried at all. The tag is per-conversation monotonic,
+        keyed by destination hash, so a recipient can spot a dropped tail
+        without any protocol change and the numbering starts at p1 for every
+        chat instead of climbing across the whole adapter.
         """
-        if self._chunk_tag is None:
-            self._chunk_tag = 0
-        self._chunk_tag += 1
-        tag = f"p{self._chunk_tag}"
+        # LXMF destination hashes are case-insensitive hex; normalize so the
+        # same peer never gets two counters (and two p1 labels).
+        destination_hash = destination_hash.lower()
+        n = self._chunk_tags.get(destination_hash, 0) + 1
+        self._chunk_tags[destination_hash] = n
+        tag = f"p{n}"
         return delivery.chunk_for_send(content, tag)
 
     @staticmethod
