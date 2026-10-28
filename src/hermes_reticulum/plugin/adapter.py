@@ -536,6 +536,11 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
             # (spec section 14; A3 D8 keeps this silent-drop path).
             logger.debug("Reticulum: dropping unparseable inbound %r", event)
             return
+        # A /new starts a fresh conversation; restart this chat's chunk
+        # numbering so p stays meaningful within a session instead of
+        # climbing across every /new on the same chat.
+        if self._is_new_session_command(text):
+            self._chunk_tags.pop(source_hash.lower(), None)
         # A3 gate (spec 4.1): core/acl.py AccessControl decides — blocklist
         # priority, allow-all only on explicit opt-in, closed default (D3).
         if not self._acl.is_allowed(source_hash):
@@ -870,6 +875,23 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         self._chunk_tags[destination_hash] = n
         tag = f"p{n}"
         return delivery.chunk_for_send(content, tag)
+
+    @staticmethod
+    def _is_new_session_command(text: str | None) -> bool:
+        """True when ``text`` is the gateway's /new command (with or without args).
+
+        Mirrors the gateway's command extraction (``event.get_command``:
+        first token after ``/``, lowercased, ``@``-suffix stripped) so the
+        adapter resets the chunk counter on exactly the command the gateway
+        treats as a new session.
+        """
+        if not text:
+            return False
+        stripped = text.lstrip()
+        if not stripped.startswith("/"):
+            return False
+        name = stripped.split(maxsplit=1)[0][1:].lower().split("@", 1)[0]
+        return name == "new"
 
     @staticmethod
     def _is_valid_hash(destination_hash: str) -> bool:

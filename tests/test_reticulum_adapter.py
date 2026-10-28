@@ -1578,6 +1578,27 @@ class TestChunkTags:
         assert parts_upper[0].startswith("[p2 1/")
         assert len(adapter._chunk_tags) == 1
 
+    def test_new_session_command_detection(self):
+        adapter = make_adapter()
+        for text in ("/new", "/new  myname", "/new@bot", "  /new"):
+            assert adapter._is_new_session_command(text), text
+        for text in ("/news", "/newer", "hello /new", "/help", "", None):
+            assert not adapter._is_new_session_command(text), text
+
+    @pytest.mark.asyncio
+    async def test_new_command_resets_the_conversation_counter(self, monkeypatch):
+        monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", "f" * 32)
+        adapter = make_adapter()
+        dest = "f" * 32
+        adapter._chunk_tags[dest] = 7
+
+        async def _noop(event):
+            pass
+
+        monkeypatch.setattr(adapter, "deliver_inbound", _noop)
+        await adapter._dispatch_inbound((dest, "/new"))
+        assert dest not in adapter._chunk_tags  # next send starts at p1
+
     def test_single_part_send_consumes_the_conversation_counter(self):
         adapter = make_adapter()
         dest = "C" * 32
