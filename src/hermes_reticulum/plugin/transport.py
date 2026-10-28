@@ -254,9 +254,11 @@ class ReticulumTransport:
 
     def start(self) -> None:
         """Start the RNS instance, the LXMF router, and our delivery
-        identity. Idempotent while up; a fresh start after ``stop()``
-        re-initialises from scratch. No reattach/supervision loop: RNS
-        owns reconnect internally (spec section 13)."""
+        identity. Idempotent while up; a start after ``stop()`` re-initialises
+        the LXMF layer (teardown dropped the router and identity) and reuses
+        the live RNS instance, which is a strict process singleton and cannot
+        be re-created without killing the process. No reattach/supervision
+        loop: RNS owns reconnect internally (spec section 13)."""
         if self._started:
             logger.info("Transport already started (idempotent start)")
             return
@@ -269,13 +271,30 @@ class ReticulumTransport:
         if self.require_shared_instance:
             reticulum_kwargs["require_shared_instance"] = True
 
-        self.reticulum = RNS.Reticulum(**reticulum_kwargs)
+        self.reticulum = RNS.Reticulum.get_instance()
+        if self.reticulum is not None:
+            # RNS is a strict process singleton: the constructor raises
+            # "Attempt to reinitialise Reticulum, when it was already running"
+            # on a second call. A first connect that failed deeper down (LXMF
+            # router init, identity registration) leaves the instance running,
+            # and the gateway's reconnect loop then dead-ends on that guard
+            # forever — the process must restart to recover. Reuse the live
+            # instance instead, and re-attempt the LXMF layer below, which is
+            # the part that actually failed.
+            logger.warning(
+                "RNS instance already running in this process; reusing it "
+                "for the Reticulum platform connect"
+            )
+        else:
+            self.reticulum = RNS.Reticulum(**reticulum_kwargs)
         self._log_instance_state()
 
         # No identity argument: RNS 1.5.4's Reticulum exposes no identity to
         # hand over (there is no `internal_identity`), and LXMRouter takes the
         # delivery identity at register_delivery_identity below. This matches
         # how core/bridge.py constructs the router in production.
+        self._quarantine_corrupt_ratchets()
+
         self.router = LXMF.LXMRouter(
             storagepath=str(self.storage_path),
         )
@@ -438,6 +457,35 @@ class ReticulumTransport:
         identity.to_file(identity_path)
         logger.info("Created new identity at storage path")
         return identity
+
+    def _quarantine_corrupt_ratchets(self) -> None:
+        """Move aside zero-byte LXMF ratchet files before the router loads them.
+
+        An unclean shutdown (power loss, SIGKILL) can leave an LRU ratchet
+        cache file at 0 bytes; LXMF then fails to read it and the router init
+        fails the whole connect. Renaming the file lets the router build
+        cleanly and recreate it; the quarantine copy stays for forensics.
+        """
+        ratchet_dir = os.path.join(self.storage_path, "lxmf", "ratchets")
+        if not os.path.isdir(ratchet_dir):
+            return
+        for name in sorted(os.listdir(ratchet_dir)):
+            if not name.endswith(".ratchets"):
+                continue
+            path = os.path.join(ratchet_dir, name)
+            try:
+                if os.path.getsize(path) == 0:
+                    quarantined = (
+                        f"{path}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}"
+                    )
+                    os.replace(path, quarantined)
+                    logger.warning(
+                        "Quarantined zero-byte LXMF ratchet %s -> %s",
+                        path,
+                        quarantined,
+                    )
+            except OSError:
+                logger.exception("Failed to inspect LXMF ratchet %s", path)
 
     def stop(self) -> None:
         """Stop the stack. Safe before start and safe to call twice.

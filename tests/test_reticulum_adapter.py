@@ -765,15 +765,22 @@ async def test_cancel_arriving_as_worker_succeeds_records_success(monkeypatch):
 # hashes follow the suite's existing pattern (no real identities).
 
 
-class GatewayAuthzDenier:
-    """Stand-in for the gateway authz layer denying an admitted event (D7)."""
+class GatewayGateDenier:
+    """Stand-in for the gateway's authz gate rejecting an admitted event.
+
+    The base-class inbound pipeline leaves ``event._gateway_accepted`` False
+    when one of its own gates (identity resolution, routing, burst) drops the
+    event; the adapter reads that flag as the deny signal (A3 4.5 D7). A bare
+    falsy handler return is NOT a deny on this path — the base swallows falsy
+    replies itself and the real gateway signals admission rejection with None.
+    """
 
     def __init__(self):
         self.events = []
 
-    def __call__(self, event):
+    async def __call__(self, event):
         self.events.append(event)
-        return False
+        event._gateway_accepted = False
 
 
 async def _wait_for(pred, timeout=5.0):
@@ -1196,7 +1203,8 @@ async def test_a3_15_gateway_deny_of_admitted_peer_gets_canned_reply(monkeypatch
     monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_B)
     factory = CountingFactory()
     adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
-    adapter.set_message_handler(GatewayAuthzDenier())
+    adapter.set_message_handler(HandlerRecorder())
+    monkeypatch.setattr(adapter, "handle_message", GatewayGateDenier())
     assert await adapter.connect() is True
 
     factory.transport._inbound_cb(PEER_B, "I passed the adapter gate")
@@ -1219,7 +1227,8 @@ async def test_a3_16_gateway_deny_respects_cooldown(monkeypatch):
     monkeypatch.setenv("HERMES_RETICULUM_REJECT_COOLDOWN_S", "300")
     factory = CountingFactory()
     adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
-    adapter.set_message_handler(GatewayAuthzDenier())
+    adapter.set_message_handler(HandlerRecorder())
+    monkeypatch.setattr(adapter, "handle_message", GatewayGateDenier())
     assert await adapter.connect() is True
 
     factory.transport._inbound_cb(PEER_B, "first")
@@ -1240,7 +1249,8 @@ async def test_a3_17_gateway_deny_in_empty_allowlist_boot_is_silent(monkeypatch,
     monkeypatch.setenv("HERMES_RETICULUM_ALLOW_ALL", "true")
     factory = CountingFactory()
     adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
-    adapter.set_message_handler(GatewayAuthzDenier())
+    adapter.set_message_handler(HandlerRecorder())
+    monkeypatch.setattr(adapter, "handle_message", GatewayGateDenier())
     assert await adapter.connect() is True
 
     factory.transport._inbound_cb(PEER_B, "open mode, gateway denies")

@@ -292,14 +292,27 @@ def fake_rns(monkeypatch):
     fake_rns_mod = types.ModuleType("RNS")
     fake_rns_mod.__version__ = "1.5.4"
 
+    # Model RNS's strict process singleton: get_instance() returns None until
+    # the constructor has run once, then the latest constructed instance.
+    # start() consults it, so a stub without it would silently exercise the
+    # reuse branch with a throwaway truthy Mock.
+    singleton = {}
+
+    def _get_singleton():
+        return singleton.get("instance")
+
     def _make_ret():
-        return mock.Mock(
+        instance = mock.Mock(
             is_shared_instance=True,
             is_connected_to_shared_instance=False,
             is_standalone_instance=False,
             internal_identity=mock.Mock(return_value=None),
         )
+        singleton["instance"] = instance
+        return instance
+
     fake_rns_mod.Reticulum = mock.Mock(side_effect=_make_ret)
+    fake_rns_mod.Reticulum.get_instance = _get_singleton
     fake_rns_mod.Destination = _FakeDestination
     # An INSTANCE, so the path methods are the per-test Mocks the assertions
     # target. Assigning the class would expose unbound mocks and make
@@ -319,6 +332,7 @@ def fake_rns(monkeypatch):
     holder = FakeTransportHolder
     holder.started_with = None
     holder.exit_calls = 0
+    singleton.clear()
 
     yield fake_rns_mod
 
@@ -606,17 +620,39 @@ class TestLifecycle:
         assert holder.started_with is first
         assert t.is_running is True
 
-    def test_start_after_stop_reinitialises(self, fake_rns, tmp_path):
+    def test_start_after_stop_rebuilds_lxmf_but_reuses_rns(self, fake_rns, tmp_path):
         holder = FakeTransportHolder
         t = self._make(tmp_path)
         t.start()
-        first = holder.started_with
+        first_router = t.router
+        first_ret = holder.started_with
         t.stop()
         assert t.is_running is False
         assert holder.exit_calls == 1
         t.start()
         assert t.is_running is True
-        assert holder.started_with is not first  # fresh Reticulum instance
+        # RNS cannot be re-constructed in-process (strict singleton; even
+        # RNS.exit() hard-exits the process), so the restart reuses the live
+        # instance but rebuilds the LXMF layer from a clean slate.
+        assert holder.started_with is first_ret
+        assert t.router is not first_router
+
+    def test_start_reuses_an_already_running_rns_instance(self, fake_rns, tmp_path):
+        # A connect that failed after RNS init (e.g. the LXMF router died on
+        # a corrupt ratchet) leaves the singleton running; a reconnect must
+        # not dead-end on the constructor's "already running" guard.
+        t = self._make(tmp_path)
+        preexisting = mock.Mock(
+            is_shared_instance=True,
+            is_connected_to_shared_instance=False,
+            is_standalone_instance=False,
+            internal_identity=mock.Mock(return_value=None),
+        )
+        fake_rns.Reticulum.get_instance = lambda: preexisting
+        t.start()
+        assert t.reticulum is preexisting
+        assert fake_rns.Reticulum.call_count == 0  # never re-constructed
+        assert t.is_running is True
 
     def test_stop_without_start_is_safe(self, fake_rns, tmp_path):
         holder = FakeTransportHolder
@@ -632,6 +668,44 @@ class TestLifecycle:
         t.stop()
         t.stop()
         assert holder.exit_calls == 1  # exit_handler fired exactly once
+
+
+# ── Corrupt ratchet quarantine ────────────────────────────────────────
+
+
+class TestRatchetQuarantine:
+    def _make(self, tmp_path):
+        # The constructor only honors the path via extra/env (the
+        # storage_path kwarg is legacy and ignored), so pass it that way.
+        return transport_module.ReticulumTransport(
+            extra={"storage_path": str(tmp_path / "storage")}
+        )
+
+    def test_zero_byte_ratchets_are_moved_aside_at_start(self, fake_rns, tmp_path):
+        ratchet_dir = tmp_path / "storage" / "lxmf" / "ratchets"
+        ratchet_dir.mkdir(parents=True)
+        bad_name = "0" * 32            # placeholder peer hash (PII rule)
+        good_name = "1" * 32
+        bad = ratchet_dir / f"{bad_name}.ratchets"
+        bad.write_bytes(b"")           # the unclean-shutdown artifact
+        good = ratchet_dir / f"{good_name}.ratchets"
+        good.write_bytes(b"valid ratchet bytes")
+        t = self._make(tmp_path)
+        t.start()
+        leftovers = sorted(p.name for p in ratchet_dir.iterdir())
+        assert bad_name + ".ratchets" not in leftovers
+        assert any(
+            name.startswith(bad_name + ".ratchets.corrupt-")
+            for name in leftovers
+        )
+        assert f"{good_name}.ratchets" in leftovers
+        assert good.read_bytes() == b"valid ratchet bytes"
+        assert t.is_running is True
+
+    def test_missing_ratchet_dir_is_not_an_error(self, fake_rns, tmp_path):
+        t = self._make(tmp_path)
+        t.start()
+        assert t.is_running is True
 
 
 # ── Display name runtime change ───────────────────────────────────────

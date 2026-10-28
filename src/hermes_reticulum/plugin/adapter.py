@@ -581,33 +581,42 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         await self._send_rejection(source_hash)
 
     async def deliver_inbound(self, event) -> None:
-        """Hand one inbound event to the gateway's message handler.
+        """Hand one inbound event to the gateway's inbound pipeline.
 
-        The adapter owns this hop rather than calling the inherited
-        ``handle_message`` directly: that method and its ``_message_handler``
-        slot are gateway-version surface, and an adapter that only works when
-        the base class happens to provide them breaks silently — inbound goes
-        deaf — on a gateway that renames either. Falling back to the inherited
-        call keeps compatibility with a gateway that supplies its own handler.
+        Delegates to the inherited ``handle_message`` whenever it exists: that
+        is the gateway path that both RUNS the installed ``_message_handler``
+        and DELIVERS its returned response (``_process_message_background`` ->
+        ``_send_final_text``). This hop must NOT call the raw ``_message_handler``
+        itself — that handler only computes the turn and returns the text; it
+        never sends. Calling it directly therefore runs the agent (the reply
+        lands in ``state.db`` and logs as "response ready") but silently drops
+        the reply, so the mesh shows only status pings (which travel through a
+        separate ``send()`` path) while every LLM answer goes missing. That is
+        exactly the failure this method must not produce.
 
-        A3 4.5 (D7): the delivery outcome is inspected, not discarded. The
-        gateway's ``handle_message`` marks the event with ``_gateway_accepted``
-        (base.py: False when its own authz/ingress gate dropped the event,
-        True once the event is claimed or queued for a session); a deny there
-        is a desync against the adapter gate, so the adapter logs it and sends
-        the canned rejection through the transport seam under the same D4/D6
-        rules. A custom handler's own falsy return is treated the same way.
+        The raw-handler fallback below keeps compatibility with a gateway
+        version that renames/ removes ``handle_message``: the turn still runs,
+        and a falsy-but-not-None return is the gateway-side deny described under
+        A3 4.5 (D7). On the normal path the deny is read from the
+        ``_gateway_accepted`` flag the gateway sets on the event (False when its
+        own authz/ingress gate dropped the event); a desync there is logged and
+        answered through the transport seam under the same D4/D6 rules.
         """
         source_hash = getattr(getattr(event, "source", None), "user_id", None)
+        handle = getattr(self, "handle_message", None)
+        if callable(handle):
+            result = handle(event)
+            if inspect.isawaitable(result):
+                result = await result
+            if source_hash and getattr(event, "_gateway_accepted", True) is False:
+                await self._note_gateway_desync(source_hash)
+            return
+        result = None
         if self._message_handler is not None:
             result = self._message_handler(event)
             if inspect.isawaitable(result):
                 result = await result
-            if source_hash and result is not None and not result:
-                await self._note_gateway_desync(source_hash)
-            return
-        await self.handle_message(event)
-        if source_hash and getattr(event, "_gateway_accepted", True) is False:
+        if source_hash and result is not None and not result:
             await self._note_gateway_desync(source_hash)
 
     async def _note_gateway_desync(self, source_hash: str) -> None:

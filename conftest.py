@@ -9,6 +9,7 @@ back to stubbing the few gateway modules the plugin drags in — the scoped
 secret reader in a default-profile environment behaves like a plain env
 read, which the stub reproduces.
 """
+import inspect
 import os
 import sys
 import types
@@ -200,7 +201,19 @@ else:
             return _SessionSource(**kwargs)
 
         async def handle_message(self, event):
-            return None
+            # Faithful to the real base's inbound pipeline: claim the event
+            # (a gate drop leaves _gateway_accepted False; a claim flips it
+            # True) and run the installed handler. A no-op here made admitted
+            # messages vanish in CI, where this stub replaces the gateway —
+            # green locally against the real base, red in CI.
+            event._gateway_accepted = True
+            handler = getattr(self, "_message_handler", None)
+            if handler is None:
+                return None
+            result = handler(event)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
 
     _base_stub = types.ModuleType("gateway.platforms.base")
     _base_stub.BasePlatformAdapter = _BasePlatformAdapter
