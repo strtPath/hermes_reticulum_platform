@@ -181,18 +181,17 @@ empty, `logger.warning` naming the env var to set. Peers get nothing.
 ### 4.5 Gateway-side (D7)
 
 No change to gateway authz itself (it already reads the same envs via the registration
-fields). The current adapter code has no post-delivery signal at all: `deliver_inbound`
-(adapter.py:465) hands the event to the gateway handler and returns without inspecting
-the outcome, so a gateway-side deny of an adapter-admitted peer is invisible today.
-Required change on this card: the adapter inspects the outcome of `deliver_inbound`
-instead of discarding it. If the gateway handler reports a deny for a peer the adapter
-admitted, the adapter logs a desync line naming the gateway deny AND sends D7's canned
-reply to that peer through the transport seam (4.3), subject to the same cooldown and
-the D6 suppression rule. Mechanism: the gateway handler's result is already returned to
-the adapter and currently dropped; the implementation reads that result (or, if the
-result shape cannot carry a deny, wraps the call with a gateway hook that reports the
-authz outcome). The exact mechanism is an implementation choice; the observable effect,
-criterion 10, is not optional.
+fields). Shipped (PR #23): `deliver_inbound` routes the event through the inherited
+`handle_message` — the same pipeline every gateway platform uses — and reads the deny
+from the `_gateway_accepted` flag the base sets on the event (False when its own
+authz/ingress gate dropped the event, True once the event is claimed for a session).
+On a deny for a peer the adapter admitted, the adapter logs a desync line naming the
+gateway deny AND sends D7's canned reply to that peer through the transport seam (4.3),
+subject to the same cooldown and the D6 suppression rule. The handler's return value is
+NOT the deny signal on this path: the real gateway handler returns `None` on an
+admission reject and text on success (falsy-but-not-None never happens), and the base
+delivers non-falsy replies itself via `_send_final_text`. The observable effect,
+criterion 10, holds.
 
 ## 5. Acceptance criteria (Given/When/Then)
 

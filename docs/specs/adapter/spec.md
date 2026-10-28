@@ -157,8 +157,13 @@ continuously. The reconnect watcher keys off connect failure, so a silent peer n
 it. The adapter returns `True` on RNS up and reports peer reachability through a separate
 surface (section 7), because the gateway has no vocabulary for connected-but-unreachable.
 
-`connect()` must be idempotent and able to re-initialise RNS from scratch, since the watcher
-calls it with `is_reconnect=True` after an RNS process death.
+`connect()` must be idempotent. A reconnect calls `transport.start()` again; RNS is a
+strict process singleton (the constructor raises "Attempt to reinitialise Reticulum, when
+it was already running" on a second call, and `RNS.exit()` hard-exits the process), so
+`start()` re-uses the live instance via `RNS.Reticulum.get_instance()` and re-initialises
+the LXMF layer (router, delivery identity) — the part a failed first connect may have left
+unstarted. Zero-byte LXMF ratchet files (an unclean-shutdown artifact) are quarantined
+before the router is built so a reconnect after an unclean kill can succeed.
 
 ## 6. Delivery handling — the part that does not map
 
@@ -464,8 +469,8 @@ was lost, which is not something the adapter controls.
 should not pretend to. Two consequences:
 
 - The gateway's reconnect watcher will see the platform drop when the process exits. That is
-  the correct signal, and `connect(is_reconnect=True)` must be idempotent and able to
-  re-initialise RNS from scratch, which section 5 already requires.
+  the correct signal; `connect(is_reconnect=True)` is idempotent and re-uses the live RNS
+  instance (a strict process singleton), re-initialising the LXMF layer, per section 5.
 - If the adapter runs under a process supervisor, the supervisor restarting it is the recovery
   path for the hard-exit case. This is worth documenting for users rather than leaving them to
   discover it as "the agent vanished when I restarted rnsd".
