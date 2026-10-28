@@ -32,7 +32,17 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A8 | Ship `approvals.timeout: 900` with LoRa rationale | A1 | mesh approvals survive LoRa latency | done |
 | A9 | P-5 `/retry`, P-6 adapter-built `/status`, P-13 command audit | A4 | commands listed in §19.2 respond on the mesh | open |
 | A10 | P-8 `/clarify` verification, adapter-side plumbing only if gateway lacks it | A4 | `/clarify` resolves or a findings doc proves the gateway gap | open |
-| A11 | Per-profile mesh identity + ACL profile-scoping: one shared parser; ACL + identity read profile-scoped via `platform_gate_env` | A3 | two profiles on one box carry different identities + trust lists; no raw `os.getenv` in the A3 read path | in-review (guard shipped PR #21; harness exists; delivery confirmed, live two-profile broker open) |
+| A11 | Per-profile mesh identity + ACL profile-scoping: one shared parser; ACL + identity read profile-scoped via `platform_gate_env` | A3 | two profiles on one box carry different identities + trust lists; no raw `os.getenv` in the A3 read path | closed (guard PR #21; isolation proven live 2026-10-28: `build_profile_secret_scope` on both homes returns distinct trust lists, both fail-closed — see `docs/mesh-bridge-findings-2026-10-28-a11-profile-isolation.md`) |
+
+## Cross-cutting constraint: no interactive UI over LXMF
+
+LXMF carries text only — no buttons, no inline keyboards, no interaction prompts.
+Anything that asks the peer to pick from options must be spec'd as a text exchange:
+the adapter sends a numbered/plain-text prompt, the peer replies in text, a follow-up
+message resolves it. Verified live 2026-10-28: `/new` needed `approvals.timeout` /
+autoapprove to start a new conversation, and interactive approval/clarify flows cannot
+render on the mesh. A4/A6/A10 must be designed against this (A10 in particular: a
+`/clarify` prompt that waits for an unrenderable button is a stuck turn).
 
 ## Where the moved sections live
 
