@@ -122,13 +122,15 @@ def _utf8_codepoint_chunks(text: str, budget: int) -> list:
     return out
 
 
-def _fence_info(stripped: str) -> tuple[int, str | None]:
+def _fence_info(stripped: str, closing: bool = False) -> tuple[int, str | None]:
     """Return (run_length, kind) for a stripped line.
 
     kind is '`' or '~' when the line starts with at least three fence
     characters; run_length is the count. Returns (0, None) for non-fence
     lines.  An info string after the run (e.g. "python" in ```python) is
-    allowed on opening fences — closing fences must be whitespace-only.
+    allowed on opening fences only: with ``closing=True`` the run must be
+    the whole line (only whitespace may follow), so "```python" inside a
+    four-backtick block is ordinary content rather than a close.
     """
     if not stripped:
         return 0, None
@@ -142,6 +144,10 @@ def _fence_info(stripped: str) -> tuple[int, str | None]:
         else:
             break
     if run < 3:
+        return 0, None
+    # ``stripped`` has no surrounding whitespace, so "only whitespace
+    # after the run" is exactly "the run is the whole line".
+    if closing and run != len(stripped):
         return 0, None
     return run, ch
 
@@ -207,7 +213,9 @@ def _content_aware_chunks(text: str, budget: int) -> list:
                 fence_run = run
                 is_fence_open = True
         else:
-            run, kind = _fence_info(stripped)
+            # Closing fence: at least as long as the opener, and nothing
+            # but whitespace after the run (see _fence_info).
+            run, kind = _fence_info(stripped, closing=True)
             if kind == fence_kind and run >= fence_run:
                 is_fence_close = True
 
@@ -241,7 +249,7 @@ def _content_aware_chunks(text: str, budget: int) -> list:
                 ns = nl.strip()
                 block_lines.append(nl)
                 block_bytes += nlb
-                run, kind = _fence_info(ns)
+                run, kind = _fence_info(ns, closing=True)
                 if kind == fence_kind and run >= fence_run:
                     closed = True
                     j += 1

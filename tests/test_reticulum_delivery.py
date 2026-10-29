@@ -639,6 +639,28 @@ class TestContentAwareChunks:
         assert len(parts) == 1, "four-backtick block should stay whole"
         assert parts[0] == text
 
+    def test_longer_fence_kept_whole_with_preceding_prose(self):
+        # The comment's literal scenario: prose fills most of the packet,
+        # so prose+block overflows while the block alone still fits. A
+        # four-backtick block whose body contains a three-backtick line
+        # must travel as one intact unit. Matching closers by their first
+        # three characters closes the block at the inner "```" and spills
+        # "code\n```\n````" into the next packet.
+        prefix = "Some prose before the block.\n" * 3  # 87 bytes
+        block = "````\n```\ncode\n```\n````\n"           # 22 bytes — fits whole
+        tail = "y" * 20
+        text = prefix + block + tail
+        parts = delivery._content_aware_chunks(text, 100)
+        assert "".join(parts) == text
+        assert len(parts) == 2, f"unexpected split: {parts!r}"
+        assert parts[0] == prefix, (
+            f"block should have started a fresh packet, got: {parts[0]!r}"
+        )
+        assert any(block in p for p in parts), (
+            f"four-backtick block was torn by a three-backtick line: {parts!r}"
+        )
+        assert parts[1] == block + tail
+
     def test_five_tilde_fence_not_closed_by_three(self):
         text = "~~~~~\ncode\n~~~ not a close\n~~~~~"
         parts = delivery._content_aware_chunks(text, 500)
@@ -654,6 +676,40 @@ class TestContentAwareChunks:
         assert delivery._fence_info("``") == (0, None)
         assert delivery._fence_info("") == (0, None)
         assert delivery._fence_info("``````") == (6, "`")
+
+    def test_fence_info_closing_rejects_trailing_info(self):
+        # Closing fences carry no info string: "```python" is content.
+        assert delivery._fence_info("```python", closing=True) == (0, None)
+        assert delivery._fence_info("````", closing=True) == (4, "`")
+        # Opening fences still accept an info string.
+        assert delivery._fence_info("```python") == (3, "`")
+
+    def test_fence_close_requires_whitespace_only(self):
+        # A ``` block containing a "```python" line: that line is ordinary
+        # content, so the block must not be torn there. The budget is set
+        # so preceding prose just fits with the opening lines but not with
+        # the whole block — closing early would leave the opening in the
+        # first packet and the rest of the code in the next one.
+        prefix = "Some prose before the block.\n" * 3
+        block = "```\n```python\nprint(1)\n```\n"
+        tail = "after prose\n"
+        text = prefix + block + tail
+        budget = len(prefix.encode("utf-8")) + 16
+        parts = delivery._content_aware_chunks(text, budget)
+        assert "".join(parts) == text
+        assert len(parts) == 2, f"unexpected split: {parts!r}"
+        assert parts[0] == prefix, (
+            f"block should not close at '```python', got: {parts[0]!r}"
+        )
+        assert parts[1] == block + tail
+
+    def test_longer_close_run_still_closes_shorter_open(self):
+        # A closing run at least as long as the opener is a close
+        # (CommonMark allows longer closers).
+        text = "```\ncode\n````\n"
+        parts = delivery._content_aware_chunks(text, 500)
+        assert len(parts) == 1
+        assert parts[0] == text
 
     # ── P1 follow-up: paragraph recheck after split ─────────────
 
