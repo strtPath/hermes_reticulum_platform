@@ -454,3 +454,284 @@ def test_note_failed_entry_clears_exactly_that_entry() -> None:
     before = pending.stats()["failed"]
     assert pending.note_failed_entry(older) is False
     assert pending.stats()["failed"] == before
+
+
+# ── Content-aware chunking ─────────────────────────────────────────────────
+
+
+def _strip_prefixes(parts: list) -> str:
+    """Strip ``[pN i/M] `` prefixes and join — inverse of sequence_chunks."""
+    stripped = []
+    for p in parts:
+        if "] " in p:
+            stripped.append(p.split("] ", 1)[1])
+        else:
+            stripped.append(p)
+    return "".join(stripped)
+
+
+class TestContentAwareChunks:
+    """_content_aware_chunks preserves markdown structure."""
+
+    def test_empty_returns_empty(self):
+        assert delivery._content_aware_chunks("", 100) == []
+
+    def test_short_text_returns_single_part(self):
+        assert delivery._content_aware_chunks("hello", 100) == ["hello"]
+
+    def test_single_long_line_splits_at_codepoint(self):
+        text = "a" * 500
+        parts = delivery._content_aware_chunks(text, 100)
+        assert len(parts) > 1
+        assert "".join(parts) == text
+        assert all(len(p.encode("utf-8")) <= 100 for p in parts)
+
+    def test_code_block_fits_stays_whole(self):
+        text = "before\n```\ndef foo():\n    pass\n```\nafter"
+        # Each line is short — block fits well within 500 bytes.
+        parts = delivery._content_aware_chunks(text, 500)
+        assert len(parts) == 1
+        assert parts[0] == text
+
+    def test_code_block_preserved_across_chunk_boundary(self):
+        # Preceding prose forces a split while the code block stays
+        # small enough to fit intact.  Budget is tight: 100 bytes.
+        prefix = "prose " * 30  # ~180 bytes — forces a split
+        code = "```\ncode\n```"
+        text = prefix + "\n" + code + "\nmore"
+        parts = delivery._content_aware_chunks(text, 100)
+        assert len(parts) > 1, "should force at least one split"
+        # The code block must appear whole in one part — no part
+        # should contain an unpaired fence.
+        for p in parts:
+            count = p.count("```")
+            assert count in (0, 2), f"unpaired fence in part: {p!r}"
+        assert "".join(parts) == text
+
+    def test_oversized_code_block_splits_at_line_boundaries(self):
+        # Code block lines are long enough that the block exceeds budget.
+        code_lines = [f"# line {i:03d} " + "x" * 50 for i in range(20)]
+        block = "```\n" + "\n".join(code_lines) + "\n```"
+        text = f"intro\n{block}\noutro"
+        parts = delivery._content_aware_chunks(text, 300)
+        assert "".join(parts) == text
+        # No part should split mid-line inside a code block.
+        for p in parts:
+            for line in p.splitlines(keepends=True):
+                assert len(line.encode("utf-8")) <= 300, (
+                    f"line exceeds budget: {line[:60]!r}"
+                )
+
+    def test_paragraph_boundary_preferred(self):
+        text = "para one a " * 15 + "\n\n" + "para two b " * 15
+        parts = delivery._content_aware_chunks(text, 200)
+        # We should get at least 2 parts (one per paragraph) because
+        # the blank line is a preferred split point.
+        assert len(parts) >= 2
+        assert "".join(parts) == text
+        # The blank line should end a chunk, not sit mid-chunk orphaned.
+        assert any(p.endswith("\n\n") for p in parts) or \
+               any(p.startswith("\n\n") for p in parts) or \
+               any("\n\n" not in p for p in parts), \
+               "blank-line paragraph boundary should be a split point"
+
+    def test_triple_tilde_fence_preserved(self):
+        text = "before\n~~~\ncode\n~~~\nafter"
+        parts = delivery._content_aware_chunks(text, 500)
+        assert len(parts) == 1
+        assert parts[0] == text
+
+    def test_unclosed_fence_at_eof(self):
+        # A fence that opens but never closes ends at EOF — treated as
+        # ordinary lines (no crash, no infinite loop).
+        text = "before\n```\ncode without close"
+        parts = delivery._content_aware_chunks(text, 200)
+        assert "".join(parts) == text
+
+    def test_mixed_fence_types(self):
+        text = "```\nbacktick block\n```\n\n~~~\ntilde block\n~~~"
+        parts = delivery._content_aware_chunks(text, 500)
+        assert len(parts) == 1
+        assert parts[0] == text
+
+    def test_fence_inside_chunk_with_prose(self):
+        # A small fence block should merge with surrounding prose.
+        text = "hello\n```\nx = 1\n```\nworld"
+        parts = delivery._content_aware_chunks(text, 400)
+        assert len(parts) == 1
+        assert parts[0] == text
+
+    def test_many_small_fences(self):
+        # Several small fence blocks in one message.
+        blocks = []
+        for i in range(5):
+            blocks.append(f"```\nblock {i}\n```")
+        text = "\n\n".join(blocks)
+        parts = delivery._content_aware_chunks(text, 500)
+        assert "".join(parts) == text
+
+    def test_multibyte_in_code_block(self):
+        text = "```\n# émoji: 🚀🚀🚀🚀🚀\nprint('héllo')\n```"
+        parts = delivery._content_aware_chunks(text, 300)
+        assert "".join(parts) == text
+        assert all("\ufffd" not in p for p in parts)
+
+    def test_skip_for_short_message(self):
+        # A message that fits under _BLOCK_CONTENT_BUDGET skips chunking.
+        text = "short message"
+        parts = delivery.chunk_for_send(text, "p1")
+        assert parts == [text]
+
+    def test_chunk_for_send_preserves_code_block(self):
+        # End-to-end: chunk_for_send with enough preceding prose to
+        # force a split, while the code block fits intact.
+        prefix = "Here is some text. " * 20  # ~420 bytes → forces split
+        code = "def answer():\n    return 42"
+        text = f"{prefix}\n```\n{code}\n```\nThat's it."
+        parts = delivery.chunk_for_send(text, "p1")
+        assert len(parts) > 1, "should force at least one split"
+        reassembled = _strip_prefixes(parts)
+        assert reassembled == text
+        # The code block opening and closing should be in the same part.
+        for p in parts:
+            stripped = p.split("] ", 1)[1] if "] " in p else p
+            if "```" in stripped:
+                assert stripped.count("```") in (0, 2), (
+                    f"fence split across parts: {stripped!r}"
+                )
+
+    # ── P1: oversized fenced lines ─────────────────────────────
+
+    def test_oversized_fenced_line_not_silently_truncated(self):
+        # A 500-char code line in a fence block exceeds the budget.
+        # Must be split by _split_oversized_line, not silently
+        # truncated by sequence_chunks.
+        line = "x" * 500
+        text = f"```\n{line}\n```"
+        parts = delivery._content_aware_chunks(text, 300)
+        assert "".join(parts) == text
+        for p in parts:
+            assert len(p.encode("utf-8")) <= 300
+
+    # ── P2: paragraph boundary memory ──────────────────────────
+
+    def test_paragraph_boundary_remembered(self):
+        # Greptile P2: "a"*199 + "\n\n" + "b"*99 + "\n" + "c"*99
+        # at budget 359. Each paragraph fits whole; the split
+        # should land at the blank line, not mid-paragraph.
+        text = "a" * 199 + "\n\n" + "b" * 99 + "\n" + "c" * 99 + "\n"
+        parts = delivery._content_aware_chunks(text, 359)
+        assert "".join(parts) == text
+        # The first part should end with the blank line (paragraph A
+        # intact), paragraph B starts in the second part.
+        assert len(parts) >= 2
+        assert parts[0].endswith("\n\n"), (
+            f"first part should end at paragraph boundary, got: {parts[0]!r}"
+        )
+
+    # ── P3: fence length tracking ──────────────────────────────
+
+    def test_four_backtick_fence_not_closed_by_three(self):
+        # A block opened with ```` (4 backticks) contains a line
+        # with ``` (3 backticks) as ordinary content. Must not close.
+        text = "````\nregular ``` inside\n````"
+        parts = delivery._content_aware_chunks(text, 500)
+        assert len(parts) == 1, "four-backtick block should stay whole"
+        assert parts[0] == text
+
+    def test_longer_fence_kept_whole_with_preceding_prose(self):
+        # The comment's literal scenario: prose fills most of the packet,
+        # so prose+block overflows while the block alone still fits. A
+        # four-backtick block whose body contains a three-backtick line
+        # must travel as one intact unit. Matching closers by their first
+        # three characters closes the block at the inner "```" and spills
+        # "code\n```\n````" into the next packet.
+        prefix = "Some prose before the block.\n" * 3  # 87 bytes
+        block = "````\n```\ncode\n```\n````\n"           # 22 bytes — fits whole
+        tail = "y" * 20
+        text = prefix + block + tail
+        parts = delivery._content_aware_chunks(text, 100)
+        assert "".join(parts) == text
+        assert len(parts) == 2, f"unexpected split: {parts!r}"
+        assert parts[0] == prefix, (
+            f"block should have started a fresh packet, got: {parts[0]!r}"
+        )
+        assert any(block in p for p in parts), (
+            f"four-backtick block was torn by a three-backtick line: {parts!r}"
+        )
+        assert parts[1] == block + tail
+
+    def test_five_tilde_fence_not_closed_by_three(self):
+        text = "~~~~~\ncode\n~~~ not a close\n~~~~~"
+        parts = delivery._content_aware_chunks(text, 500)
+        assert len(parts) == 1
+        assert parts[0] == text
+
+    def test_fence_info_helper(self):
+        assert delivery._fence_info("```") == (3, "`")
+        assert delivery._fence_info("````python") == (4, "`")
+        assert delivery._fence_info("~~~") == (3, "~")
+        assert delivery._fence_info("~~~~~") == (5, "~")
+        assert delivery._fence_info("hello") == (0, None)
+        assert delivery._fence_info("``") == (0, None)
+        assert delivery._fence_info("") == (0, None)
+        assert delivery._fence_info("``````") == (6, "`")
+
+    def test_fence_info_closing_rejects_trailing_info(self):
+        # Closing fences carry no info string: "```python" is content.
+        assert delivery._fence_info("```python", closing=True) == (0, None)
+        assert delivery._fence_info("````", closing=True) == (4, "`")
+        # Opening fences still accept an info string.
+        assert delivery._fence_info("```python") == (3, "`")
+
+    def test_fence_close_requires_whitespace_only(self):
+        # A ``` block containing a "```python" line: that line is ordinary
+        # content, so the block must not be torn there. The budget is set
+        # so preceding prose just fits with the opening lines but not with
+        # the whole block — closing early would leave the opening in the
+        # first packet and the rest of the code in the next one.
+        prefix = "Some prose before the block.\n" * 3
+        block = "```\n```python\nprint(1)\n```\n"
+        tail = "after prose\n"
+        text = prefix + block + tail
+        budget = len(prefix.encode("utf-8")) + 16
+        parts = delivery._content_aware_chunks(text, budget)
+        assert "".join(parts) == text
+        assert len(parts) == 2, f"unexpected split: {parts!r}"
+        assert parts[0] == prefix, (
+            f"block should not close at '```python', got: {parts[0]!r}"
+        )
+        assert parts[1] == block + tail
+
+    def test_longer_close_run_still_closes_shorter_open(self):
+        # A closing run at least as long as the opener is a close
+        # (CommonMark allows longer closers).
+        text = "```\ncode\n````\n"
+        parts = delivery._content_aware_chunks(text, 500)
+        assert len(parts) == 1
+        assert parts[0] == text
+
+    # ── P1 follow-up: paragraph recheck after split ─────────────
+
+    def test_paragraph_split_rechecks_remaining(self):
+        # Greptile P1 follow-up: after splitting at a paragraph
+        # boundary, the remaining paragraph may still exceed budget.
+        # "short para.\n\n" + ("q" * 120 + "\n") * 4 at budget 359
+        # should not silently drop bytes.
+        text = "short para.\n\n" + ("q" * 120 + "\n") * 4
+        parts = delivery._content_aware_chunks(text, 359)
+        assert "".join(parts) == text, "no bytes dropped"
+        for p in parts:
+            assert len(p.encode("utf-8")) <= 359
+
+    # ── P2: fence scan cap ──────────────────────────────────────
+
+    def test_unmatched_fence_does_not_rescan_forever(self):
+        # A sequence of long backtick lines with no real closer
+        # must not cause O(n²) scanning.  The scan cap kicks in
+        # and treats them as ordinary prose.
+        lines = ["`" * n for n in range(1000, 3, -1)]
+        text = "\n".join(lines)
+        parts = delivery._content_aware_chunks(text, 368)
+        assert "".join(parts) == text
+        # Must finish in reasonable time (test timeout handles that).

@@ -99,7 +99,11 @@ def sequence_chunks(parts: list, tag: str) -> list:
 
 def _utf8_codepoint_chunks(text: str, budget: int) -> list:
     """Split ``text`` on UTF-8 codepoint boundaries into parts of at most
-    ``budget`` bytes. No empty parts are produced for non-empty input."""
+    ``budget`` bytes. No empty parts are produced for non-empty input.
+
+    Kept for backward compatibility; new code prefers
+    :func:`_content_aware_chunks`, which is line-/paragraph-/fence-aware.
+    """
     if not text:
         return []
     out = []
@@ -116,6 +120,297 @@ def _utf8_codepoint_chunks(text: str, budget: int) -> list:
     if cur:
         out.append("".join(cur))
     return out
+
+
+def _fence_info(stripped: str, closing: bool = False) -> tuple[int, str | None]:
+    """Return (run_length, kind) for a stripped line.
+
+    kind is '`' or '~' when the line starts with at least three fence
+    characters; run_length is the count. Returns (0, None) for non-fence
+    lines.  An info string after the run (e.g. "python" in ```python) is
+    allowed on opening fences only: with ``closing=True`` the run must be
+    the whole line (only whitespace may follow), so "```python" inside a
+    four-backtick block is ordinary content rather than a close.
+    """
+    if not stripped:
+        return 0, None
+    ch = stripped[0]
+    if ch not in ("`", "~"):
+        return 0, None
+    run = 0
+    for c in stripped:
+        if c == ch:
+            run += 1
+        else:
+            break
+    if run < 3:
+        return 0, None
+    # ``stripped`` has no surrounding whitespace, so "only whitespace
+    # after the run" is exactly "the run is the whole line".
+    if closing and run != len(stripped):
+        return 0, None
+    return run, ch
+
+
+def _content_aware_chunks(text: str, budget: int) -> list:
+    """Split ``text`` on content-aware boundaries into parts of at most
+    ``budget`` bytes.
+
+    Preserves markdown structure so MeshChat / Sideband recipients see
+    intact code blocks and paragraphs instead of mid-line breaks:
+
+    - Fenced code blocks (`` ``` `` / `` ~~~ ``) stay whole when they fit
+      within one chunk.  When too large they split at line boundaries
+      inside the block, never mid-line.
+    - Normal prose prefers paragraph breaks (blank lines), then line
+      breaks, then word breaks, falling back to codepoint boundaries as
+      a last resort.
+    - A line that exceeds ``budget`` on its own is split at word
+      boundaries via :func:`_split_oversized_line`.
+
+    Single-pass, O(n) in the input length — same asymptotic cost as the
+    old codepoint walker.  No regex, no lookahead beyond the current
+    fence block.
+
+    No empty parts are produced for non-empty input (same contract as
+    :func:`_utf8_codepoint_chunks`).
+    """
+    if not text:
+        return []
+
+    # Split on line boundaries, preserving the newline characters so
+    # reassembly is exact (no guessing about \\n vs \\r\\n).
+    lines = text.splitlines(keepends=True)
+    if not lines:
+        return []
+
+    out: list[str] = []
+    cur: list[str] = []
+    cur_bytes = 0
+    # (index-into-cur, bytes) of the last paragraph boundary seen.
+    # When we overflow on a non-blank line we can split here instead
+    # of at the current position, keeping paragraphs whole.
+    last_para_split: tuple[int, int] | None = None
+    in_fence = False
+    fence_kind: str | None = None   # "`" or "~"
+    fence_run: int = 0              # count, e.g. 3 for "```", 4 for "````"
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        line_bytes = len(line.encode("utf-8"))
+        stripped = line.strip()
+
+        # ── fence detection ──────────────────────────────────────
+        is_fence_open = False
+        is_fence_close = False
+
+        if not in_fence:
+            run, kind = _fence_info(stripped)
+            if run >= 3:
+                in_fence = True
+                fence_kind = kind
+                fence_run = run
+                is_fence_open = True
+        else:
+            # Closing fence: at least as long as the opener, and nothing
+            # but whitespace after the run (see _fence_info).
+            run, kind = _fence_info(stripped, closing=True)
+            if kind == fence_kind and run >= fence_run:
+                is_fence_close = True
+
+        # ── inside a code block ──────────────────────────────────
+        if in_fence and not is_fence_open:
+            # Mid-block or closing line — accumulate; flush on close.
+            cur.append(line)
+            cur_bytes += line_bytes
+            if is_fence_close:
+                in_fence = False
+                fence_kind = None
+                fence_run = 0
+            i += 1
+            continue
+
+        # ── fence open (first line of a block) ───────────────────
+        if is_fence_open:
+            # Collect the whole block so we can decide whether it
+            # fits as a unit.  Capped at 200 lines: beyond that the
+            # fence is almost certainly not a real code block, and
+            # an unbounded scan turns a sequence of unmatched openers
+            # into O(n²) (P2).
+            block_lines = [line]
+            block_bytes = line_bytes
+            j = i + 1
+            closed = False
+            _fence_scan_limit = 200
+            while j < len(lines) and len(block_lines) < _fence_scan_limit:
+                nl = lines[j]
+                nlb = len(nl.encode("utf-8"))
+                ns = nl.strip()
+                block_lines.append(nl)
+                block_bytes += nlb
+                run, kind = _fence_info(ns, closing=True)
+                if kind == fence_kind and run >= fence_run:
+                    closed = True
+                    j += 1
+                    break
+                j += 1
+
+            # If the block was never closed it ends at EOF; treat it
+            # as ordinary lines (no special handling — the closing
+            # fence is just missing).
+            if not closed:
+                # Reset fence state: EOF acts as an implicit close.
+                in_fence = False
+                fence_kind = None
+                fence_run = 0
+                # Fall through to normal line handling below.
+            else:
+                if block_bytes <= budget:
+                    # Block fits in ONE chunk — keep it whole.
+                    if cur and cur_bytes + block_bytes > budget:
+                        out.append("".join(cur))
+                        cur = []
+                        cur_bytes = 0
+                    cur.extend(block_lines)
+                    cur_bytes += block_bytes
+                else:
+                    # Block too large — flush current chunk, then
+                    # split the block at its own line boundaries.
+                    if cur:
+                        out.append("".join(cur))
+                        cur = []
+                        cur_bytes = 0
+                        last_para_split = None
+                    for bl in block_lines:
+                        blb = len(bl.encode("utf-8"))
+                        # Oversized single line inside a fence block:
+                        # split it with _split_oversized_line so the
+                        # tail is not silently discarded (P1).
+                        if blb > budget:
+                            if cur:
+                                out.append("".join(cur))
+                                cur = []
+                                cur_bytes = 0
+                            sub = _split_oversized_line(bl, budget)
+                            for sp in sub[:-1]:
+                                out.append(sp)
+                            cur.append(sub[-1])
+                            cur_bytes = len(sub[-1].encode("utf-8"))
+                            continue
+                        if cur and cur_bytes + blb > budget:
+                            out.append("".join(cur))
+                            cur = []
+                            cur_bytes = 0
+                        cur.append(bl)
+                        cur_bytes += blb
+                i = j
+                in_fence = False
+                fence_kind = None
+                fence_run = 0
+                last_para_split = None
+                continue
+
+        # ── normal prose ─────────────────────────────────────────
+        is_blank = stripped == ""
+
+        # ── single oversized line ───────────────────────────────
+        # A line longer than the budget on its own must be split
+        # regardless of whether `cur` is empty (first line, or the
+        # first line after a fence block).  Prefer word boundaries,
+        # fall back to codepoint.
+        if line_bytes > budget:
+            if cur:
+                out.append("".join(cur))
+                cur = []
+                cur_bytes = 0
+                last_para_split = None
+            sub = _split_oversized_line(line, budget)
+            # All but the last sub-part become their own chunks;
+            # the last one starts the next chunk so short lines
+            # that follow can join it.
+            for sp in sub[:-1]:
+                out.append(sp)
+            cur.append(sub[-1])
+            cur_bytes = len(sub[-1].encode("utf-8"))
+            i += 1
+            continue
+
+        # ── normal overflow (multi-line accumulation) ───────────
+        if cur and cur_bytes + line_bytes > budget:
+            if is_blank:
+                # Blank line → flush BEFORE it so the blank sits at
+                # the end of the previous chunk (natural paragraph
+                # boundary visible to the reader).
+                out.append("".join(cur))
+                cur = []
+                cur_bytes = 0
+                last_para_split = None
+            elif last_para_split is not None:
+                # Remembered paragraph boundary: split there so
+                # the current paragraph stays whole instead of
+                # being torn mid-stream (P2).
+                split_idx, split_bytes = last_para_split
+                out.append("".join(cur[:split_idx]))
+                cur = cur[split_idx:]
+                cur_bytes -= split_bytes
+                last_para_split = None
+                # Recheck: the remaining paragraph + current line
+                # may still exceed budget (P1 follow-up).  If so,
+                # flush it as its own chunk before adding the line.
+                if cur_bytes + line_bytes > budget:
+                    out.append("".join(cur))
+                    cur = []
+                    cur_bytes = 0
+            else:
+                # Overflow — flush current chunk starting fresh.
+                # This line is known to fit (line_bytes ≤ budget at
+                # this point), so it can safely start the new chunk.
+                out.append("".join(cur))
+                cur = []
+                cur_bytes = 0
+                last_para_split = None
+
+        cur.append(line)
+        cur_bytes += line_bytes
+        if is_blank:
+            last_para_split = (len(cur), cur_bytes)
+        i += 1
+
+    if cur:
+        out.append("".join(cur))
+
+    return out
+
+
+def _split_oversized_line(line: str, budget: int) -> list:
+    """Split a single line that exceeds ``budget`` bytes at codepoint
+    boundaries.
+
+    Single-line blobs (no newlines) have no structural information to
+    preserve, so a codepoint-level split is the best we can do.  For
+    multi-line text the parent ``_content_aware_chunks`` handles fence
+    and paragraph boundaries before we ever reach this fallback.
+
+    Returns at least one part; no empty parts.  Lossless: joining the
+    returned parts reproduces the original line exactly.
+    """
+    if not line:
+        return [line]
+    out: list[str] = []
+    cur: list[str] = []
+    cur_bytes = 0
+    for ch in line:
+        b = len(ch.encode("utf-8"))
+        if cur and cur_bytes + b > budget:
+            out.append("".join(cur))
+            cur = []
+            cur_bytes = 0
+        cur.append(ch)
+        cur_bytes += b
+    if cur:
+        out.append("".join(cur))
+    return out or [line]
 
 
 # ── Propagation pending set ────────────────────────────────────────────────
@@ -388,8 +683,8 @@ def map_chunk_overflow(total_bytes: int) -> SendResult:
 def chunk_for_send(text: str, tag: str) -> list:
     """Split ``text`` for transmission, returning ready-to-send parts.
 
-    This is the seam that joins the two halves of the ported chunking logic,
-    which are useless apart: :func:`_utf8_codepoint_chunks` splits on codepoint
+    This is the seam that joins the two halves of the chunking logic:
+    :func:`_content_aware_chunks` splits on paragraph/line/fence-aware
     boundaries, :func:`sequence_chunks` adds the ``[tag i/N]`` prefixes.
 
     The prefix must be budgeted BEFORE splitting, not after. Splitting at the
@@ -411,7 +706,7 @@ def chunk_for_send(text: str, tag: str) -> list:
     # count stops growing. This avoids reserving for a two-digit index while the
     # send actually needs three digits (100+ parts), which would make
     # sequence_chunks truncate and silently drop content.
-    parts = _utf8_codepoint_chunks(text, _BLOCK_CONTENT_BUDGET)
+    parts = _content_aware_chunks(text, _BLOCK_CONTENT_BUDGET)
     if len(parts) <= 1:
         return parts
     seen = 0
@@ -420,7 +715,7 @@ def chunk_for_send(text: str, tag: str) -> list:
         budget = _BLOCK_CONTENT_BUDGET - reserve
         if budget <= 0:
             return []
-        parts = _utf8_codepoint_chunks(text, budget)
+        parts = _content_aware_chunks(text, budget)
         if len(parts) == seen:
             break
         seen = len(parts)
