@@ -122,6 +122,30 @@ def _utf8_codepoint_chunks(text: str, budget: int) -> list:
     return out
 
 
+def _fence_info(stripped: str) -> tuple[int, str | None]:
+    """Return (run_length, kind) for a stripped line.
+
+    kind is '`' or '~' when the line starts with at least three fence
+    characters; run_length is the count. Returns (0, None) for non-fence
+    lines.  An info string after the run (e.g. "python" in ```python) is
+    allowed on opening fences — closing fences must be whitespace-only.
+    """
+    if not stripped:
+        return 0, None
+    ch = stripped[0]
+    if ch not in ("`", "~"):
+        return 0, None
+    run = 0
+    for c in stripped:
+        if c == ch:
+            run += 1
+        else:
+            break
+    if run < 3:
+        return 0, None
+    return run, ch
+
+
 def _content_aware_chunks(text: str, budget: int) -> list:
     """Split ``text`` on content-aware boundaries into parts of at most
     ``budget`` bytes.
@@ -157,8 +181,13 @@ def _content_aware_chunks(text: str, budget: int) -> list:
     out: list[str] = []
     cur: list[str] = []
     cur_bytes = 0
+    # (index-into-cur, bytes) of the last paragraph boundary seen.
+    # When we overflow on a non-blank line we can split here instead
+    # of at the current position, keeping paragraphs whole.
+    last_para_split: tuple[int, int] | None = None
     in_fence = False
-    fence_char: str | None = None
+    fence_kind: str | None = None   # "`" or "~"
+    fence_run: int = 0              # count, e.g. 3 for "```", 4 for "````"
 
     i = 0
     while i < len(lines):
@@ -171,17 +200,16 @@ def _content_aware_chunks(text: str, budget: int) -> list:
         is_fence_close = False
 
         if not in_fence:
-            if stripped.startswith("```"):
+            run, kind = _fence_info(stripped)
+            if run >= 3:
                 in_fence = True
-                fence_char = "`"
+                fence_kind = kind
+                fence_run = run
                 is_fence_open = True
-            elif stripped.startswith("~~~"):
-                in_fence = True
-                fence_char = "~"
-                is_fence_open = True
-        elif (fence_char == "`" and stripped.startswith("```")) or \
-             (fence_char == "~" and stripped.startswith("~~~")):
-            is_fence_close = True
+        else:
+            run, kind = _fence_info(stripped)
+            if kind == fence_kind and run >= fence_run:
+                is_fence_close = True
 
         # ── inside a code block ──────────────────────────────────
         if in_fence and not is_fence_open:
@@ -190,7 +218,8 @@ def _content_aware_chunks(text: str, budget: int) -> list:
             cur_bytes += line_bytes
             if is_fence_close:
                 in_fence = False
-                fence_char = None
+                fence_kind = None
+                fence_run = 0
             i += 1
             continue
 
@@ -208,8 +237,8 @@ def _content_aware_chunks(text: str, budget: int) -> list:
                 ns = nl.strip()
                 block_lines.append(nl)
                 block_bytes += nlb
-                if (fence_char == "`" and ns.startswith("```")) or \
-                   (fence_char == "~" and ns.startswith("~~~")):
+                run, kind = _fence_info(ns)
+                if kind == fence_kind and run >= fence_run:
                     closed = True
                     j += 1
                     break
@@ -221,7 +250,8 @@ def _content_aware_chunks(text: str, budget: int) -> list:
             if not closed:
                 # Reset fence state: EOF acts as an implicit close.
                 in_fence = False
-                fence_char = None
+                fence_kind = None
+                fence_run = 0
                 # Fall through to normal line handling below.
             else:
                 if block_bytes <= budget:
@@ -239,8 +269,23 @@ def _content_aware_chunks(text: str, budget: int) -> list:
                         out.append("".join(cur))
                         cur = []
                         cur_bytes = 0
+                        last_para_split = None
                     for bl in block_lines:
                         blb = len(bl.encode("utf-8"))
+                        # Oversized single line inside a fence block:
+                        # split it with _split_oversized_line so the
+                        # tail is not silently discarded (P1).
+                        if blb > budget:
+                            if cur:
+                                out.append("".join(cur))
+                                cur = []
+                                cur_bytes = 0
+                            sub = _split_oversized_line(bl, budget)
+                            for sp in sub[:-1]:
+                                out.append(sp)
+                            cur.append(sub[-1])
+                            cur_bytes = len(sub[-1].encode("utf-8"))
+                            continue
                         if cur and cur_bytes + blb > budget:
                             out.append("".join(cur))
                             cur = []
@@ -249,7 +294,9 @@ def _content_aware_chunks(text: str, budget: int) -> list:
                         cur_bytes += blb
                 i = j
                 in_fence = False
-                fence_char = None
+                fence_kind = None
+                fence_run = 0
+                last_para_split = None
                 continue
 
         # ── normal prose ─────────────────────────────────────────
@@ -265,6 +312,7 @@ def _content_aware_chunks(text: str, budget: int) -> list:
                 out.append("".join(cur))
                 cur = []
                 cur_bytes = 0
+                last_para_split = None
             sub = _split_oversized_line(line, budget)
             # All but the last sub-part become their own chunks;
             # the last one starts the next chunk so short lines
@@ -285,6 +333,16 @@ def _content_aware_chunks(text: str, budget: int) -> list:
                 out.append("".join(cur))
                 cur = []
                 cur_bytes = 0
+                last_para_split = None
+            elif last_para_split is not None:
+                # Remembered paragraph boundary: split there so
+                # the current paragraph stays whole instead of
+                # being torn mid-stream (P2).
+                split_idx, split_bytes = last_para_split
+                out.append("".join(cur[:split_idx]))
+                cur = cur[split_idx:]
+                cur_bytes -= split_bytes
+                last_para_split = None
             else:
                 # Overflow — flush current chunk starting fresh.
                 # This line is known to fit (line_bytes ≤ budget at
@@ -292,9 +350,12 @@ def _content_aware_chunks(text: str, budget: int) -> list:
                 out.append("".join(cur))
                 cur = []
                 cur_bytes = 0
+                last_para_split = None
 
         cur.append(line)
         cur_bytes += line_bytes
+        if is_blank:
+            last_para_split = (len(cur), cur_bytes)
         i += 1
 
     if cur:

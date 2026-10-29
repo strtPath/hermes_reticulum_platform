@@ -494,13 +494,19 @@ class TestContentAwareChunks:
         assert parts[0] == text
 
     def test_code_block_preserved_across_chunk_boundary(self):
-        # A code block small enough to fit alone — must stay intact.
-        text = "prose\n```\ncode line\n```\nmore prose"
-        parts = delivery._content_aware_chunks(text, 200)
-        # Find a part containing the fence block intact.
-        joined = "".join(parts)
-        assert "```\ncode line\n```" in joined
-        assert joined == text
+        # Preceding prose forces a split while the code block stays
+        # small enough to fit intact.  Budget is tight: 100 bytes.
+        prefix = "prose " * 30  # ~180 bytes — forces a split
+        code = "```\ncode\n```"
+        text = prefix + "\n" + code + "\nmore"
+        parts = delivery._content_aware_chunks(text, 100)
+        assert len(parts) > 1, "should force at least one split"
+        # The code block must appear whole in one part — no part
+        # should contain an unpaired fence.
+        for p in parts:
+            count = p.count("```")
+            assert count in (0, 2), f"unpaired fence in part: {p!r}"
+        assert "".join(parts) == text
 
     def test_oversized_code_block_splits_at_line_boundaries(self):
         # Code block lines are long enough that the block exceeds budget.
@@ -577,17 +583,74 @@ class TestContentAwareChunks:
         assert parts == [text]
 
     def test_chunk_for_send_preserves_code_block(self):
-        # End-to-end: chunk_for_send with a code block should keep it readable.
+        # End-to-end: chunk_for_send with enough preceding prose to
+        # force a split, while the code block fits intact.
+        prefix = "Here is some text. " * 20  # ~420 bytes → forces split
         code = "def answer():\n    return 42"
-        text = f"Here is the code:\n```\n{code}\n```\nThat's it."
+        text = f"{prefix}\n```\n{code}\n```\nThat's it."
         parts = delivery.chunk_for_send(text, "p1")
-        if len(parts) > 1:
-            reassembled = _strip_prefixes(parts)
-            assert reassembled == text
-            # The code block opening and closing should be in the same part.
-            for p in parts:
-                stripped = p.split("] ", 1)[1] if "] " in p else p
-                if "```" in stripped:
-                    assert stripped.count("```") in (0, 2), (
-                        f"fence split across parts: {stripped!r}"
-                    )
+        assert len(parts) > 1, "should force at least one split"
+        reassembled = _strip_prefixes(parts)
+        assert reassembled == text
+        # The code block opening and closing should be in the same part.
+        for p in parts:
+            stripped = p.split("] ", 1)[1] if "] " in p else p
+            if "```" in stripped:
+                assert stripped.count("```") in (0, 2), (
+                    f"fence split across parts: {stripped!r}"
+                )
+
+    # ── P1: oversized fenced lines ─────────────────────────────
+
+    def test_oversized_fenced_line_not_silently_truncated(self):
+        # A 500-char code line in a fence block exceeds the budget.
+        # Must be split by _split_oversized_line, not silently
+        # truncated by sequence_chunks.
+        line = "x" * 500
+        text = f"```\n{line}\n```"
+        parts = delivery._content_aware_chunks(text, 300)
+        assert "".join(parts) == text
+        for p in parts:
+            assert len(p.encode("utf-8")) <= 300
+
+    # ── P2: paragraph boundary memory ──────────────────────────
+
+    def test_paragraph_boundary_remembered(self):
+        # Greptile P2: "a"*199 + "\n\n" + "b"*99 + "\n" + "c"*99
+        # at budget 359. Each paragraph fits whole; the split
+        # should land at the blank line, not mid-paragraph.
+        text = "a" * 199 + "\n\n" + "b" * 99 + "\n" + "c" * 99 + "\n"
+        parts = delivery._content_aware_chunks(text, 359)
+        assert "".join(parts) == text
+        # The first part should end with the blank line (paragraph A
+        # intact), paragraph B starts in the second part.
+        assert len(parts) >= 2
+        assert parts[0].endswith("\n\n"), (
+            f"first part should end at paragraph boundary, got: {parts[0]!r}"
+        )
+
+    # ── P3: fence length tracking ──────────────────────────────
+
+    def test_four_backtick_fence_not_closed_by_three(self):
+        # A block opened with ```` (4 backticks) contains a line
+        # with ``` (3 backticks) as ordinary content. Must not close.
+        text = "````\nregular ``` inside\n````"
+        parts = delivery._content_aware_chunks(text, 500)
+        assert len(parts) == 1, "four-backtick block should stay whole"
+        assert parts[0] == text
+
+    def test_five_tilde_fence_not_closed_by_three(self):
+        text = "~~~~~\ncode\n~~~ not a close\n~~~~~"
+        parts = delivery._content_aware_chunks(text, 500)
+        assert len(parts) == 1
+        assert parts[0] == text
+
+    def test_fence_info_helper(self):
+        assert delivery._fence_info("```") == (3, "`")
+        assert delivery._fence_info("````python") == (4, "`")
+        assert delivery._fence_info("~~~") == (3, "~")
+        assert delivery._fence_info("~~~~~") == (5, "~")
+        assert delivery._fence_info("hello") == (0, None)
+        assert delivery._fence_info("``") == (0, None)
+        assert delivery._fence_info("") == (0, None)
+        assert delivery._fence_info("``````") == (6, "`")
