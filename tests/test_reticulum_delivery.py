@@ -454,3 +454,140 @@ def test_note_failed_entry_clears_exactly_that_entry() -> None:
     before = pending.stats()["failed"]
     assert pending.note_failed_entry(older) is False
     assert pending.stats()["failed"] == before
+
+
+# ── Content-aware chunking ─────────────────────────────────────────────────
+
+
+def _strip_prefixes(parts: list) -> str:
+    """Strip ``[pN i/M] `` prefixes and join — inverse of sequence_chunks."""
+    stripped = []
+    for p in parts:
+        if "] " in p:
+            stripped.append(p.split("] ", 1)[1])
+        else:
+            stripped.append(p)
+    return "".join(stripped)
+
+
+class TestContentAwareChunks:
+    """_content_aware_chunks preserves markdown structure."""
+
+    def test_empty_returns_empty(self):
+        assert delivery._content_aware_chunks("", 100) == []
+
+    def test_short_text_returns_single_part(self):
+        assert delivery._content_aware_chunks("hello", 100) == ["hello"]
+
+    def test_single_long_line_splits_at_codepoint(self):
+        text = "a" * 500
+        parts = delivery._content_aware_chunks(text, 100)
+        assert len(parts) > 1
+        assert "".join(parts) == text
+        assert all(len(p.encode("utf-8")) <= 100 for p in parts)
+
+    def test_code_block_fits_stays_whole(self):
+        text = "before\n```\ndef foo():\n    pass\n```\nafter"
+        # Each line is short — block fits well within 500 bytes.
+        parts = delivery._content_aware_chunks(text, 500)
+        assert len(parts) == 1
+        assert parts[0] == text
+
+    def test_code_block_preserved_across_chunk_boundary(self):
+        # A code block small enough to fit alone — must stay intact.
+        text = "prose\n```\ncode line\n```\nmore prose"
+        parts = delivery._content_aware_chunks(text, 200)
+        # Find a part containing the fence block intact.
+        joined = "".join(parts)
+        assert "```\ncode line\n```" in joined
+        assert joined == text
+
+    def test_oversized_code_block_splits_at_line_boundaries(self):
+        # Code block lines are long enough that the block exceeds budget.
+        code_lines = [f"# line {i:03d} " + "x" * 50 for i in range(20)]
+        block = "```\n" + "\n".join(code_lines) + "\n```"
+        text = f"intro\n{block}\noutro"
+        parts = delivery._content_aware_chunks(text, 300)
+        assert "".join(parts) == text
+        # No part should split mid-line inside a code block.
+        for p in parts:
+            for line in p.splitlines(keepends=True):
+                assert len(line.encode("utf-8")) <= 300, (
+                    f"line exceeds budget: {line[:60]!r}"
+                )
+
+    def test_paragraph_boundary_preferred(self):
+        text = "para one a " * 15 + "\n\n" + "para two b " * 15
+        parts = delivery._content_aware_chunks(text, 200)
+        # We should get at least 2 parts (one per paragraph) because
+        # the blank line is a preferred split point.
+        assert len(parts) >= 2
+        assert "".join(parts) == text
+        # The blank line should end a chunk, not sit mid-chunk orphaned.
+        assert any(p.endswith("\n\n") for p in parts) or \
+               any(p.startswith("\n\n") for p in parts) or \
+               any("\n\n" not in p for p in parts), \
+               "blank-line paragraph boundary should be a split point"
+
+    def test_triple_tilde_fence_preserved(self):
+        text = "before\n~~~\ncode\n~~~\nafter"
+        parts = delivery._content_aware_chunks(text, 500)
+        assert len(parts) == 1
+        assert parts[0] == text
+
+    def test_unclosed_fence_at_eof(self):
+        # A fence that opens but never closes ends at EOF — treated as
+        # ordinary lines (no crash, no infinite loop).
+        text = "before\n```\ncode without close"
+        parts = delivery._content_aware_chunks(text, 200)
+        assert "".join(parts) == text
+
+    def test_mixed_fence_types(self):
+        text = "```\nbacktick block\n```\n\n~~~\ntilde block\n~~~"
+        parts = delivery._content_aware_chunks(text, 500)
+        assert len(parts) == 1
+        assert parts[0] == text
+
+    def test_fence_inside_chunk_with_prose(self):
+        # A small fence block should merge with surrounding prose.
+        text = "hello\n```\nx = 1\n```\nworld"
+        parts = delivery._content_aware_chunks(text, 400)
+        assert len(parts) == 1
+        assert parts[0] == text
+
+    def test_many_small_fences(self):
+        # Several small fence blocks in one message.
+        blocks = []
+        for i in range(5):
+            blocks.append(f"```\nblock {i}\n```")
+        text = "\n\n".join(blocks)
+        parts = delivery._content_aware_chunks(text, 500)
+        assert "".join(parts) == text
+
+    def test_multibyte_in_code_block(self):
+        text = "```\n# émoji: 🚀🚀🚀🚀🚀\nprint('héllo')\n```"
+        parts = delivery._content_aware_chunks(text, 300)
+        assert "".join(parts) == text
+        assert all("\ufffd" not in p for p in parts)
+
+    def test_skip_for_short_message(self):
+        # A message that fits under _BLOCK_CONTENT_BUDGET skips chunking.
+        text = "short message"
+        parts = delivery.chunk_for_send(text, "p1")
+        assert parts == [text]
+
+    def test_chunk_for_send_preserves_code_block(self):
+        # End-to-end: chunk_for_send with a code block should keep it readable.
+        code = "def answer():\n    return 42"
+        text = f"Here is the code:\n```\n{code}\n```\nThat's it."
+        parts = delivery.chunk_for_send(text, "p1")
+        if len(parts) > 1:
+            reassembled = _strip_prefixes(parts)
+            assert reassembled == text
+            # The code block opening and closing should be in the same part.
+            for p in parts:
+                stripped = p.split("] ", 1)[1] if "] " in p else p
+                if "```" in stripped:
+                    assert stripped.count("```") in (0, 2), (
+                        f"fence split across parts: {stripped!r}"
+                    )

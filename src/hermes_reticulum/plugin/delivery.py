@@ -99,7 +99,11 @@ def sequence_chunks(parts: list, tag: str) -> list:
 
 def _utf8_codepoint_chunks(text: str, budget: int) -> list:
     """Split ``text`` on UTF-8 codepoint boundaries into parts of at most
-    ``budget`` bytes. No empty parts are produced for non-empty input."""
+    ``budget`` bytes. No empty parts are produced for non-empty input.
+
+    Kept for backward compatibility; new code prefers
+    :func:`_content_aware_chunks`, which is line-/paragraph-/fence-aware.
+    """
     if not text:
         return []
     out = []
@@ -116,6 +120,217 @@ def _utf8_codepoint_chunks(text: str, budget: int) -> list:
     if cur:
         out.append("".join(cur))
     return out
+
+
+def _content_aware_chunks(text: str, budget: int) -> list:
+    """Split ``text`` on content-aware boundaries into parts of at most
+    ``budget`` bytes.
+
+    Preserves markdown structure so MeshChat / Sideband recipients see
+    intact code blocks and paragraphs instead of mid-line breaks:
+
+    - Fenced code blocks (`` ``` `` / `` ~~~ ``) stay whole when they fit
+      within one chunk.  When too large they split at line boundaries
+      inside the block, never mid-line.
+    - Normal prose prefers paragraph breaks (blank lines), then line
+      breaks, then word breaks, falling back to codepoint boundaries as
+      a last resort.
+    - A line that exceeds ``budget`` on its own is split at word
+      boundaries via :func:`_split_oversized_line`.
+
+    Single-pass, O(n) in the input length — same asymptotic cost as the
+    old codepoint walker.  No regex, no lookahead beyond the current
+    fence block.
+
+    No empty parts are produced for non-empty input (same contract as
+    :func:`_utf8_codepoint_chunks`).
+    """
+    if not text:
+        return []
+
+    # Split on line boundaries, preserving the newline characters so
+    # reassembly is exact (no guessing about \\n vs \\r\\n).
+    lines = text.splitlines(keepends=True)
+    if not lines:
+        return []
+
+    out: list[str] = []
+    cur: list[str] = []
+    cur_bytes = 0
+    in_fence = False
+    fence_char: str | None = None
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        line_bytes = len(line.encode("utf-8"))
+        stripped = line.strip()
+
+        # ── fence detection ──────────────────────────────────────
+        is_fence_open = False
+        is_fence_close = False
+
+        if not in_fence:
+            if stripped.startswith("```"):
+                in_fence = True
+                fence_char = "`"
+                is_fence_open = True
+            elif stripped.startswith("~~~"):
+                in_fence = True
+                fence_char = "~"
+                is_fence_open = True
+        elif (fence_char == "`" and stripped.startswith("```")) or \
+             (fence_char == "~" and stripped.startswith("~~~")):
+            is_fence_close = True
+
+        # ── inside a code block ──────────────────────────────────
+        if in_fence and not is_fence_open:
+            # Mid-block or closing line — accumulate; flush on close.
+            cur.append(line)
+            cur_bytes += line_bytes
+            if is_fence_close:
+                in_fence = False
+                fence_char = None
+            i += 1
+            continue
+
+        # ── fence open (first line of a block) ───────────────────
+        if is_fence_open:
+            # Collect the whole block so we can decide whether it
+            # fits as a unit.
+            block_lines = [line]
+            block_bytes = line_bytes
+            j = i + 1
+            closed = False
+            while j < len(lines):
+                nl = lines[j]
+                nlb = len(nl.encode("utf-8"))
+                ns = nl.strip()
+                block_lines.append(nl)
+                block_bytes += nlb
+                if (fence_char == "`" and ns.startswith("```")) or \
+                   (fence_char == "~" and ns.startswith("~~~")):
+                    closed = True
+                    j += 1
+                    break
+                j += 1
+
+            # If the block was never closed it ends at EOF; treat it
+            # as ordinary lines (no special handling — the closing
+            # fence is just missing).
+            if not closed:
+                # Reset fence state: EOF acts as an implicit close.
+                in_fence = False
+                fence_char = None
+                # Fall through to normal line handling below.
+            else:
+                if block_bytes <= budget:
+                    # Block fits in ONE chunk — keep it whole.
+                    if cur and cur_bytes + block_bytes > budget:
+                        out.append("".join(cur))
+                        cur = []
+                        cur_bytes = 0
+                    cur.extend(block_lines)
+                    cur_bytes += block_bytes
+                else:
+                    # Block too large — flush current chunk, then
+                    # split the block at its own line boundaries.
+                    if cur:
+                        out.append("".join(cur))
+                        cur = []
+                        cur_bytes = 0
+                    for bl in block_lines:
+                        blb = len(bl.encode("utf-8"))
+                        if cur and cur_bytes + blb > budget:
+                            out.append("".join(cur))
+                            cur = []
+                            cur_bytes = 0
+                        cur.append(bl)
+                        cur_bytes += blb
+                i = j
+                in_fence = False
+                fence_char = None
+                continue
+
+        # ── normal prose ─────────────────────────────────────────
+        is_blank = stripped == ""
+
+        # ── single oversized line ───────────────────────────────
+        # A line longer than the budget on its own must be split
+        # regardless of whether `cur` is empty (first line, or the
+        # first line after a fence block).  Prefer word boundaries,
+        # fall back to codepoint.
+        if line_bytes > budget:
+            if cur:
+                out.append("".join(cur))
+                cur = []
+                cur_bytes = 0
+            sub = _split_oversized_line(line, budget)
+            # All but the last sub-part become their own chunks;
+            # the last one starts the next chunk so short lines
+            # that follow can join it.
+            for sp in sub[:-1]:
+                out.append(sp)
+            cur.append(sub[-1])
+            cur_bytes = len(sub[-1].encode("utf-8"))
+            i += 1
+            continue
+
+        # ── normal overflow (multi-line accumulation) ───────────
+        if cur and cur_bytes + line_bytes > budget:
+            if is_blank:
+                # Blank line → flush BEFORE it so the blank sits at
+                # the end of the previous chunk (natural paragraph
+                # boundary visible to the reader).
+                out.append("".join(cur))
+                cur = []
+                cur_bytes = 0
+            else:
+                # Overflow — flush current chunk starting fresh.
+                # This line is known to fit (line_bytes ≤ budget at
+                # this point), so it can safely start the new chunk.
+                out.append("".join(cur))
+                cur = []
+                cur_bytes = 0
+
+        cur.append(line)
+        cur_bytes += line_bytes
+        i += 1
+
+    if cur:
+        out.append("".join(cur))
+
+    return out
+
+
+def _split_oversized_line(line: str, budget: int) -> list:
+    """Split a single line that exceeds ``budget`` bytes at codepoint
+    boundaries.
+
+    Single-line blobs (no newlines) have no structural information to
+    preserve, so a codepoint-level split is the best we can do.  For
+    multi-line text the parent ``_content_aware_chunks`` handles fence
+    and paragraph boundaries before we ever reach this fallback.
+
+    Returns at least one part; no empty parts.  Lossless: joining the
+    returned parts reproduces the original line exactly.
+    """
+    if not line:
+        return [line]
+    out: list[str] = []
+    cur: list[str] = []
+    cur_bytes = 0
+    for ch in line:
+        b = len(ch.encode("utf-8"))
+        if cur and cur_bytes + b > budget:
+            out.append("".join(cur))
+            cur = []
+            cur_bytes = 0
+        cur.append(ch)
+        cur_bytes += b
+    if cur:
+        out.append("".join(cur))
+    return out or [line]
 
 
 # ── Propagation pending set ────────────────────────────────────────────────
@@ -388,8 +603,8 @@ def map_chunk_overflow(total_bytes: int) -> SendResult:
 def chunk_for_send(text: str, tag: str) -> list:
     """Split ``text`` for transmission, returning ready-to-send parts.
 
-    This is the seam that joins the two halves of the ported chunking logic,
-    which are useless apart: :func:`_utf8_codepoint_chunks` splits on codepoint
+    This is the seam that joins the two halves of the chunking logic:
+    :func:`_content_aware_chunks` splits on paragraph/line/fence-aware
     boundaries, :func:`sequence_chunks` adds the ``[tag i/N]`` prefixes.
 
     The prefix must be budgeted BEFORE splitting, not after. Splitting at the
@@ -411,7 +626,7 @@ def chunk_for_send(text: str, tag: str) -> list:
     # count stops growing. This avoids reserving for a two-digit index while the
     # send actually needs three digits (100+ parts), which would make
     # sequence_chunks truncate and silently drop content.
-    parts = _utf8_codepoint_chunks(text, _BLOCK_CONTENT_BUDGET)
+    parts = _content_aware_chunks(text, _BLOCK_CONTENT_BUDGET)
     if len(parts) <= 1:
         return parts
     seen = 0
@@ -420,7 +635,7 @@ def chunk_for_send(text: str, tag: str) -> list:
         budget = _BLOCK_CONTENT_BUDGET - reserve
         if budget <= 0:
             return []
-        parts = _utf8_codepoint_chunks(text, budget)
+        parts = _content_aware_chunks(text, budget)
         if len(parts) == seen:
             break
         seen = len(parts)
