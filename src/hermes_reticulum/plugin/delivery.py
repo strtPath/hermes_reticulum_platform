@@ -226,12 +226,16 @@ def _content_aware_chunks(text: str, budget: int) -> list:
         # ── fence open (first line of a block) ───────────────────
         if is_fence_open:
             # Collect the whole block so we can decide whether it
-            # fits as a unit.
+            # fits as a unit.  Capped at 200 lines: beyond that the
+            # fence is almost certainly not a real code block, and
+            # an unbounded scan turns a sequence of unmatched openers
+            # into O(n²) (P2).
             block_lines = [line]
             block_bytes = line_bytes
             j = i + 1
             closed = False
-            while j < len(lines):
+            _fence_scan_limit = 200
+            while j < len(lines) and len(block_lines) < _fence_scan_limit:
                 nl = lines[j]
                 nlb = len(nl.encode("utf-8"))
                 ns = nl.strip()
@@ -343,6 +347,13 @@ def _content_aware_chunks(text: str, budget: int) -> list:
                 cur = cur[split_idx:]
                 cur_bytes -= split_bytes
                 last_para_split = None
+                # Recheck: the remaining paragraph + current line
+                # may still exceed budget (P1 follow-up).  If so,
+                # flush it as its own chunk before adding the line.
+                if cur_bytes + line_bytes > budget:
+                    out.append("".join(cur))
+                    cur = []
+                    cur_bytes = 0
             else:
                 # Overflow — flush current chunk starting fresh.
                 # This line is known to fit (line_bytes ≤ budget at

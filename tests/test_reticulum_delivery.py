@@ -654,3 +654,28 @@ class TestContentAwareChunks:
         assert delivery._fence_info("``") == (0, None)
         assert delivery._fence_info("") == (0, None)
         assert delivery._fence_info("``````") == (6, "`")
+
+    # ── P1 follow-up: paragraph recheck after split ─────────────
+
+    def test_paragraph_split_rechecks_remaining(self):
+        # Greptile P1 follow-up: after splitting at a paragraph
+        # boundary, the remaining paragraph may still exceed budget.
+        # "short para.\n\n" + ("q" * 120 + "\n") * 4 at budget 359
+        # should not silently drop bytes.
+        text = "short para.\n\n" + ("q" * 120 + "\n") * 4
+        parts = delivery._content_aware_chunks(text, 359)
+        assert "".join(parts) == text, "no bytes dropped"
+        for p in parts:
+            assert len(p.encode("utf-8")) <= 359
+
+    # ── P2: fence scan cap ──────────────────────────────────────
+
+    def test_unmatched_fence_does_not_rescan_forever(self):
+        # A sequence of long backtick lines with no real closer
+        # must not cause O(n²) scanning.  The scan cap kicks in
+        # and treats them as ordinary prose.
+        lines = ["`" * n for n in range(1000, 3, -1)]
+        text = "\n".join(lines)
+        parts = delivery._content_aware_chunks(text, 368)
+        assert "".join(parts) == text
+        # Must finish in reasonable time (test timeout handles that).
