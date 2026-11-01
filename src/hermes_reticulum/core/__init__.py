@@ -1,13 +1,11 @@
-"""Core modules for Hermes for Reticulum."""
+"""Shared core modules for Hermes for Reticulum.
+
+The standalone bridge now lives in :mod:`hermes_reticulum.bridge`. What
+remains here is the code both architectures still need: the access-control
+gate the platform adapter imports, and the tool-emoji table the bridge's step
+push uses.
+"""
 
 from hermes_reticulum.core.acl import AccessControl
-from hermes_reticulum.core.adapter import prepare_reply, split_message, truncate_to_limit
-from hermes_reticulum.core.bridge import LXMFBridge
-from hermes_reticulum.core.hermes_client import HermesClient
-from hermes_reticulum.core.profiler import ChannelMetrics, ChannelProfile, ChannelProfiler
 
-__all__ = [
-    "LXMFBridge", "HermesClient", "AccessControl",
-    "ChannelProfiler", "ChannelMetrics", "ChannelProfile",
-    "prepare_reply", "truncate_to_limit", "split_message",
-]
+__all__ = ["AccessControl"]

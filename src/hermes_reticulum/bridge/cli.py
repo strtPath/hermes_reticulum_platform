@@ -18,12 +18,12 @@ from pathlib import Path
 
 from hermes_reticulum import __version__
 from hermes_reticulum.core.acl import AccessControl
-from hermes_reticulum.core.bridge import LXMFBridge
-from hermes_reticulum.core.commands import build_dispatcher
-from hermes_reticulum.core.control_server import ControlServer
-from hermes_reticulum.core.hermes_client import HermesClient
-from hermes_reticulum.core.model_command import ModelCommandHandler
-from hermes_reticulum.core.preflight import run_preflight
+from hermes_reticulum.bridge.bridge import LXMFBridge
+from hermes_reticulum.bridge.commands import build_dispatcher
+from hermes_reticulum.bridge.control_server import ControlServer
+from hermes_reticulum.bridge.hermes_client import HermesClient
+from hermes_reticulum.bridge.model_command import ModelCommandHandler
+from hermes_reticulum.bridge.preflight import run_preflight
 from hermes_reticulum.utils import expand_path
 
 
@@ -69,7 +69,7 @@ def _deny_veto(hermes) -> None:
     loop. So: only log + stop when a child is running; otherwise no-op.
     """
     if not hermes.is_running():
-        logging.getLogger("hermes_reticulum.cli").debug(
+        logging.getLogger("hermes_reticulum.bridge.cli").debug(
             "mesh denied tool but no in-flight child — ignoring "
             "(stop_requested=%s guard_killed=%s deny_veto=%s)",
             getattr(hermes, "_stop_requested", None),
@@ -77,7 +77,7 @@ def _deny_veto(hermes) -> None:
             getattr(hermes, "_deny_veto", None),
         )
         return
-    logging.getLogger("hermes_reticulum.cli").info(
+    logging.getLogger("hermes_reticulum.bridge.cli").info(
         "mesh denied tool — aborting in-flight child "
         "(stop_requested=%s guard_killed=%s deny_veto=%s)",
         getattr(hermes, "_stop_requested", None),
@@ -113,7 +113,7 @@ def _validate_gate_timeouts() -> None:
         gate = float(os.environ.get("MESH_GATE_TIMEOUT", "900"))
         approval = float(os.environ.get("HERMES_MESH_APPROVAL_TIMEOUT", "900"))
     except (TypeError, ValueError):
-        logger = logging.getLogger("hermes_reticulum.cli")
+        logger = logging.getLogger("hermes_reticulum.bridge.cli")
         logger.error(
             "Gate timeout config invalid — MESH_GATE_TIMEOUT and "
             "HERMES_MESH_APPROVAL_TIMEOUT must be numeric seconds."
@@ -121,7 +121,7 @@ def _validate_gate_timeouts() -> None:
         sys.exit(1)
         return
     if not (math.isfinite(gate) and math.isfinite(approval)):
-        logger = logging.getLogger("hermes_reticulum.cli")
+        logger = logging.getLogger("hermes_reticulum.bridge.cli")
         logger.error(
             "PRE-EXEC GATE MISCONFIGURED: gate timeouts must be finite "
             "(MESH_GATE_TIMEOUT=%r, HERMES_MESH_APPROVAL_TIMEOUT=%r). "
@@ -130,7 +130,7 @@ def _validate_gate_timeouts() -> None:
         )
         sys.exit(1)
     if gate <= 0 or approval <= 0:
-        logger = logging.getLogger("hermes_reticulum.cli")
+        logger = logging.getLogger("hermes_reticulum.bridge.cli")
         logger.error(
             "PRE-EXEC GATE MISCONFIGURED: gate timeouts must be positive "
             "(MESH_GATE_TIMEOUT=%rs, HERMES_MESH_APPROVAL_TIMEOUT=%rs). "
@@ -140,7 +140,7 @@ def _validate_gate_timeouts() -> None:
         )
         sys.exit(1)
     if gate < approval:
-        logger = logging.getLogger("hermes_reticulum.cli")
+        logger = logging.getLogger("hermes_reticulum.bridge.cli")
         logger.error(
             "PRE-EXEC GATE MISCONFIGURED: MESH_GATE_TIMEOUT=%ss is less than "
             "HERMES_MESH_APPROVAL_TIMEOUT=%ss. The plugin's blocking POST "
@@ -156,7 +156,7 @@ def _validate_gate_timeouts() -> None:
 def cmd_run(args):
     """Start the bridge and run until interrupted."""
     setup_logging(args.verbose)
-    logger = logging.getLogger("hermes_reticulum.cli")
+    logger = logging.getLogger("hermes_reticulum.bridge.cli")
 
     # Build configuration from env / args
     display_name = args.display_name or os.getenv("RETICULUM_DISPLAY_NAME", "Hermes for Reticulum")

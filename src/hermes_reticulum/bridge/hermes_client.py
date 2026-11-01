@@ -403,7 +403,7 @@ class HermesClient:
         The hook (gateway process) and the CLI-side watcher (bridge process)
         both read this; the in-process flag is only a convenience.
         """
-        from hermes_reticulum.core.bridge import MODE_STATE_PATH
+        from hermes_reticulum.bridge.bridge import MODE_STATE_PATH
         return MODE_STATE_PATH
 
     def is_step_mode(self) -> bool:

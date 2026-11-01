@@ -14,7 +14,7 @@ import re
 import time
 from unittest.mock import MagicMock, patch
 
-from hermes_reticulum.core.downlink import sequence_chunks
+from hermes_reticulum.bridge.downlink import sequence_chunks
 
 
 class _CaptureHandler(logging.Handler):
@@ -28,8 +28,8 @@ class _CaptureHandler(logging.Handler):
 
 def _make_test_bridge():
     """Create a bridge with a mocked router (no RNS)."""
-    from hermes_reticulum.core.bridge import LXMFBridge
-    from hermes_reticulum.core.downlink import DownlinkTracker
+    from hermes_reticulum.bridge.bridge import LXMFBridge
+    from hermes_reticulum.bridge.downlink import DownlinkTracker
 
     bridge = LXMFBridge.__new__(LXMFBridge)
     bridge.router = MagicMock()
@@ -45,17 +45,17 @@ def _patch_send():
     mock_dest = MagicMock()
     mock_lxm = MagicMock()
     p_recall = patch(
-        "hermes_reticulum.core.bridge.RNS.Identity.recall",
+        "hermes_reticulum.bridge.bridge.RNS.Identity.recall",
         return_value=mock_identity,
     )
     # Mock RNS.Destination so the real constructor doesn't reject the mock.
     p_dest = patch(
-        "hermes_reticulum.core.bridge.RNS.Destination",
+        "hermes_reticulum.bridge.bridge.RNS.Destination",
         return_value=mock_dest,
     )
     # Mock the LXMessage class so the constructor returns our mock.
     p_lxmsg = patch(
-        "hermes_reticulum.core.bridge.LXMF.LXMessage",
+        "hermes_reticulum.bridge.bridge.LXMF.LXMessage",
         return_value=mock_lxm,
     )
     p_recall.start()
@@ -144,7 +144,7 @@ def test_pacing_interval_enforced():
         p_recall, p_dest, p_lxmsg, mock_lxm = _patch_send()
         try:
             with patch(
-                "hermes_reticulum.core.bridge.MIN_CHUNK_INTERVAL_MS",
+                "hermes_reticulum.bridge.bridge.MIN_CHUNK_INTERVAL_MS",
                 50,
             ):
                 start = time.monotonic()

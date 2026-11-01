@@ -1,5 +1,11 @@
 # QUICKSTART — Hermes for Reticulum
 
+> **Which path is this?** This guide covers the standalone bridge
+> (`hermes-reticulum run`, now in `src/hermes_reticulum/bridge/`), which is
+> archived but still deployed. The supported direction is the Hermes gateway
+> plugin in `src/hermes_reticulum/plugin/`; its configuration lives in the
+> Hermes profile's `.env` and `config.yaml`, not in this repo's `.env`.
+
 **Goal:** run an AI agent on your Reticulum mesh in under 10 minutes.
 
 **Outcome:** any LXMF client — an off-grid [RNode](https://github.com/markqvist/Reticulum) on LoRa, [Sideband](https://github.com/markqvist/Sideband) on your phone, NomadNet, or a custom Python app — can send a message to your bridge and receive a Hermes Agent reply. Mesh clients do not need direct internet. The bridge node (often a VPS or home gateway) holds the uplink to LLM APIs.

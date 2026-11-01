@@ -23,10 +23,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from hermes_reticulum.core.bridge import MIN_ANNOUNCE_INTERVAL_MIN
-from hermes_reticulum.core.control_server import ControlServer
-from hermes_reticulum.core.hermes_client import HermesClient
-from hermes_reticulum.core.model_command import ModelCommandHandler
+from hermes_reticulum.bridge.bridge import MIN_ANNOUNCE_INTERVAL_MIN
+from hermes_reticulum.bridge.control_server import ControlServer
+from hermes_reticulum.bridge.hermes_client import HermesClient
+from hermes_reticulum.bridge.model_command import ModelCommandHandler
 
 logger = logging.getLogger("hermes_reticulum.commands")
 
@@ -105,7 +105,7 @@ def _cmd_status(ctx: CommandContext, args: str) -> str | None:
     else:
         lines.append("  Bridge:     (control endpoint not wired)")
     # Preflight health
-    from hermes_reticulum.core.preflight import run_preflight
+    from hermes_reticulum.bridge.preflight import run_preflight
     hermes_bin = getattr(h, "hermes_bin", None)
     pf = run_preflight(hermes_bin=hermes_bin)
     if pf.ok:
@@ -285,7 +285,7 @@ def _cmd_tools(ctx: CommandContext, args: str) -> str | None:
 
 def _step_mode_file_path() -> str:
     """Path of the state file the hook (gateway process) polls for mode."""
-    from hermes_reticulum.core.bridge import MODE_STATE_PATH
+    from hermes_reticulum.bridge.bridge import MODE_STATE_PATH
     return MODE_STATE_PATH
 
 

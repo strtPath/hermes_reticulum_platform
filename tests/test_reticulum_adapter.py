@@ -1366,14 +1366,14 @@ def test_access_control_injected_reader_is_used():
     injected reader wins over os.getenv by construction."""
     reader_env = {
         "HERMES_RETICULUM_ALLOW_ALL": "on",
-        "HERMES_RETICULUM_ALLOWED_USERS": "aabbccddeeff00112233445566778899",
+        "HERMES_RETICULUM_ALLOWED_USERS": PEER_A,
         "HERMES_RETICULUM_BLOCKED_USERS": "",
     }
     os.environ["HERMES_RETICULUM_ALLOW_ALL"] = "true"  # must be ignored
     try:
         acl = AccessControl(get_env=lambda name, default: reader_env.get(name, default))
         assert acl.allow_all is True
-        assert acl.allowed_users == {"aabbccddeeff00112233445566778899"}
+        assert acl.allowed_users == {PEER_A}
         assert acl.blocked_users == set()
     finally:
         del os.environ["HERMES_RETICULUM_ALLOW_ALL"]

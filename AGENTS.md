@@ -98,12 +98,14 @@ failure mode in this project's history.
 
 ## Layout
 
-- `src/hermes_reticulum/` — the bridge. `cli.py` (entry, wiring), `core/bridge.py` (LXMF and
-  sending), `core/hermes_client.py` (turn execution, step watcher, clarify),
-  `core/control_server.py` (approval control), `core/downlink.py` (outbound queue),
-  `core/acl.py` (access control).
-- `src/hermes_reticulum/plugin/` — the adapter. `registration.py` (the
-  `ctx.register_platform` declaration), `adapter.py` (the adapter).
+- `src/hermes_reticulum/bridge/` — the archived standalone bridge. `cli.py` (entry, wiring),
+  `bridge.py` (LXMF and sending), `hermes_client.py` (turn execution, step watcher, clarify),
+  `control_server.py` (approval control), `downlink.py` (outbound queue). Kept for existing
+  deployments; see `src/hermes_reticulum/bridge/README.md`.
+- `src/hermes_reticulum/core/` — shared modules both architectures use: `acl.py` (access
+  control) and `tool_emoji.py` (the tool-name → emoji table).
+- `src/hermes_reticulum/plugin/` — the adapter (the direction of travel). `registration.py`
+  (the `ctx.register_platform` declaration), `adapter.py` (the adapter).
 - `src/hermes_reticulum/mesh-tool-gate/` — the pre-execution tool approve/deny gate plugin.
 - `docs/` — specs, findings, notes, procedures.
 - `scripts/` — tooling, including `security-sweep.py` (the PII gate).

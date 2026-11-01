@@ -16,7 +16,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from hermes_reticulum.cli import _load_dotenv  # noqa: E402
+from hermes_reticulum.bridge.cli import _load_dotenv  # noqa: E402
 from hermes_reticulum.core.acl import AccessControl  # noqa: E402
 
 ALLOWED = "11223344556677889900aabbccddeeff"

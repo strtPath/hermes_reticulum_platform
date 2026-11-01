@@ -15,7 +15,7 @@ from unittest import mock
 # Ensure project src is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))
 
-from hermes_reticulum.core.control_server import (  # noqa: E402
+from hermes_reticulum.bridge.control_server import (  # noqa: E402
     ControlServer,
     ToolStep,
     classify_tool,
@@ -602,8 +602,8 @@ class TestCmdStatusOutput(unittest.TestCase):
 
     def _make_ctx(self, is_running=False, token_stats=(0, 0, None)):
         """Build a CommandContext with a stub HermesClient."""
-        from hermes_reticulum.core.commands import CommandContext
-        from hermes_reticulum.core.model_command import ModelCommandHandler
+        from hermes_reticulum.bridge.commands import CommandContext
+        from hermes_reticulum.bridge.model_command import ModelCommandHandler
 
         h = _FakeHermesClient(
             session_name="test-sesh",
@@ -620,14 +620,14 @@ class TestCmdStatusOutput(unittest.TestCase):
 
     def test_bridge_line_shows_up(self):
         ctx = self._make_ctx()
-        from hermes_reticulum.core.commands import _cmd_status
+        from hermes_reticulum.bridge.commands import _cmd_status
         out = _cmd_status(ctx, "")
         self.assertIn("Bridge:", out)
         self.assertIn("up ", out)  # uptime string present
 
     def test_turn_line_not_running(self):
         ctx = self._make_ctx()
-        from hermes_reticulum.core.commands import _cmd_status
+        from hermes_reticulum.bridge.commands import _cmd_status
         out = _cmd_status(ctx, "")
         self.assertIn("Turn:", out)
         self.assertNotIn("Running:", out)
@@ -635,7 +635,7 @@ class TestCmdStatusOutput(unittest.TestCase):
 
     def test_tools_line_format(self):
         ctx = self._make_ctx()
-        from hermes_reticulum.core.commands import _cmd_status
+        from hermes_reticulum.bridge.commands import _cmd_status
         out = _cmd_status(ctx, "")
         self.assertIn("Tools:", out)
         # Session total = 3, turn = 0 (cleared in setUp)
@@ -643,7 +643,7 @@ class TestCmdStatusOutput(unittest.TestCase):
 
     def test_tokens_not_tracked(self):
         ctx = self._make_ctx(token_stats=(0, 0, None))
-        from hermes_reticulum.core.commands import _cmd_status
+        from hermes_reticulum.bridge.commands import _cmd_status
         out = _cmd_status(ctx, "")
         self.assertIn("not tracked by bridge", out)
         self.assertNotIn("session not persisted", out)
@@ -676,8 +676,8 @@ class TestCommandDispatcherAliases(unittest.TestCase):
     """/a and /d must route to the same handlers as /approve and /deny."""
 
     def _make_ctx(self):
-        from hermes_reticulum.core.commands import CommandContext
-        from hermes_reticulum.core.model_command import ModelCommandHandler
+        from hermes_reticulum.bridge.commands import CommandContext
+        from hermes_reticulum.bridge.model_command import ModelCommandHandler
 
         h = _FakeHermesClient(session_name="test-alias", model="gpt-4o")
         # ModelCommandHandler tries to load a persisted model pin and call
@@ -691,7 +691,7 @@ class TestCommandDispatcherAliases(unittest.TestCase):
         )
 
     def test_a_routes_to_approve(self):
-        from hermes_reticulum.core.commands import CommandDispatcher
+        from hermes_reticulum.bridge.commands import CommandDispatcher
 
         ctx = self._make_ctx()
         d = CommandDispatcher(ctx)
@@ -701,7 +701,7 @@ class TestCommandDispatcherAliases(unittest.TestCase):
         self.assertIn("No pending approval", result)
 
     def test_d_routes_to_deny(self):
-        from hermes_reticulum.core.commands import CommandDispatcher
+        from hermes_reticulum.bridge.commands import CommandDispatcher
 
         ctx = self._make_ctx()
         d = CommandDispatcher(ctx)
@@ -710,7 +710,7 @@ class TestCommandDispatcherAliases(unittest.TestCase):
         self.assertIn("No pending approval", result)
 
     def test_full_words_still_work(self):
-        from hermes_reticulum.core.commands import CommandDispatcher
+        from hermes_reticulum.bridge.commands import CommandDispatcher
 
         ctx = self._make_ctx()
         d = CommandDispatcher(ctx)
@@ -744,6 +744,6 @@ class TestAclStatusMode(unittest.TestCase):
 
     def test_allowlist_mode(self):
         self.assertEqual(
-            self._mode({"HERMES_RETICULUM_ALLOWED_USERS": "aabbccddeeff00112233445566778899"}),
+            self._mode({"HERMES_RETICULUM_ALLOWED_USERS": "aabbccdd" * 4}),
             "allowlist",
         )

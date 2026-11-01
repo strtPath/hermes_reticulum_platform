@@ -2,6 +2,15 @@
 
 **Put an AI agent on your Reticulum mesh — reachable from off-grid RNodes, Sideband, and any LXMF client, without a central messaging server.**
 
+> **Two architectures, one repo.** The supported path is the Hermes gateway
+> plugin in `src/hermes_reticulum/plugin/` — Reticulum/LXMF as a native Hermes
+> platform. The original standalone bridge now lives in
+> `src/hermes_reticulum/bridge/` and is archived: kept running for existing
+> deployments, not accepting new features. See
+> [src/hermes_reticulum/bridge/README.md](src/hermes_reticulum/bridge/README.md).
+> If you run the plugin, configure the Hermes profile's `.env` and `config.yaml`;
+> the repository `.env` is the standalone bridge's configuration layer.
+
 You deploy one bridge node. Field hardware sends encrypted LXMF messages over LoRa, TCP, or I2P. Reticulum routes across hops until Hermes Agent processes the request and the reply travels back the same mesh path. Clients in the field do not need direct internet access.
 
 ```

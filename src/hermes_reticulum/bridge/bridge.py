@@ -13,14 +13,14 @@ from pathlib import Path
 import LXMF
 import RNS
 
-from hermes_reticulum.core.adapter import prepare_reply, split_message
-from hermes_reticulum.core.bridge_liveness import BridgeLiveness
-from hermes_reticulum.core.downlink import (
+from hermes_reticulum.bridge.adapter import prepare_reply, split_message
+from hermes_reticulum.bridge.bridge_liveness import BridgeLiveness
+from hermes_reticulum.bridge.downlink import (
     MIN_CHUNK_INTERVAL_MS,
     DownlinkTracker,
     sequence_chunks,
 )
-from hermes_reticulum.core.profiler import ChannelMetrics, ChannelProfiler
+from hermes_reticulum.bridge.profiler import ChannelMetrics, ChannelProfiler
 from hermes_reticulum.utils import expand_path
 
 logger = logging.getLogger("hermes_reticulum.bridge")
@@ -580,7 +580,7 @@ class LXMFBridge:
         """
         try:
             state = getattr(lxm, "state", None)
-            from hermes_reticulum.core.downlink import _state_name, _state_outcome
+            from hermes_reticulum.bridge.downlink import _state_name, _state_outcome
             state_str = _state_name(state) if state is not None else "none"
             outcome = _state_outcome(state) if state is not None else "unknown"
             self.downlink.note_outcome(seq, outcome)

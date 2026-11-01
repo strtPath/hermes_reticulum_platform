@@ -40,7 +40,7 @@ dev = [
 ]
 
 [project.scripts]
-hermes-reticulum = "hermes_reticulum.cli:main"
+hermes-reticulum = "hermes_reticulum.bridge.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/strtPath/rns_hermes_endpoint"

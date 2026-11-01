@@ -18,10 +18,10 @@ BANNED_MODULES = {"RNS", "LXMF"}
 # happens to import a banned symbol for a different reason is still caught.
 EXCLUDED_MODULES = {
     # src: the bridge integration layer and its entrypoint
-    "hermes_reticulum.core.bridge",
-    "hermes_reticulum.core.bridge_liveness",
-    "hermes_reticulum.core.profiler",
-    "hermes_reticulum.cli",
+    "hermes_reticulum.bridge.bridge",
+    "hermes_reticulum.bridge.bridge_liveness",
+    "hermes_reticulum.bridge.profiler",
+    "hermes_reticulum.bridge.cli",
     "hermes_reticulum.plugin.adapter",
     # The transport IS the RNS/LXMF integration; registration probes the
     # installed stack for platform enablement. Both were added after this
