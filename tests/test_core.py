@@ -3,8 +3,8 @@ Tests for Hermes for Reticulum.
 """
 
 import hermes_reticulum.bridge.hermes_client as _hc
-from hermes_reticulum.core.acl import AccessControl
 from hermes_reticulum.bridge.hermes_client import HermesClient, find_hermes_bin
+from hermes_reticulum.core.acl import AccessControl
 
 
 def _mock_popen(monkeypatch, returncode, stdout, stderr):

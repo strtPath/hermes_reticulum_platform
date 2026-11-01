@@ -17,13 +17,13 @@ import sys
 from pathlib import Path
 
 from hermes_reticulum import __version__
-from hermes_reticulum.core.acl import AccessControl
 from hermes_reticulum.bridge.bridge import LXMFBridge
 from hermes_reticulum.bridge.commands import build_dispatcher
 from hermes_reticulum.bridge.control_server import ControlServer
 from hermes_reticulum.bridge.hermes_client import HermesClient
 from hermes_reticulum.bridge.model_command import ModelCommandHandler
 from hermes_reticulum.bridge.preflight import run_preflight
+from hermes_reticulum.core.acl import AccessControl
 from hermes_reticulum.utils import expand_path
 
 
