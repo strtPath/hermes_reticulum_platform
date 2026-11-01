@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Hermes for Reticulum — background runner
+# Hermes for Reticulum — legacy standalone bridge runner
 # Usage: ./start.sh [stop|status|restart]
+#
+# The supported path is the Hermes gateway plugin (src/hermes_reticulum/plugin/).
+# This script runs the archived standalone bridge; see
+# src/hermes_reticulum/bridge/README.md.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="${PROJECT_DIR:-$SCRIPT_DIR}"

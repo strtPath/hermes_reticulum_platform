@@ -2,9 +2,9 @@
 Tests for Hermes for Reticulum.
 """
 
-import hermes_reticulum.core.hermes_client as _hc
+import hermes_reticulum.bridge.hermes_client as _hc
+from hermes_reticulum.bridge.hermes_client import HermesClient, find_hermes_bin
 from hermes_reticulum.core.acl import AccessControl
-from hermes_reticulum.core.hermes_client import HermesClient, find_hermes_bin
 
 
 def _mock_popen(monkeypatch, returncode, stdout, stderr):
@@ -90,7 +90,7 @@ class TestFindHermesBin:
         fake.chmod(0o755)
 
         # Patch the candidates list
-        import hermes_reticulum.core.hermes_client as hc
+        import hermes_reticulum.bridge.hermes_client as hc
         original = hc._HERMES_CANDIDATES
         hc._HERMES_CANDIDATES = [str(fake)]
         try:
@@ -100,7 +100,7 @@ class TestFindHermesBin:
 
     def test_not_found(self, monkeypatch):
         monkeypatch.setattr("shutil.which", lambda x: None)
-        import hermes_reticulum.core.hermes_client as hc
+        import hermes_reticulum.bridge.hermes_client as hc
         original = hc._HERMES_CANDIDATES
         hc._HERMES_CANDIDATES = []
         try:
@@ -114,7 +114,7 @@ class TestHermesClient:
 
     def test_chat_returns_reply(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_reticulum.core.hermes_client.find_hermes_bin",
+            "hermes_reticulum.bridge.hermes_client.find_hermes_bin",
             lambda: "/usr/bin/hermes",
         )
         # Isolate from the real ~/.hermes/state.db: with no DB the session
@@ -127,7 +127,7 @@ class TestHermesClient:
 
     def test_chat_handles_timeout(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_reticulum.core.hermes_client.find_hermes_bin",
+            "hermes_reticulum.bridge.hermes_client.find_hermes_bin",
             lambda: "/usr/bin/hermes",
         )
         client = HermesClient(timeout=300)
@@ -147,7 +147,7 @@ class TestHermesClient:
 
         monkeypatch.setattr("subprocess.run", mock_run)
         monkeypatch.setattr(
-            "hermes_reticulum.core.hermes_client.find_hermes_bin",
+            "hermes_reticulum.bridge.hermes_client.find_hermes_bin",
             lambda: "/nonexistent/hermes",
         )
 
@@ -157,7 +157,7 @@ class TestHermesClient:
 
     def test_chat_handles_nonzero_exit(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_reticulum.core.hermes_client.find_hermes_bin",
+            "hermes_reticulum.bridge.hermes_client.find_hermes_bin",
             lambda: "/usr/bin/hermes",
         )
         _mock_popen(monkeypatch, 1, "", "Error: something broke")
@@ -178,7 +178,7 @@ class TestBridgeLiveness:
     """Test the Tier 4.5 bridge liveness proxy (Option 3b)."""
 
     def _lv(self, tmp_path, healthy=True, interval=60.0):
-        from hermes_reticulum.core import bridge_liveness as bl
+        from hermes_reticulum.bridge import bridge_liveness as bl
 
         sent = []
         lv = bl.BridgeLiveness(
@@ -235,7 +235,7 @@ class TestBridgeLiveness:
 
     def test_sd_notify_no_socket_returns_false(self, monkeypatch):
         monkeypatch.delenv("NOTIFY_SOCKET", raising=False)
-        from hermes_reticulum.core.bridge_liveness import sd_notify
+        from hermes_reticulum.bridge.bridge_liveness import sd_notify
         assert sd_notify("WATCHDOG=1") is False
 
     def test_sd_notify_sends_to_socket(self, tmp_path, monkeypatch):
@@ -244,7 +244,7 @@ class TestBridgeLiveness:
         recv = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         recv.bind(str(tmp_path / "notify.sock"))
         try:
-            from hermes_reticulum.core.bridge_liveness import sd_notify
+            from hermes_reticulum.bridge.bridge_liveness import sd_notify
             assert sd_notify("WATCHDOG=1") is True
             data, _ = recv.recvfrom(64)
             assert data == b"WATCHDOG=1"
@@ -256,7 +256,7 @@ class TestBridgeLiveness:
 
         import RNS
         monkeypatch.setattr(RNS.Transport, "interface_last_jobs", time.time())
-        from hermes_reticulum.core.bridge_liveness import default_rns_probe
+        from hermes_reticulum.bridge.bridge_liveness import default_rns_probe
         assert default_rns_probe() is True
 
     def test_default_probe_stale(self, monkeypatch):
@@ -264,13 +264,13 @@ class TestBridgeLiveness:
 
         import RNS
         monkeypatch.setattr(RNS.Transport, "interface_last_jobs", time.time() - 9999)
-        from hermes_reticulum.core.bridge_liveness import default_rns_probe
+        from hermes_reticulum.bridge.bridge_liveness import default_rns_probe
         assert default_rns_probe() is False
 
     def test_default_probe_never_set(self, monkeypatch):
         import RNS
         monkeypatch.setattr(RNS.Transport, "interface_last_jobs", 0.0)
-        from hermes_reticulum.core.bridge_liveness import default_rns_probe
+        from hermes_reticulum.bridge.bridge_liveness import default_rns_probe
         assert default_rns_probe() is False
 
     def test_stop_is_idempotent(self, tmp_path):
@@ -284,7 +284,7 @@ class TestPreflight:
     """Test the preflight check module."""
 
     def test_ok_when_binary_exists(self, monkeypatch, tmp_path):
-        from hermes_reticulum.core.preflight import run_preflight
+        from hermes_reticulum.bridge.preflight import run_preflight
 
         fake_bin = tmp_path / "hermes"
         fake_bin.write_text("#!/bin/sh\necho hermes version 0.1.0")
@@ -306,7 +306,7 @@ class TestPreflight:
             assert "binary" not in e.lower()
 
     def test_error_when_binary_missing(self, monkeypatch, tmp_path):
-        from hermes_reticulum.core.preflight import run_preflight
+        from hermes_reticulum.bridge.preflight import run_preflight
 
         result = run_preflight(
             hermes_bin=str(tmp_path / "nonexistent"),
@@ -318,7 +318,7 @@ class TestPreflight:
         assert any("does not exist" in e for e in result.errors)
 
     def test_render_includes_errors(self, monkeypatch, tmp_path):
-        from hermes_reticulum.core.preflight import PreflightResult
+        from hermes_reticulum.bridge.preflight import PreflightResult
 
         result = PreflightResult(ok=False)
         result.errors.append("Test error one")
@@ -329,7 +329,7 @@ class TestPreflight:
         assert "cannot start" in rendered
 
     def test_render_ok_only_checks(self):
-        from hermes_reticulum.core.preflight import PreflightResult
+        from hermes_reticulum.bridge.preflight import PreflightResult
 
         result = PreflightResult(ok=True)
         result.checks.append("Hermes binary: /usr/bin/hermes")
@@ -338,7 +338,7 @@ class TestPreflight:
         assert "cannot start" not in rendered
 
     def test_storage_warning_when_missing(self, monkeypatch, tmp_path):
-        from hermes_reticulum.core.preflight import run_preflight
+        from hermes_reticulum.bridge.preflight import run_preflight
 
         result = run_preflight(
             hermes_bin="/usr/bin/hermes",
@@ -349,7 +349,7 @@ class TestPreflight:
         assert any("does_not_exist" in w for w in result.warnings)
 
     def test_config_warning_when_missing(self, monkeypatch, tmp_path):
-        from hermes_reticulum.core.preflight import run_preflight
+        from hermes_reticulum.bridge.preflight import run_preflight
 
         result = run_preflight(
             hermes_bin="/usr/bin/hermes",
@@ -360,7 +360,7 @@ class TestPreflight:
         assert any("config not found" in w for w in result.warnings)
 
     def test_plugin_warning_when_missing(self, monkeypatch, tmp_path):
-        from hermes_reticulum.core.preflight import run_preflight
+        from hermes_reticulum.bridge.preflight import run_preflight
 
         # Point HOME at tmp_path so ~/.hermes/plugins doesn't exist
         monkeypatch.setenv("HOME", str(tmp_path))

@@ -6,8 +6,8 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
-from hermes_reticulum.core import context_verify
-from hermes_reticulum.core.context_verify import (
+from hermes_reticulum.bridge import context_verify
+from hermes_reticulum.bridge.context_verify import (
     MATCH,
     MISMATCH,
     UNAVAILABLE,

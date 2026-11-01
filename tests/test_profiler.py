@@ -2,12 +2,12 @@
 Tests for the adaptive response system (profiler + adapter).
 """
 
-from hermes_reticulum.core.adapter import (
+from hermes_reticulum.bridge.adapter import (
     prepare_reply,
     split_message,
     truncate_to_limit,
 )
-from hermes_reticulum.core.profiler import (
+from hermes_reticulum.bridge.profiler import (
     PROFILES,
     ChannelMetrics,
     ChannelProfiler,

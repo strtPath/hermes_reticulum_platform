@@ -115,7 +115,7 @@ class TestTableShape(unittest.TestCase):
         # rather than the generic fallback. Assert PRESENCE first — a name
         # absent from the table silently passed the old version of this test
         # while rendering ⚙️ in the field.
-        from hermes_reticulum.core.control_server import RISKY_TOOLS, SAFE_TOOLS
+        from hermes_reticulum.bridge.control_server import RISKY_TOOLS, SAFE_TOOLS
 
         for name in sorted(set(SAFE_TOOLS) | set(RISKY_TOOLS)):
             self.assertIn(

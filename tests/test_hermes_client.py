@@ -14,7 +14,7 @@ import unittest
 # Ensure project src is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from hermes_reticulum.core.hermes_client import HermesClient  # noqa: E402
+from hermes_reticulum.bridge.hermes_client import HermesClient  # noqa: E402
 
 
 def make_client(**kwargs):
@@ -114,7 +114,7 @@ class TestChatGuardKillRetry(unittest.TestCase):
 
         c._run_with_liveness_guard = fake_guard_kill
         # Avoid the 5s sleep in the real chat()
-        import hermes_reticulum.core.hermes_client as hc
+        import hermes_reticulum.bridge.hermes_client as hc
         orig_sleep = hc.time.sleep
         hc.time.sleep = lambda *a, **k: None
         try:
@@ -146,7 +146,7 @@ class TestChatGuardKillRetry(unittest.TestCase):
             )
 
         c._run_with_liveness_guard = fake_full_window_kill
-        import hermes_reticulum.core.hermes_client as hc
+        import hermes_reticulum.bridge.hermes_client as hc
         orig_sleep = hc.time.sleep
         hc.time.sleep = lambda *a, **k: None
         try:

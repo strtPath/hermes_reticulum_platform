@@ -9,7 +9,7 @@ import logging
 import time
 from unittest.mock import MagicMock, patch
 
-from hermes_reticulum.core.downlink import (
+from hermes_reticulum.bridge.downlink import (
     DownlinkTracker,
     _state_name,
     _state_outcome,
@@ -290,7 +290,7 @@ class TestSendReplyCallback:
     invoking it produces the 'Downlink ack' log."""
 
     def _make_bridge(self):
-        from hermes_reticulum.core.bridge import LXMFBridge
+        from hermes_reticulum.bridge.bridge import LXMFBridge
         b = LXMFBridge.__new__(LXMFBridge)
         b.router = MagicMock()
         b.destination = MagicMock()
@@ -300,10 +300,10 @@ class TestSendReplyCallback:
     def test_register_delivery_callback_called(self):
         b = self._make_bridge()
         mock_lxm = MagicMock()
-        with patch("hermes_reticulum.core.bridge.LXMF") as mock_lxmf:
+        with patch("hermes_reticulum.bridge.bridge.LXMF") as mock_lxmf:
             mock_lxmf.LXMessage.return_value = mock_lxm
             mock_lxmf.LXMessage.DIRECT = 0
-            with patch("hermes_reticulum.core.bridge.RNS") as mock_rns:
+            with patch("hermes_reticulum.bridge.bridge.RNS") as mock_rns:
                 mock_rns.Identity.recall.return_value = MagicMock()
                 mock_rns.Destination.return_value = MagicMock()
                 result = b.send_reply("abcd1234", "hello")
@@ -316,10 +316,10 @@ class TestSendReplyCallback:
         caplog.set_level(logging.INFO, logger="hermes_reticulum.bridge")
         b = self._make_bridge()
         mock_lxm = MagicMock()
-        with patch("hermes_reticulum.core.bridge.LXMF") as mock_lxmf:
+        with patch("hermes_reticulum.bridge.bridge.LXMF") as mock_lxmf:
             mock_lxmf.LXMessage.return_value = mock_lxm
             mock_lxmf.LXMessage.DIRECT = 0
-            with patch("hermes_reticulum.core.bridge.RNS") as mock_rns:
+            with patch("hermes_reticulum.bridge.bridge.RNS") as mock_rns:
                 mock_rns.Identity.recall.return_value = MagicMock()
                 mock_rns.Destination.return_value = MagicMock()
                 b.send_reply("abcd1234", "hello")
@@ -339,10 +339,10 @@ class TestSendReplyCallback:
         b = self._make_bridge()
         # Force handle_outbound to raise.
         b.router.handle_outbound.side_effect = Exception("send failed")
-        with patch("hermes_reticulum.core.bridge.LXMF") as mock_lxmf:
+        with patch("hermes_reticulum.bridge.bridge.LXMF") as mock_lxmf:
             mock_lxmf.LXMessage.return_value = MagicMock()
             mock_lxmf.LXMessage.DIRECT = 0
-            with patch("hermes_reticulum.core.bridge.RNS") as mock_rns:
+            with patch("hermes_reticulum.bridge.bridge.RNS") as mock_rns:
                 mock_rns.Identity.recall.return_value = MagicMock()
                 mock_rns.Destination.return_value = MagicMock()
                 result = b.send_reply("abcd1234", "hello")

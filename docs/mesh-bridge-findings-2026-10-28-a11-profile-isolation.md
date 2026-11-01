@@ -12,8 +12,8 @@ scope from its own home:
 
 ```python
 from agent.secret_scope import build_profile_secret_scope
-default_scope = build_profile_secret_scope("/home/user/.hermes")
-mesh_scope    = build_profile_secret_scope("/home/user/.hermes/profiles/mesh-test")
+default_scope = build_profile_secret_scope("$HERMES_HOME")
+mesh_scope    = build_profile_secret_scope("$HERMES_HOME/profiles/mesh-test")
 ```
 
 Result (2026-10-28):
@@ -44,8 +44,8 @@ then read through the adapter's actual gate function `platform_gate_env`:
 
 | Bound scope   | platform_gate_env(ALLOWED_USERS) |
 |---|---|
-| default       | owner hash (`<owner-hash>…`)         |
-| mesh-test     | synthetic (`bbbbbbbb…`)          |
+| default       | owner hash (redacted)            |
+| mesh-test     | synthetic (placeholder)          |
 
 Run with a deliberately poisoned `os.environ[HERMES_RETICULUM_ALLOWED_USERS] =
 deadbeef…` (the first-writer bridged-value leak of #72348). The bound scope wins

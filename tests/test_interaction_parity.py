@@ -14,7 +14,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from hermes_reticulum.core.hermes_client import HermesClient  # noqa: E402
+from hermes_reticulum.bridge.hermes_client import HermesClient  # noqa: E402
 
 
 def make_client(**kwargs):

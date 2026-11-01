@@ -60,6 +60,28 @@ Parked, not forgotten: cron-over-RNS delivery vehicle (community LXMF bot note, 
 in `plan.md`), `standalone_sender_fn` design question, P-2 map,
 P-3 media, P-4 NomadNet channel, P-9 gateway watchdog, RNS version pin (§14).
 
+**Owner request 2026-10-28 — spec pass next:** inbound image support (P-14 media,
+image-in half): a client attaches an image to a mesh DM; the adapter carries it
+(base64 in-band vs the standing RNS `Resource` + LXMF hash-pointer design, §19.2),
+decodes on inbound, and hands it to the model's vision path. The inbound path is
+currently text-only — no image/media handling in `adapter.py`/`transport.py`.
+Companion item: identity display-name resolution — `IdentityMap` (spec §4) exists
+but is unseeded (`IdentityMap()` built empty; `set_name` has no live call path),
+so peers surface as raw 32-hex hashes only. Spec either an `.env` seed
+(hash→name) or announce-callback name learning, so a multi-identity ACL is
+humanly distinguishable (each identity is already its own `chat_id`/session —
+only the names are missing).
+
+## Bridge archival (2026-10-28)
+
+The standalone bridge moved to `src/hermes_reticulum/bridge/` and is archived:
+kept for existing deployments, no new features. `core/` now holds only the shared
+`acl.py` and `tool_emoji.py`; the adapter imports `acl.py` from there. The bridge
+CLI entry point moved to `hermes_reticulum.bridge.cli:main`, and
+`scripts/check_imports.py` excludes the new paths. The plugin in `plugin/` is the
+direction of travel. The repository `.env` belongs to the bridge; the plugin reads
+the Hermes profile's `.env`/`config.yaml`. See `src/hermes_reticulum/bridge/README.md`.
+
 ## Card A1: Docs foundation
 
 **Build:** Split the spec (design §1-17 stays; working sections become these cards), add the
