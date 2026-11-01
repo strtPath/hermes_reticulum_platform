@@ -198,8 +198,14 @@ class TestParityWithInstalledGateway(unittest.TestCase):
     # live names), `page_info` is a browser_exec helper function, and the
     # holographic-memory plugin registers fact_store/fact_feedback with no emoji
     # at all. These are deliberate local entries, not drift, so the parity check
-    # does not require upstream to know them.
-    _ALIASES = {"todo", "cronjob", "page_info", "fact_store", "fact_feedback"}
+    # does not require upstream to know them. `browser_vault_*` were folded into
+    # the single `browser_vault` tool; `setup_mcp` was renamed to
+    # manage_connections (upstream replays cached prompts under the old name).
+    _ALIASES = {
+        "todo", "cronjob", "page_info", "fact_store", "fact_feedback",
+        "browser_vault_enter_code", "browser_vault_fill", "browser_vault_list",
+        "browser_vault_save_login", "browser_vault_unlock", "setup_mcp",
+    }
 
     def test_probe_sees_the_real_registry(self):
         """Guard against a vacuous pass over a partially-loaded registry."""
