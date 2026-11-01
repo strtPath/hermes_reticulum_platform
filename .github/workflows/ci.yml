@@ -23,7 +23,7 @@ jobs:
         run: pip install "ruff>=0.4"
 
       - name: Ruff check
-        run: ruff check src/ tests/
+        run: ruff check src/ tests/ scripts/ docs/
 
       - name: Import guard (no rns/lxmf in pure-logic modules)
         run: python scripts/check_imports.py

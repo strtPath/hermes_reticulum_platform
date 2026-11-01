@@ -54,7 +54,10 @@ DATEISH = re.compile(r"\b20\d{6}\b")
 HOME_ALLOW = ("/home/<user>", "/home/user", "/home/example", "/Users/<user>",
               "/home/<name>", "/home/username")
 
-VISIBLE_SUFFIXES = (".md", ".py", ".yaml", ".yml", ".txt", ".conf", ".example", ".json", ".toml", ".sh", ".service")
+VISIBLE_SUFFIXES = (
+    ".md", ".py", ".yaml", ".yml", ".txt", ".conf", ".example", ".json",
+    ".toml", ".sh", ".service",
+)
 
 
 def _composed_of_blocks(token: str) -> bool:
@@ -164,7 +167,8 @@ def main() -> int:
             findings += scan_text(rel, text)
 
     if findings:
-        print(f"\n{findings} finding(s). Redact before pushing (see docs/PII-RULES.md, 'Why this keeps happening').")
+        print(f"\n{findings} finding(s). Redact before pushing (see "
+              f"docs/PII-RULES.md, 'Why this keeps happening').")
         return 1
     print("clean: no non-synthetic identity material found")
     return 0
