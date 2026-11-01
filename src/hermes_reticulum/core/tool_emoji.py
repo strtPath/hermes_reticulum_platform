@@ -37,7 +37,6 @@ ERROR_EMOJI = "❌"
 # invent a scheme of its own.
 TOOL_EMOJIS: dict[str, str] = {
     "annotate_preview": "🔖",
-    "apply_layout": "🧱",
     "browser_back": "◀️",
     "browser_cdp": "🧪",
     "browser_click": "👆",
@@ -50,11 +49,7 @@ TOOL_EMOJIS: dict[str, str] = {
     "browser_scroll": "📜",
     "browser_snapshot": "📸",
     "browser_type": "⌨️",
-    "browser_vault_enter_code": "🔐",
-    "browser_vault_fill": "🔐",
-    "browser_vault_list": "🔐",
-    "browser_vault_save_login": "🔐",
-    "browser_vault_unlock": "🔐",
+    "browser_vault": "🔐",
     "browser_vision": "👁️",
     "clarify": "❓",
     "close_terminal": "🖥️",
@@ -63,11 +58,20 @@ TOOL_EMOJIS: dict[str, str] = {
     # `todo` and `cronjob` are the pre-rename names of todo_list/cronjob_manage
     # (single source: the registry's "todo"/cronjob entry points). `page_info`
     # is a browser_exec helper function, not a registered tool — it shares the
-    # browser family's 🌐. Kept out of the drift check's table because upstream
-    # registers none of them (see _ALIASES in tests).
+    # browser family's 🌐. `browser_vault_*` were separate tools that upstream
+    # folded into one `browser_vault` tool (they survive as its sub-action
+    # handlers); `setup_mcp` was renamed to manage_connections, which upstream
+    # keeps a replay shim for. Kept out of the drift check's table because
+    # upstream registers none of them (see _ALIASES in tests).
     "todo": "📋",
     "cronjob": "⏰",
     "page_info": "🌐",
+    "browser_vault_enter_code": "🔐",
+    "browser_vault_fill": "🔐",
+    "browser_vault_list": "🔐",
+    "browser_vault_save_login": "🔐",
+    "browser_vault_unlock": "🔐",
+    "setup_mcp": "🔌",
     # Holographic-memory plugin tools: registered with NO emoji upstream, so the
     # gateway itself falls back to ⚙️ for these. Distinct glyphs here so the mesh
     # operator can tell a fact lookup from a fact rating.
@@ -84,10 +88,6 @@ TOOL_EMOJIS: dict[str, str] = {
     "feishu_drive_reply_comment": "✉️",
     "focus_pane": "🪟",
     "gui_tour": "🧭",
-    "ha_call_service": "🏠",
-    "ha_get_state": "🏠",
-    "ha_list_entities": "🏠",
-    "ha_list_services": "🏠",
     "image_generate": "🎨",
     "kanban_attach": "📎",
     "kanban_attach_url": "📎",
@@ -101,8 +101,10 @@ TOOL_EMOJIS: dict[str, str] = {
     "kanban_list": "📋",
     "kanban_request_changes": "↩",
     "kanban_request_review": "👀",
+    "kanban_schedule": "⏰",
     "kanban_show": "📋",
     "kanban_unblock": "▶",
+    "manage_catalog": "🧩",
     "manage_connections": "🔗",
     "memory": "🧠",
     "patch": "🔧",
@@ -113,7 +115,8 @@ TOOL_EMOJIS: dict[str, str] = {
     "read_window_below": "🪟",
     "search_files": "🔎",
     "session_search": "🔍",
-    "setup_mcp": "🔌",
+    "set_theme": "🎨",
+    "setup_beat": "🎛",
     "show_tip": "💡",
     "skill_manage": "📝",
     "skill_view": "📚",
