@@ -35,7 +35,7 @@ def _load_dotenv():
         # Look for .env in CWD and project root
         candidates = [
             Path.cwd() / ".env",
-            Path(__file__).resolve().parent.parent.parent / ".env",
+            Path(__file__).resolve().parent.parent.parent.parent / ".env",
         ]
         for candidate in candidates:
             if candidate.exists():
