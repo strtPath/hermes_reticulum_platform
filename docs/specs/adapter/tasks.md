@@ -349,13 +349,19 @@ dispatch *is* a claim. The D7 deny signal must stay reliable for genuine denies 
 - Given a clarify prompt is pending and the agent is blocked, When the peer's text answer is
   dispatched inline, Then no desync line and no rejection are produced.
 - Given the adapter admits a peer and the gateway genuinely denies the delivered event (authz
-  mismatch), When the event returns with `_gateway_accepted` False and no reply was sent for it,
-  Then the desync line is logged and the canned reply is sent — A3 criterion 10 still holds.
+  mismatch), When the event returns with `_gateway_accepted` False and no send was attempted for
+  it, Then the desync line is logged and the canned reply is sent — A3 criterion 10 still holds.
+- Given an accepted inline dispatch whose reply send fails (LXMF delivery failure), When the
+  event returns with `_gateway_accepted` False, Then no desync line and no rejection are
+  produced — the marker records the send attempt, not its result.
+- Given an accepted inline dispatch whose reply is still in flight when `handle_message`
+  returns, When the event returns with `_gateway_accepted` False, Then no desync line and no
+  rejection are produced.
 - Given the A3 suite plus a busy-session regression case in the CI stub (the stub currently
   covers only the fresh-inbound path), When the suite runs, Then all pass, including the new
   case that reproduces the false alarm red-before/green-after.
 **Open decision for the peer:** which fix shape. The adapter-side discriminator (treat False as
-a deny only when no reply was delivered for the event during the `handle_message` await) keeps
+a deny only when no send was attempted for the event during the `handle_message` await) keeps
 A3 criterion 10 intact and needs no gateway change; the gateway-side fix (set the flag after a
 successful inline dispatch) is the correct one but the gateway is a separate install, so it
 lands as an upstream report or a documented base-class override. Both are laid out in the

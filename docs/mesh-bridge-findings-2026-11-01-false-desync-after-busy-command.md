@@ -98,11 +98,14 @@ intermittent.
 ## Fix options (needs a ruling)
 
 1. **Adapter-side, evidence-based (preferred).** Only treat `_gateway_accepted is False` as a
-   deny when no reply was delivered for this event during the `handle_message` await. The base's
+   deny when no send was *attempted* for this event during the `handle_message` await. The base's
    inline dispatch sends its own reply through the adapter's `send()`, and a real gate deny sends
-   nothing — so "a send happened" is exactly the discriminator. Implement with a context-local
-   marker set around the await in `deliver_inbound` and recorded by `send()`. Keeps criterion 10
-   true for genuine denies and needs no gateway change.
+   nothing — so "a send was attempted" is exactly the discriminator. The marker records the
+   attempt, not its result: `send()` can fail and even a successful `SendResult` does not prove
+   delivery, so keying on delivery would re-open the false alarm whenever an accepted command's
+   reply failed or was still in flight when the await returned. Implement with a context-local
+   marker set around the await in `deliver_inbound` and recorded at `send()` entry. Keeps
+   criterion 10 true for genuine denies and needs no gateway change.
 2. **Adapter-side, command-based.** Skip the desync alarm when `event.get_command()` resolves to
    a known command. Cheaper, but it silences a genuine gateway deny on a command message and
    still leaves the clarify path (a non-command) leaking, so it only half-fixes.
