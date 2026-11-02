@@ -1,0 +1,15 @@
+#!/bin/sh
+# PII gate (docs/PII-RULES.md): block a push that carries identity material.
+# Installed by scripts/install-git-hooks.sh (git config core.hooksPath .githooks).
+# Exit 0 = clean, exit 1 = findings; the sweep prints the file:line list.
+set -eu
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+if ! python3 scripts/security-sweep.py --untracked; then
+    echo "" >&2
+    echo "pre-push blocked: PII findings above. Redact before pushing (docs/PII-RULES.md)." >&2
+    echo "Do not add real values to SYNTHETIC; the allowlist is for obviously fake fixtures." >&2
+    exit 1
+fi

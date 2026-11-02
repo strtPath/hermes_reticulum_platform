@@ -31,6 +31,15 @@ Exit code 0 = clean. Exit 1 = findings, and you do not commit or push until they
 resolved. Do not add a value to the script's `SYNTHETIC` allowlist to make a real finding
 pass; the allowlist is for obviously fake fixtures only.
 
+Two gates enforce this automatically:
+
+- **Local pre-push hook.** `scripts/install-git-hooks.sh` sets `core.hooksPath` to the
+  committed `.githooks/` directory; `.githooks/pre-push` runs the sweep with `--untracked`
+  and blocks the push on any finding. Run the installer once per clone.
+- **CI.** The `pii-sweep` job in `.github/workflows/ci.yml` runs the same sweep on every
+  push and pull request into `dev`/`main`, so a push that skips the local hook still fails
+  the PR check.
+
 Sweep the staged diff as well, so a leak is caught at commit time and not only at push time:
 
 ```bash
