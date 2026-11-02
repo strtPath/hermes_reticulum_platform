@@ -17,10 +17,12 @@ Modes:
   --commits ARGS   scan the commits selected by `git rev-list ARGS`: every changed
                    file's blob AT THAT COMMIT, plus each commit message. Put it last;
                    every argument after --commits is passed to git rev-list. Merge
-                   commits are skipped (they introduce no content of their own).
-                   Use this to catch a leak that an earlier commit in the same push
-                   introduced and a later commit redacted: the final tree is clean,
-                   the intermediate commit is not. Example ranges:
+                   commits are scanned too (a conflict resolution can add a value
+                   neither parent has, and a merge message can carry one): their
+                   diff is taken against each parent. Use this to catch a leak that
+                   an earlier commit in the same push introduced and a later commit
+                   redacted: the final tree is clean, the intermediate commit is not.
+                   Example ranges:
                      --commits HEAD --not --remotes        (unpushed commits)
                      --commits origin/dev..HEAD            (a PR's commits)
   PATH...          scan only the named files (combine with --staged to read the index)
@@ -111,15 +113,22 @@ def _home_paths_are_generic(line: str) -> bool:
     return True
 
 
+def _git(*argv: str, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *argv], capture_output=True, text=True, check=check)
+
+
+def _z_split(output: str) -> list[str]:
+    """Split NUL-terminated git output; keeps filenames containing spaces intact."""
+    return [part for part in output.split("\0") if part]
+
+
 def git_files(untracked: bool) -> list[str]:
-    files = subprocess.run(["git", "ls-files"], capture_output=True, text=True,
-                           check=True).stdout.split()
+    # -z: NUL-separated paths, so "private notes.md" stays one filename.
+    files = _z_split(_git("ls-files", "-z").stdout)
     if untracked:
-        st = subprocess.run(["git", "status", "--porcelain"], capture_output=True,
-                            text=True, check=True).stdout
-        for line in st.splitlines():
-            if line.startswith("??"):
-                files.append(line[2:].strip())
+        for entry in _z_split(_git("status", "--porcelain", "-z").stdout):
+            if entry.startswith("?? "):
+                files.append(entry[3:])
     return files
 
 
@@ -128,39 +137,41 @@ def staged_content(path: str) -> str | None:
     return r.stdout if r.returncode == 0 else None
 
 
-def _git(*argv: str, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *argv], capture_output=True, text=True, check=check)
-
-
 def commit_entries(rev_args: list[str]) -> list[tuple[str, str]]:
-    """``(label, text)`` for every non-merge commit selected by ``git rev-list``.
+    """``(label, text)`` for every commit selected by ``git rev-list``.
 
     A leak enters history through a changed file or a commit message, so this
     reads each commit's changed blobs at that commit (``git show <sha>:<path>``)
     rather than the final tree. That is what catches a value introduced in one
-    commit and redacted in a later one inside the same push. Merge commits are
-    skipped: they carry no content beyond their parents. Root commits are read
-    in full via ``--root``.
+    commit and redacted in a later one inside the same push.
+
+    Merge commits are NOT skipped: a conflict resolution can add a value neither
+    parent contains ("evil merge"), and a merge message can carry one. For a
+    merge, ``diff-tree -m`` reports the files changed against each parent; the
+    paths are deduplicated before reading. Root commits are read in full via
+    ``--root``. ``-z`` keeps filenames containing spaces intact.
     """
     entries: list[tuple[str, str]] = []
     shas = _git("rev-list", *rev_args).stdout.split()
     for sha in shas:
-        parents = _git("rev-list", "--parents", "-n", "1", sha).stdout.split()
-        if len(parents) > 2:
-            continue
         short = sha[:8]
         entries.append((f"{short}:commit-message",
                         _git("log", "-1", "--format=%B", sha).stdout))
-        diff_args = ["diff-tree", "--no-commit-id", "--name-only", "-r"]
-        if len(parents) == 1:
-            diff_args.append("--root")
+        parents = _git("rev-list", "--parents", "-n", "1", sha).stdout.split()
+        diff_args = ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z"]
+        if len(parents) > 2:
+            diff_args.append("-m")          # one diff per parent
+        elif len(parents) == 1:
+            diff_args.append("--root")      # parentless commit: whole tree
         diff_args.append(sha)
         diff = _git(*diff_args, check=False)
         if diff.returncode != 0:
             continue
-        for path in diff.stdout.split():
-            if Path(path).suffix not in VISIBLE_SUFFIXES:
+        seen: set[str] = set()
+        for path in _z_split(diff.stdout):
+            if path in seen or Path(path).suffix not in VISIBLE_SUFFIXES:
                 continue
+            seen.add(path)
             blob = subprocess.run(["git", "show", f"{sha}:{path}"],
                                   capture_output=True, check=False)
             if blob.returncode != 0:
