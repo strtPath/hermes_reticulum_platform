@@ -14,6 +14,15 @@ Modes:
   --untracked      also scan untracked, non-ignored files
   --staged         scan the STAGED content (git index), so a value redacted only in
                    the working tree cannot slip through a commit
+  --commits ARGS   scan the commits selected by `git rev-list ARGS`: every changed
+                   file's blob AT THAT COMMIT, plus each commit message. Put it last;
+                   every argument after --commits is passed to git rev-list. Merge
+                   commits are skipped (they introduce no content of their own).
+                   Use this to catch a leak that an earlier commit in the same push
+                   introduced and a later commit redacted: the final tree is clean,
+                   the intermediate commit is not. Example ranges:
+                     --commits HEAD --not --remotes        (unpushed commits)
+                     --commits origin/dev..HEAD            (a PR's commits)
   PATH...          scan only the named files (combine with --staged to read the index)
 
 Synthetic fixtures are allowlisted: the patterns below and any token composed only of
@@ -119,6 +128,48 @@ def staged_content(path: str) -> str | None:
     return r.stdout if r.returncode == 0 else None
 
 
+def _git(*argv: str, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *argv], capture_output=True, text=True, check=check)
+
+
+def commit_entries(rev_args: list[str]) -> list[tuple[str, str]]:
+    """``(label, text)`` for every non-merge commit selected by ``git rev-list``.
+
+    A leak enters history through a changed file or a commit message, so this
+    reads each commit's changed blobs at that commit (``git show <sha>:<path>``)
+    rather than the final tree. That is what catches a value introduced in one
+    commit and redacted in a later one inside the same push. Merge commits are
+    skipped: they carry no content beyond their parents. Root commits are read
+    in full via ``--root``.
+    """
+    entries: list[tuple[str, str]] = []
+    shas = _git("rev-list", *rev_args).stdout.split()
+    for sha in shas:
+        parents = _git("rev-list", "--parents", "-n", "1", sha).stdout.split()
+        if len(parents) > 2:
+            continue
+        short = sha[:8]
+        entries.append((f"{short}:commit-message",
+                        _git("log", "-1", "--format=%B", sha).stdout))
+        diff_args = ["diff-tree", "--no-commit-id", "--name-only", "-r"]
+        if len(parents) == 1:
+            diff_args.append("--root")
+        diff_args.append(sha)
+        diff = _git(*diff_args, check=False)
+        if diff.returncode != 0:
+            continue
+        for path in diff.stdout.split():
+            if Path(path).suffix not in VISIBLE_SUFFIXES:
+                continue
+            blob = subprocess.run(["git", "show", f"{sha}:{path}"],
+                                  capture_output=True, check=False)
+            if blob.returncode != 0:
+                continue
+            entries.append((f"{short}:{path}",
+                            blob.stdout.decode("utf-8", errors="ignore")))
+    return entries
+
+
 def scan_text(rel: str, text: str) -> int:
     findings = 0
     for lineno, line in enumerate(text.splitlines(), 1):
@@ -137,11 +188,28 @@ def scan_text(rel: str, text: str) -> int:
 
 
 def main() -> int:
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    untracked = "--untracked" in sys.argv
-    staged = "--staged" in sys.argv
+    argv = sys.argv[1:]
+    commits = False
+    rev_args: list[str] = []
+    if "--commits" in argv:
+        idx = argv.index("--commits")
+        # Everything after --commits belongs to git rev-list, so a range like
+        # "HEAD --not --remotes" is not mistaken for sweep flags.
+        rev_args = argv[idx + 1:]
+        argv = argv[:idx]
+        commits = True
+    args = [a for a in argv if not a.startswith("--")]
+    untracked = "--untracked" in argv
+    staged = "--staged" in argv
 
-    if staged:
+    if commits:
+        if not rev_args:
+            print("usage: --commits <git rev-list args...>", file=sys.stderr)
+            return 2
+        findings = 0
+        for label, text in commit_entries(rev_args):
+            findings += scan_text(label, text)
+    elif staged:
         targets = args or git_files(untracked)
         root = Path.cwd()
         findings = 0

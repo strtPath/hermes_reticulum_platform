@@ -40,6 +40,18 @@ Two gates enforce this automatically:
   push and pull request into `dev`/`main`, so a push that skips the local hook still fails
   the PR check.
 
+Both gates scan the **commits being pushed**, not only the final tree. A leak introduced in
+one commit and redacted in a later commit of the same push leaves the final tree clean but
+still publishes the value in the first commit, so the gates run the sweep's `--commits` mode
+over the commit range the push or PR adds (`git rev-list <range>`) and check each changed
+blob at that commit plus each commit message. That mode is in `scripts/security-sweep.py`;
+run it by hand the same way:
+
+```bash
+python3 scripts/security-sweep.py --commits HEAD --not --remotes   # unpushed commits
+python3 scripts/security-sweep.py --commits origin/dev..HEAD       # a branch's commits
+```
+
 Sweep the staged diff as well, so a leak is caught at commit time and not only at push time:
 
 ```bash
