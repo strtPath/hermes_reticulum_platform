@@ -33,6 +33,7 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A9 | P-5 `/retry`, P-6 adapter-built `/status`, P-13 command audit | A4 | commands listed in §19.2 respond on the mesh | open |
 | A10 | P-8 `/clarify` verification, adapter-side plumbing only if gateway lacks it | A4 | `/clarify` resolves or a findings doc proves the gateway gap | open |
 | A11 | Per-profile mesh identity + ACL profile-scoping: one shared parser; ACL + identity read profile-scoped via `platform_gate_env` | A3 | two profiles on one box carry different identities + trust lists; no raw `os.getenv` in the A3 read path | closed (guard PR #21; isolation proven live 2026-10-28: `build_profile_secret_scope` on both homes returns distinct trust lists, both fail-closed — see `docs/mesh-bridge-findings-2026-10-28-a11-profile-isolation.md`) |
+| A12 | Stop false `⛔ Access not authorized.` after a busy-session inline command: the base leaves `_gateway_accepted` False on the inline-dispatch paths, so the adapter's D7 deny signal fires for an allowlisted peer | A3 | `/stop`, `/new` and a clarify answer mid-turn get their own ack and no rejection; a genuine gateway deny still logs a desync line and sends the canned reply | proposed — awaiting peer ruling | 
 
 ## Cross-cutting constraint: no interactive UI over LXMF
 
@@ -324,6 +325,48 @@ end-to-end after a per-platform display fix (`display.platforms.reticulum.tool_p
 false` + `thinking_progress: false`); see
 `docs/mesh-bridge-findings-2026-10-26-adapter-live-delivery-one-shot.md`. That unblocks the
 live two-profile broker run this card still needs to close.
+
+## Card A12: No false desync rejection on a busy-session inline dispatch
+
+**Build:** Stop the adapter sending `⛔ Access not authorized.` to an allowlisted peer right
+after that peer's own command ack. A command (`/stop`, `/new`, `/reset`, …) or a clarify answer
+arriving while a turn is running is dispatched inline by the base's
+`_handle_message_while_active`; those paths return without setting `event._gateway_accepted`,
+so `deliver_inbound` reads the base's `False` default as a gateway authz deny (A3 4.5 D7) and
+fires the canned rejection on an event the gateway actually handled.
+**Spec basis:** A3 4.5's premise — "False when its own authz/ingress gate dropped the event,
+True once the event is claimed for a session" — is false on the inline paths. An inline
+dispatch *is* a claim. The D7 deny signal must stay reliable for genuine denies (A3 criterion
+10) while not firing on a handled event. Findings:
+`docs/mesh-bridge-findings-2026-11-01-false-desync-after-busy-command.md`.
+**Blocked by:** A3 (merged). Not blocked by A4-A11.
+**Acceptance:**
+- Given an allowlisted peer with a turn running, When it sends `/stop`, Then it receives the
+  stop ack and **no** `⛔ Access not authorized.` follows, and no `gateway desync` line is
+  logged for that peer.
+- Given the same peer sends `/new` (or `/reset`) mid-turn and answers the confirm prompt inline,
+  When the prompt is answered, Then no desync line and no rejection are produced.
+- Given a clarify prompt is pending and the agent is blocked, When the peer's text answer is
+  dispatched inline, Then no desync line and no rejection are produced.
+- Given the adapter admits a peer and the gateway genuinely denies the delivered event (authz
+  mismatch), When the event returns with `_gateway_accepted` False and no send was attempted for
+  it, Then the desync line is logged and the canned reply is sent — A3 criterion 10 still holds.
+- Given an accepted inline dispatch whose reply send fails (LXMF delivery failure), When the
+  event returns with `_gateway_accepted` False, Then no desync line and no rejection are
+  produced — the marker records the send attempt, not its result.
+- Given an accepted inline dispatch whose reply is still in flight when `handle_message`
+  returns, When the event returns with `_gateway_accepted` False, Then no desync line and no
+  rejection are produced.
+- Given the A3 suite plus a busy-session regression case in the CI stub (the stub currently
+  covers only the fresh-inbound path), When the suite runs, Then all pass, including the new
+  case that reproduces the false alarm red-before/green-after.
+**Open decision for the peer:** which fix shape. The adapter-side discriminator (treat False as
+a deny only when no send was attempted for the event during the `handle_message` await) keeps
+A3 criterion 10 intact and needs no gateway change; the gateway-side fix (set the flag after a
+successful inline dispatch) is the correct one but the gateway is a separate install, so it
+lands as an upstream report or a documented base-class override. Both are laid out in the
+findings doc's "Fix options".
+**Status:** proposed — awaiting peer ruling. No code before that ruling (AGENTS.md).
 
 ## Branch and PR workflow
 
