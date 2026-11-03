@@ -31,6 +31,33 @@ Exit code 0 = clean. Exit 1 = findings, and you do not commit or push until they
 resolved. Do not add a value to the script's `SYNTHETIC` allowlist to make a real finding
 pass; the allowlist is for obviously fake fixtures only.
 
+Two gates enforce this automatically:
+
+- **Local pre-push hook.** `scripts/install-git-hooks.sh` sets `core.hooksPath` to the
+  committed `.githooks/` directory; `.githooks/pre-push` runs the sweep with `--untracked`
+  and blocks the push on any finding. Run the installer once per clone.
+- **CI.** The `pii-sweep` job in `.github/workflows/ci.yml` runs the same sweep on every
+  push and pull request into `dev`/`main`, so a push that skips the local hook still fails
+  the PR check.
+
+Both gates scan the **commits being pushed**, not only the final tree. A leak introduced in
+one commit and redacted in a later commit of the same push leaves the final tree clean but
+still publishes the value in the first commit, so the gates run the sweep's `--commits` mode
+over the commit range the push or PR adds (`git rev-list <range>`) and check each changed
+blob at that commit plus each commit message. That mode is in `scripts/security-sweep.py`;
+run it by hand the same way:
+
+```bash
+python3 scripts/security-sweep.py --commits HEAD --not --remotes   # unpushed commits
+python3 scripts/security-sweep.py --commits origin/dev..HEAD       # a branch's commits
+```
+
+On a **brand-new branch** there is no "before" commit to diff against. CI must not use
+`--not --remotes` there: by the time the job runs, the branch is already on the remote, so
+that range is empty and the check would pass without scanning anything. Exclude the default
+branches instead (`--commits HEAD --not origin/dev origin/main`), falling back to all history
+when neither is fetched.
+
 Sweep the staged diff as well, so a leak is caught at commit time and not only at push time:
 
 ```bash

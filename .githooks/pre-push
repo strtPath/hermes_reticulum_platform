@@ -1,0 +1,32 @@
+#!/bin/sh
+# PII gate (docs/PII-RULES.md): block a push that carries identity material.
+# Installed by scripts/install-git-hooks.sh (git config core.hooksPath .githooks).
+#
+# Scans the COMMITS being pushed, not just the final tree: a leak introduced in
+# one commit and redacted in a later commit of the same push would otherwise
+# pass every working-tree check while the first commit still publishes it.
+set -eu
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+status=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ -z "$local_sha" ] && continue
+    case "$local_sha" in
+        0000000000000000000000000000000000000000) continue ;;
+    esac
+    # Commits reachable from this pushed tip but absent from every remote ref:
+    # exactly the commits this push would publish. Empty when re-pushing a
+    # branch the remote already has.
+    if ! python3 scripts/security-sweep.py --commits "$local_sha" --not --remotes; then
+        status=1
+    fi
+done
+
+if [ "$status" -ne 0 ]; then
+    echo "" >&2
+    echo "pre-push blocked: PII findings above. Redact before pushing (docs/PII-RULES.md)." >&2
+    echo "Do not add real values to SYNTHETIC; the allowlist is for obviously fake fixtures." >&2
+    exit 1
+fi
