@@ -52,6 +52,12 @@ python3 scripts/security-sweep.py --commits HEAD --not --remotes   # unpushed co
 python3 scripts/security-sweep.py --commits origin/dev..HEAD       # a branch's commits
 ```
 
+On a **brand-new branch** there is no "before" commit to diff against. CI must not use
+`--not --remotes` there: by the time the job runs, the branch is already on the remote, so
+that range is empty and the check would pass without scanning anything. Exclude the default
+branches instead (`--commits HEAD --not origin/dev origin/main`), falling back to all history
+when neither is fetched.
+
 Sweep the staged diff as well, so a leak is caught at commit time and not only at push time:
 
 ```bash

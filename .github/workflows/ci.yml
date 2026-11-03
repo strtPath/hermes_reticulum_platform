@@ -76,6 +76,20 @@ jobs:
         if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
         run: python3 scripts/security-sweep.py --commits "${{ github.event.before }}..${{ github.sha }}"
 
+      # A brand-new branch has no "before" commit. Do NOT use --not --remotes
+      # here: by the time this job runs the branch is already on the remote, so
+      # that range is empty and the check would pass without scanning anything.
+      # Exclude the default branches instead, falling back to all history when
+      # neither is fetched (fetch-depth: 0 fetches them, but do not assume it).
       - name: Security sweep (new branch commits)
         if: github.event_name == 'push' && github.event.before == '0000000000000000000000000000000000000000'
-        run: python3 scripts/security-sweep.py --commits HEAD --not --remotes
+        run: |
+          bases=""
+          for ref in origin/dev origin/main; do
+            git rev-parse --verify --quiet "$ref" >/dev/null && bases="$bases $ref"
+          done
+          if [ -n "$bases" ]; then
+            python3 scripts/security-sweep.py --commits HEAD --not $bases
+          else
+            python3 scripts/security-sweep.py --commits HEAD
+          fi
