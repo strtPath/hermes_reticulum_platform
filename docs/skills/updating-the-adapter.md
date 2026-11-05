@@ -37,8 +37,9 @@ the extra steps the diff actually requires. It ends with the restart reminder.
 Manual equivalent, if you prefer:
 
 ```bash
-git pull --ff-only
-git diff --name-only <old>..<new> -- src/hermes_reticulum/plugin src/hermes_reticulum/core
+git fetch origin && git merge --ff-only origin/dev
+git diff --name-only <old>..<new> -- src/hermes_reticulum \
+    ':(exclude)src/hermes_reticulum/bridge' ':(exclude)src/hermes_reticulum/mesh-tool-gate'
 hermes gateway restart
 ```
 
@@ -46,8 +47,8 @@ hermes gateway restart
 
 | Diff touches | What it needs beyond the pull |
 |---|---|
-| `src/hermes_reticulum/plugin/`, `core/` | Gateway restart only — imported live from the checkout |
-| `pyproject.toml`, `uv.lock`, `requirements.txt` | `venv/bin/pip install -e .` first, then restart |
+| `src/hermes_reticulum/` (except `bridge/` and `mesh-tool-gate/`) | Gateway restart only — imported live from the checkout |
+| `pyproject.toml`, `requirements.txt` | Sync the installed venv first — the one named in `~/.hermes/plugins/reticulum/venv_path.txt` (default install: `venv/`; `--global` installs use `install.sh --global`) — then restart |
 | `plugins/reticulum/` (the shim itself, rare) | Re-copy the shim to `~/.hermes/plugins/reticulum/` (re-run `install.sh`), then restart |
 | `src/hermes_reticulum/mesh-tool-gate/` | Re-copy — this plugin **is** a copy, not a shim: replace `~/.hermes/plugins/mesh-tool-gate/` and clear its `__pycache__`, then restart |
 | docs, tests, `config/` only | Nothing — the gateway imports none of it |
