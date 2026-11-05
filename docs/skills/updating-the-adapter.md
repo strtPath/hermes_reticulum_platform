@@ -34,10 +34,15 @@ The script fast-forwards the checked-out branch (refusing on divergence or a det
 HEAD — it will not switch branches behind you), lists the new commits, and prints only
 the extra steps the diff actually requires. It ends with the restart reminder.
 
-Manual equivalent, if you prefer:
+Manual equivalent, if you prefer (follows the checked-out branch's own
+upstream, same as the script; explicit fetch+merge rather than `git pull`
+because this repo's `pull.rebase` config makes `git pull --ff-only` refuse
+dirty trees):
 
 ```bash
-git fetch origin && git merge --ff-only origin/dev
+up="$(git rev-parse --abbrev-ref '@{upstream}')"
+git fetch "${up%%/*}" --prune
+git merge --ff-only "$up"
 git diff --name-only <old>..<new> -- src/hermes_reticulum \
     ':(exclude)src/hermes_reticulum/bridge' ':(exclude)src/hermes_reticulum/mesh-tool-gate'
 hermes gateway restart

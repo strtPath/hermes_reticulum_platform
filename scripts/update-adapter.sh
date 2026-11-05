@@ -122,7 +122,7 @@ if [ -n "$(moved pyproject.toml requirements.txt)" ]; then
     if [ -n "$venv_hint" ]; then
         echo "Dependencies changed. Sync the venv the gateway actually uses"
         echo "(read from ~/.hermes/plugins/reticulum/venv_path.txt) BEFORE restarting:"
-        echo "  $venv_hint/bin/pip install -e ."
+        printf '  %q install -e .\n' "$venv_hint/bin/pip"
     else
         echo "Dependencies changed. Sync the venv you installed with BEFORE"
         echo "restarting (default install: venv/; --venv PATH: that path;"
