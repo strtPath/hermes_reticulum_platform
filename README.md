@@ -90,6 +90,19 @@ hermes-reticulum run           # note the LXMF address printed at startup
 opt-in, so an install that only copied the directories would never load them.
 Restart the Hermes gateway afterwards so they activate.
 
+### Keeping the adapter up to date
+
+The gateway imports the adapter **live from this checkout** — the copy in
+`~/.hermes/plugins/reticulum/` is a thin shim that points `sys.path` at this
+repo's `src/`. So updating is two steps: `git pull` here, then a Hermes gateway
+restart to load the new code. There is no reinstall or re-copy for adapter code;
+imports bind at gateway start, so a restart is required — now or later, your call.
+
+`scripts/update-adapter.sh` does the pull and tells you what the diff actually
+needs (a plain restart, a venv sync if dependencies moved, a re-copy if the
+`mesh-tool-gate` plugin changed) and reminds you to restart. Full explanation:
+[docs/skills/updating-the-adapter.md](docs/skills/updating-the-adapter.md).
+
 ## Installation
 
 ```bash

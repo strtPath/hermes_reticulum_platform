@@ -11,6 +11,7 @@ Each file is one procedure. Read the one that matches your task, not all of them
 | `repo-navigation.md` | you need to find where something lives or which doc owns a topic |
 | `lost-work-audit.md` | asked whether anything was lost after a merge or a gap |
 | `live-testing.md` | exercising a change against the running bridge or adapter |
+| `updating-the-adapter.md` | asked how the adapter updates, or asked to pull/update it on a running gateway |
 | `babysit-pr-for-review-bot.md` | watching a PR until the review bot has no unresolved comments, and its score is at target |
 
 `docs/PII-RULES.md` is the rule; `pii-check-before-commit-and-pr.md` is the procedure that
