@@ -69,7 +69,7 @@ hermes gateway restart   # activates the reticulum platform
 
 `install.sh` does more than create the venv: it copies both Hermes plugins (`reticulum`, `mesh-tool-gate`) into `~/.hermes/plugins/` **and** adds them to `plugins.enabled` in `~/.hermes/config.yaml`. Hermes directory plugins are opt-in, so an install that only copied the directories would never load them. Restart the Hermes gateway afterwards so they activate.
 
-The full walkthrough is [QUICKSTART.md](QUICKSTART.md). Note that QUICKSTART currently leads with the archived bridge path; for the plugin, configure the Hermes profile's `.env` and `config.yaml` — the repository `.env` belongs to the bridge only.
+The full walkthrough is [QUICKSTART.md](QUICKSTART.md). Remember the two configuration layers: the plugin reads the Hermes profile's `.env` and `config.yaml`; the repository `.env` belongs to the archived bridge only.
 
 ## Configuration (plugin path)
 
