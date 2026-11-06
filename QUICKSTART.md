@@ -112,7 +112,7 @@ hermes gateway restart   # or: hermes gateway start
 hermes gateway status    # reticulum should appear as an enabled platform
 ```
 
-At startup the adapter announces on the mesh; note the **LXMF address** (32-character hex hash) in the gateway log. This is the contact address mesh clients use to reach your agent.
+At startup the adapter announces on the mesh. Get the agent's **LXMF address** (32-character hex hash) with `hermes-reticulum address` — a read-only command that prints it from the identity file under `RETICULUM_STORAGE_PATH` — or read it off Sideband/RNode once the node appears. This is the contact address mesh clients use to reach your agent.
 
 ## 6. Connect from the mesh
 
@@ -142,7 +142,7 @@ Use the same address with NomadNet, custom LXMF scripts, or any Reticulum peer �
 ## Quick verification
 
 - `hermes gateway status` — reticulum platform listed and enabled
-- Gateway log shows the announce and the node's LXMF address
+- The node announces on the mesh (`hermes-reticulum address` prints its LXMF hash)
 - A message from an allowlisted hash gets a reply; one from an unknown hash gets the automated rejection (or silence, per your ACL config)
 
 If nothing announces, check in order: is `reticulum` in `plugins.enabled`? Is `RETICULUM_DISPLAY_NAME` set in the Hermes profile env (without it the platform silently never registers)? Does `~/.reticulum/config` have at least one working interface?

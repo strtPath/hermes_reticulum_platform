@@ -8,7 +8,7 @@ The supported path is the **Hermes gateway plugin** in `src/hermes_reticulum/plu
 RNode / Sideband / any LXMF client          Hermes gateway (Reticulum node)
 ┌──────────────────────────┐   LoRa / TCP / I2P   ┌──────────────────────────┐
 │  Off-grid mesh client    │ ◄════ Reticulum ═══► │  Hermes Agent platform   │
-│  (no internet required)  │   LXMF (encrypted)   │  + mesh tool gate        │
+│  (no internet required)  │   LXMF (encrypted)   │  + approvals             │
 └──────────────────────────┘                      └──────────────────────────┘
          ▲                                                    │
          │         mesh hops through Reticulum peers          │
@@ -38,7 +38,6 @@ Off-grid mesh nodes can move data. They usually cannot reach a capable AI withou
 - **No central messaging server** — identity-based LXMF delivery across autonomous peers
 - **Internet where it belongs** — the gateway node (often a VPS or home gateway) reaches LLM APIs; mesh clients do not need a direct ISP link
 - **Access control by LXMF identity hash** — allowlist or blocklist senders before they reach Hermes
-- **Pre-execution approval over the mesh** — dangerous commands prompt `/approve` or `/deny` on your LXMF client before anything runs
 
 ## Real-world scenarios
 
@@ -63,11 +62,23 @@ Off-grid mesh nodes can move data. They usually cannot reach a capable AI withou
 git clone https://github.com/strtPath/rns_hermes_endpoint.git
 cd rns_hermes_endpoint
 bash install.sh          # venv + both Hermes plugins + plugins.enabled entries
-cp config/env.example .env   # bridge config only; plugin reads Hermes profile env
-hermes gateway restart   # activates the reticulum platform
 ```
 
-`install.sh` does more than create the venv: it copies both Hermes plugins (`reticulum`, `mesh-tool-gate`) into `~/.hermes/plugins/` **and** adds them to `plugins.enabled` in `~/.hermes/config.yaml`. Hermes directory plugins are opt-in, so an install that only copied the directories would never load them. Restart the Hermes gateway afterwards so they activate.
+Then configure the **Hermes profile** — the plugin never reads this repository's `.env` (that file belongs to the bridge). In `~/.hermes/.env`:
+
+```bash
+RETICULUM_DISPLAY_NAME="My Mesh Agent"          # required; without it the platform never registers
+HERMES_RETICULUM_ALLOWED_USERS=YOUR_LXMF_HASH   # deny-by-default allowlist
+```
+
+Now restart the gateway so the plugins activate:
+
+```bash
+hermes gateway restart
+hermes gateway status    # reticulum should appear as an enabled platform
+```
+
+`install.sh` does more than create the venv: it copies both Hermes plugins (`reticulum`, `mesh-tool-gate`) into `~/.hermes/plugins/` **and** adds them to `plugins.enabled` in `~/.hermes/config.yaml`. Hermes directory plugins are opt-in, so an install that only copied the directories would never load them.
 
 The full walkthrough is [QUICKSTART.md](QUICKSTART.md). Remember the two configuration layers: the plugin reads the Hermes profile's `.env` and `config.yaml`; the repository `.env` belongs to the archived bridge only.
 
@@ -77,44 +88,51 @@ The adapter runs **inside the Hermes gateway** and reads the Hermes profile's `.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `RETICULUM_DISPLAY_NAME` | *(none)* | Name announced on the mesh. **Required:** without it the platform is treated as not set up and never registers. |
 | `HERMES_RETICULUM_ALLOWED_USERS` | *(empty)* | LXMF hash allowlist (deny-by-default) |
 | `HERMES_RETICULUM_BLOCKED_USERS` | *(empty)* | LXMF hash blocklist |
 | `HERMES_RETICULUM_ALLOW_ALL` | `false` | Allow any sender — set only if you mean it |
-| `HERMES_MESH_CONTROL_URL` | `http://127.0.0.1:8471` | Where the gate plugin posts `/gate/notify` |
+| `RETICULUM_ANNOUNCE_INTERVAL` | `60` | Periodic re-announce cadence in minutes (0 disables; floor 1) |
+| `RETICULUM_STORAGE_PATH` | `~/.hermes/.reticulum-gateway/storage` | Identity/LXMF storage directory (`RETICULUM_STORAGE` is accepted as the legacy spelling) |
+| `RETICULUM_RNS_CONFIG_PATH` | `~/.reticulum` | Reticulum config directory |
+| `RETICULUM_REQUIRE_SHARED_INSTANCE` | `false` | Require attaching to a running rnsd instead of starting an instance |
+| `RETICULUM_HOME_CHANNEL` | *(none)* | Home channel for scheduled/cron delivery to the mesh |
 
-Each client has a 32-character hex LXMF identity hash — from Sideband (Settings → Identity), your RNode/Reticulum identity, or the address printed when the platform starts.
+Each client has a 32-character hex LXMF identity hash. The agent's own address is derived from the identity file under `RETICULUM_STORAGE_PATH`; print it with `hermes-reticulum address` (read-only command, works on either path's storage), or read it from Sideband/RNode once the node announces.
 
 The shipped `plugins/reticulum/config.yaml` sets `approvals.timeout: 900` as this platform's documented default: a multi-hop LoRa path can take minutes for a prompt and answer to cross, and 300s (the Hermes default) fails closed before an AFK operator can reply.
 
-### Tool emojis
-
-Tool activity on the mesh uses the same per-tool emoji the Telegram gateway shows (`📖 read_file`, `💻 terminal`, `🔍 web_search` …), so a transcript reads the same whichever platform the operator is on; a failed call is always `❌`. The table ships with the adapter, and to re-sync without waiting for a release, drop a flat `{"tool_name": "emoji"}` map at `~/.hermes/reticulum_tool_emojis.json` — entries there win over the built-in table.
-
 ### Clean replies on the mesh
 
-Hermes renders a "Reasoning" recap panel that would be forwarded verbatim to LoRa/Sideband clients. For a mesh deployment, disable it in `~/.hermes/config.yaml`:
+The gateway's global defaults stream tool-progress and thinking ticks as separate one-shot LXMF messages, and Hermes renders a "Reasoning" recap panel — both are forwarded verbatim to LoRa/Sideband clients (and the progress stream can hold back the real reply). For a mesh deployment, set in `~/.hermes/config.yaml`:
 
 ```yaml
 display:
+  platforms:
+    reticulum:
+      tool_progress: false
+      thinking_progress: false
   show_reasoning: false
 ```
 
-This is a Hermes display setting, not an adapter setting. To keep reasoning on your local CLI, run the gateway with a dedicated Hermes profile (`HERMES_HOME`) that has `show_reasoning: false`.
+These are Hermes display settings, not adapter settings. To keep them on your local CLI, run the gateway with a dedicated Hermes profile (`HERMES_HOME`).
 
-## Pre-execution gate
+## Approvals and pre-execution gating
 
-When the agent attempts a dangerous command, the `mesh-tool-gate` plugin prompts the operator on the mesh to `/approve` or `/deny` before the tool runs. It reuses Hermes' own dangerous-command detection — no duplicated patterns — and **fails closed**: an unanswered gate blocks the tool.
+On the plugin path, dangerous commands go through **Hermes' own approval system** — the same one every other gateway platform uses — and `install.sh` ships `approvals.timeout: 900` so a LoRa round-trip plus an AFK operator fits inside it. The adapter also enforces the sender allowlist **before** any turn starts (deny-by-default), which is the access control most deployments need.
 
-**Timeouts must stay aligned** or the gate wedges when the operator is AFK. Three layers stack: the control-server deny clock (`HERMES_MESH_APPROVAL_TIMEOUT`), the plugin's blocking POST (`MESH_GATE_TIMEOUT`), and Hermes' hook-callback timeout (`plugins.hook_callback_timeout`, in `~/.hermes/config.yaml`; default 30s, hard max 600s). They MUST satisfy:
+The separate `mesh-tool-gate` plugin implements a mesh-side approve/deny gate (`/approve`, `/deny` over LXMF) for the **archived bridge's** sessions: it recognises turns by the bridge's `mesh-*` session titles and posts to the bridge's control server on port 8471. On native gateway sessions it is inert — `_is_mesh_session()` requires a `mesh-` title, and there is no control server unless the bridge is running. It installs enabled for both paths so existing bridge deployments keep working; if you run the plugin path only, its settings below do not apply to your traffic.
+
+For bridge deployments (or mixed installs), the gate stacks three timeouts that MUST satisfy:
 
 ```
 MESH_GATE_TIMEOUT >= HERMES_MESH_APPROVAL_TIMEOUT
 MESH_GATE_TIMEOUT < plugins.hook_callback_timeout < 600
 ```
 
-Hermes' hook wrapper fires far before a 900s gate resolves unless you raise it, and after a timeout Hermes suppresses `pre_tool_call` for the rest of the turn. Since v0.21.x the gate also refuses to start if `MESH_GATE_TIMEOUT < HERMES_MESH_APPROVAL_TIMEOUT`. Raising the gate toward 900s is pointless — the 600s hard clamp in Hermes core caps the real operator window at ~590s. A safe example for a fast link: 480/480/490. Full rationale: [docs/pre-tool-callback-timeout-issue.md](docs/pre-tool-callback-timeout-issue.md).
+Hermes' hook wrapper (default 30s) fires far before a 900s gate resolves unless you raise it, and after a timeout Hermes suppresses `pre_tool_call` for the rest of the turn. Since v0.21.x the gate also refuses to start if `MESH_GATE_TIMEOUT < HERMES_MESH_APPROVAL_TIMEOUT`. Raising the gate toward 900s is pointless — the 600s hard clamp in Hermes core caps the real operator window at ~590s. A safe example for a fast link: 480/480/490. Full rationale: [docs/pre-tool-callback-timeout-issue.md](docs/pre-tool-callback-timeout-issue.md).
 
-Optional `MESH_GATE_TRIAGE=allow_benign` (with an `OPENROUTER_API_KEY` or `TYPESAFE_API_KEY`) lets a classifier auto-allow routine, benign tool calls before the human gate is offered; anything sensitive, uncertain, or below `MESH_GATE_TRIAGE_CONF` (default 0.6) still escalates, and errors fail open to the human gate. `execute_code` is always human-gated: its opaque payload can't be classified from a truncated excerpt, so triage may deny it but never auto-allow it. Details: [docs/mesh-gate-triage-confidence-floor.md](docs/mesh-gate-triage-confidence-floor.md).
+Optional Jev triage (`MESH_GATE_TRIAGE=allow_benign`, with an `OPENROUTER_API_KEY` or `TYPESAFE_API_KEY`) lets a classifier auto-allow routine, benign bridge tool calls before the human gate; anything sensitive, uncertain, or below `MESH_GATE_TRIAGE_CONF` (default 0.6) still escalates, and errors fail open to the human gate. `execute_code` is always human-gated: triage may deny it but never auto-allow it. Details: [docs/mesh-gate-triage-confidence-floor.md](docs/mesh-gate-triage-confidence-floor.md).
 
 ## Keeping the adapter up to date
 
@@ -132,7 +150,7 @@ Any LXMF client on Reticulum can reach the agent. Add the gateway's LXMF address
 
 ## The archived standalone bridge
 
-`hermes-reticulum run` starts a standalone LXMF router that runs one Hermes turn per message and replies over LXMF. It remains the deployed path for some installs and gets bug fixes only; no new features land there. Its configuration lives in the repository `.env` (the adapter never reads it), its systemd units are `config/hermes-reticulum*.service`, and its full documentation — commands, environment variables, systemd setup, announce cadence — is in [src/hermes_reticulum/bridge/README.md](src/hermes_reticulum/bridge/README.md).
+`hermes-reticulum run` starts a standalone LXMF router that runs one Hermes turn per message and replies over LXMF. It remains the deployed path for some installs and gets bug fixes only; no new features land there. Its full documentation — installation walkthrough, `hermes-reticulum` command reference (`run`, `address`, `status`), environment variables, systemd setup, and the mesh control-server gate — is in [src/hermes_reticulum/bridge/README.md](src/hermes_reticulum/bridge/README.md).
 
 ## Development
 
@@ -148,7 +166,7 @@ ruff check src/ tests/
 - End-to-end encryption (Curve25519 + AES-128), forward secrecy via ephemeral links
 - Ed25519 message signatures
 - Access control by identity hash; deny-by-default allowlist
-- Pre-execution human gate for dangerous commands, fail-closed
+- Hermes' approval system gates dangerous commands, fail-closed on timeout
 - The LXMF hash is public on the mesh (like a contact identifier)
 
 ## License
