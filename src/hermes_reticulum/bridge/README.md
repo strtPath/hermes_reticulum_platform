@@ -46,8 +46,12 @@ hermes-reticulum address      # print the LXMF delivery hash of the saved identi
 hermes-reticulum status       # show announce and storage state
 ```
 
-Configuration comes from the repository `.env` (see `config/env.example`). Variables
-the bridge reads that the adapter never does:
+Configuration comes from the repository `.env` (see `config/env.example`). Bridge
+settings and defaults are listed below. The adapter also accepts
+`RETICULUM_DISPLAY_NAME`, `RETICULUM_ANNOUNCE_INTERVAL`, and the legacy
+`RETICULUM_STORAGE` key — through the Hermes profile, where its defaults may differ
+(announce 60 min vs 30 here, storage `~/.hermes/.reticulum-gateway/storage` vs
+`~/.lxmf/storage` here).
 
 | Variable | Default | Notes |
 |----------|---------|-------|
