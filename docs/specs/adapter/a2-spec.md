@@ -325,7 +325,7 @@ Part A integration decision (deferred, agreed):
 
 Explicitly NOT being changed (out of scope, no gold-plating):
 - The `mesh-tool-gate` pre-exec plugin (different component; do not touch).
-- The adapter's send/receive/identity/command paths (A4/A5/A6 territory).
+- The adapter's send/receive/identity/command paths (A4/A6 territory).
 - The llama.cpp endpoint itself, the `.env` model pin, or the fallback provider list.
 - Any change to `get_model_context_length()` or the installed Hermes resolver (A2 uses the
   existing priority-0 hook and the live resolver; it does not patch Hermes).

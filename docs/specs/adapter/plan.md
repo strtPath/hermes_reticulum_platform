@@ -91,6 +91,10 @@ presentation, not from key rotation (the gateway invariant is that keys never ro
 Ruling stands: keep the durable lane; if the peer wants a visible marker after `/new`, emit
 a synthetic reset ack from the adapter, do not fork keys. Tracked as O-7.
 
+*Corrected 2026-11-04:* the adapter cannot emit a reset ack — the gateway composes it
+(`gateway/slash_commands_session.py:242`, `:283`). Card A5 was dropped on that evidence; see its
+card record in `tasks.md`. The lane-keep / no-key-churn half of this ruling is unaffected.
+
 ### 18.3 Contributing factor: mesh-tool-gate step POSTs point at a deleted server
 
 `mesh-tool-gate`'s step-push posts to the old bridge's control server (`127.0.0.1:8471`,
@@ -151,6 +155,26 @@ delta, feature by feature, as of 2026-09-30, with what must be re-homed into the
 | P-12 | RSSI/SNR profiler (1.7, `profiler.py`) | Reading `RNS.Transport.local_client_rssi_cache` | Open even in bridge era (needs a real RNode radio). Port as an adapter diagnostic once a radio exists; no action now |
 | P-13 | Structured command audit log (4.4, partial) | Commands logged to journal only | Same gap in adapter model. Add adapter-side audit entries (command, peer hash, ts) to the adapter's own log lane; cheap |
 | P-14 | Tier 5 media (voice-out, image-out/in) | Never built | Still out of scope for the adapter (§9), but the transport design (RNS `Resource` + LXMF hash pointer) is unchanged and remains the roadmap for a v2 |
+
+### 19.2a Dispositions superseded 2026-11-04 (read before acting on the table above)
+
+The §19.2 rows were written 2026-09-30, when the adapter was the only thing that could answer a
+peer. Cards A4, A6, A9 and A10 were re-scoped on 2026-11-04 after reading the installed gateway
+source; the table above is kept as written for history, and these rows supersede it.
+
+| # | Row said | What is true (source) | Superseded by |
+|---|---|---|---|
+| P-1 | "Adapter-side step pusher consuming tool events" | The gateway already renders tool progress per platform and delivers it through the adapter's own `send()` (`gateway/run_turn_progress.py:626`); the adapter only has to declare its display defaults (`gateway/platform_registry.py:117,121`) | Card A6 amendment |
+| P-5 | "Trivial adapter-side: `/retry` re-enters the last inbound text" | `/retry` is a gateway command (`hermes_cli/commands.py:100`), dispatched for this platform like any other | Card A9 (dropped) |
+| P-6 | "`/status` needs an adapter-built answer" | `/status` is a gateway command (`hermes_cli/commands.py:170`, handler `gateway/slash_commands_status.py:242`); an adapter-built duplicate would diverge from it | Card A9 (dropped) |
+| P-7 | "Per-session detail flag on the step pusher" | The flag is the gateway's `/verbose` (`hermes_cli/commands.py:208`) over `display.platforms.<platform>.tool_progress` (`gateway/run_turn.py:872`); the adapter holds no state | Card A6 amendment |
+| P-8 | "Verify the gateway's clarify plumbing ... adapter-side callback if absent" | Verified present for a non-overriding adapter: base `send_clarify` emits numbered text and arms text capture (`gateway/platforms/base.py:2830-2855`), and the turn runner drives that path explicitly (`gateway/run_turn_runner_clarify_delivery.py:29-39`) | Card A10 amendment |
+| P-13 | "Add adapter-side audit entries (command, peer hash, ts) ... cheap" | Dropped 2026-11-04: the router admits an unrecognised slash command as a turn (`gateway/run_inbound.py:1155-1177`), so nothing vanishes; classifying "is this a command" in the adapter would duplicate gateway logic; the security-relevant events (ACL denials, desyncs) are already logged | Card A9 (dropped) |
+
+The general lesson, worth carrying into the remaining cards: a `/command` in the old parity table
+is not evidence that the adapter must implement it. Dispatch is gateway-side and every
+non-`cli_only` command reaches this platform for free; check `hermes_cli/commands.py` and the
+handler before carding adapter work.
 
 ### 19.3 Commands the adapter inherits for free
 
@@ -379,11 +403,17 @@ implementation pass.
    already ends the row and promotes a fresh id under the same key; the adapter must surface
    the new session's id and title in the `/new` result ack (decides O-7, §15; §18.2's "no key
    churn" ruling stands).
+   *Corrected 2026-11-04:* the ack is gateway-side, so the adapter surfaces nothing in it. The
+   gateway's ack carries the title but not the id; the id is available on demand from `/status`.
+   Card A5 dropped — if the id must appear in the ack itself, that is a gateway card.
 5. **Tool-call visibility, CLI-like verbosity.** P-1 (step pusher) + P-7 (`/verbose`) are
    decided builds (§19.2). Tool emojis come from the shared `agent/tool_emoji.py` registry,
    identical to Telegram/CLI. `/verbose` defaults **on**, like the CLI default; off is the
    truncated recap form, like the CLI's truncation ("verbose on, should be like the cli
    default, otherwise truncated like the cli does").
+   *Corrected 2026-11-04 (peer):* the step pusher is deleted — the gateway's progress lane is the
+   pusher. Progress defaults **off** (`display_tier: "low"`), not on: a packet per tool call is
+   airtime on LoRa, so the peer opts in with `/verbose`. See card A6's amendment.
 6. **Command feedback.** Slash commands get visible results back like CLI/Telegram (spec'd in
    §20; the peer's list confirms §20's ruling).
 7. **No streaming / no edits or deletions** on the mesh (RNS limits; already invariants).
