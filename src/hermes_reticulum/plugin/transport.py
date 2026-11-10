@@ -646,6 +646,10 @@ class ReticulumTransport:
         the mesh, or when the router cancels or fails it. A path is probed
         first so the method can be chosen from real reachability rather than
         assumed.
+
+        The renderer field is inferred from the payload: a part carrying a
+        ``[pN i/N]`` prefix (delivery.sequence_chunks) declares RENDERER_PLAIN,
+        everything else declares RENDERER_MARKDOWN. See _stamp_renderer.
         """
         if not self._started or self.router is None or self.destination is None:
             logger.debug("send_to: transport not started")
@@ -691,6 +695,13 @@ class ReticulumTransport:
                 desired_method=method,
                 include_ticket=True,
             )
+            # Declare the renderer so markdown-capable clients (NomadNet with
+            # render_markdown=yes, Columba >=2.2.x, MeshChat) actually format
+            # the reply instead of printing **bold** and ``` fences literally.
+            # Clients that ignore FIELD_RENDERER fall back to plain text — the
+            # field costs 1-2 bytes on the wire and changes nothing for them.
+            # LXMessage has no set_field(); mutate the fields dict directly.
+            self._stamp_renderer(lxm, payload)
             # Per-message callbacks (they live on LXMessage, not the router).
             # Register BEFORE dispatch so an immediate failure is not missed.
             # These fire on the RNS thread and report OUR OWN message's fate,
@@ -731,6 +742,34 @@ class ReticulumTransport:
         except Exception as e:
             logger.error("Failed to send to destination: %s", e)
             return False
+
+    @staticmethod
+    def _stamp_renderer(lxm, payload: str) -> None:
+        """Declare the message's renderer in its fields.
+
+        A whole reply declares RENDERER_MARKDOWN so markdown-capable clients
+        format it. A multi-part chunk (recognised by the ``[pN i/N]`` prefix
+        delivery.sequence_chunks adds) declares RENDERER_PLAIN instead:
+
+        - NomadNet only parses ``[pN i/N]`` part headers on plain-renderer
+          messages (Conversation.py), so labelling the parts markdown breaks
+          exactly the reassembly the labels exist for.
+        - The prefix glued onto the first line breaks an opening code fence,
+          and a fence split across parts cannot reopen per-part — rendering
+          each part as markdown turns code lines into headings/lists.
+
+        Plain-renderer parts stay legible everywhere: clients that ignore
+        FIELD_RENDERER already show plain text, and NomadNet's plain path
+        reassembles the labeled parts. LXMessage has no set_field(); mutate
+        the fields dict directly.
+        """
+        from hermes_reticulum.plugin import delivery
+
+        if delivery.PART_LABEL_RE.match(payload):
+            renderer = LXMF.RENDERER_PLAIN
+        else:
+            renderer = LXMF.RENDERER_MARKDOWN
+        lxm.get_fields()[LXMF.FIELD_RENDERER] = renderer
 
     # Grace period for the router to reach a terminal state after queueing.
     # A couple of seconds is enough to catch the pathless-cancel

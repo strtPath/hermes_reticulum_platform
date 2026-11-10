@@ -77,7 +77,15 @@ class Transport(Protocol):
 
     def send_to(self, destination_hash: str, payload: str) -> bool:
         """Attempt to send ``payload`` to a destination hash. False when no
-        interface can carry the packet (maps to a transient failure)."""
+        interface can carry the packet (maps to a transient failure).
+
+        The renderer declaration is inferred from the payload by the transport
+        itself (see ReticulumTransport._stamp_renderer): an unsplit reply
+        declares RENDERER_MARKDOWN, a part carrying a ``[pN i/N]`` label
+        declares RENDERER_PLAIN. No renderer parameter here — the adapter's
+        send loop hands over chunks verbatim and must not have to re-derive
+        which ones are parts.
+        """
         ...
 
     def last_send_was_direct(self) -> bool:

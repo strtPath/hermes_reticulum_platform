@@ -119,9 +119,12 @@ def _env_enablement() -> dict | None:
 # text must still get a legible message.
 _PLATFORM_HINT = (
     "You are on Reticulum/LXMF (RNode, Sideband, or other mesh client). "
-    "Most clients render markdown and code blocks, so use them where they help, "
-    "especially fenced code; some clients show raw text, so keep the message "
-    "readable without formatting. "
+    "Single-message replies carry the LXMF markdown renderer hint: most clients "
+    "(NomadNet, Columba, MeshChat) render markdown, including fenced code "
+    "blocks, so use formatting where it helps; raw or older clients show the "
+    "markup as raw text, so keep the message readable without formatting. "
+    "Replies too long for one packet are split and re-sent as plain text with "
+    "[pN i/N] part labels, so formatting cannot survive a split. "
     "Keep responses concise due to bandwidth constraints (especially over LoRa). "
     "The client may be off-grid; route replies efficiently."
 )
