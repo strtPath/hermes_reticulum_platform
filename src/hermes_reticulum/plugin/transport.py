@@ -691,6 +691,13 @@ class ReticulumTransport:
                 desired_method=method,
                 include_ticket=True,
             )
+            # Declare the renderer so markdown-capable clients (NomadNet with
+            # render_markdown=yes, Columba >=2.2.x, MeshChat) actually format
+            # the reply instead of printing **bold** and ``` fences literally.
+            # Clients that ignore FIELD_RENDERER fall back to plain text — the
+            # field costs 1-2 bytes on the wire and changes nothing for them.
+            # LXMessage has no set_field(); mutate the fields dict directly.
+            lxm.get_fields()[LXMF.FIELD_RENDERER] = LXMF.RENDERER_MARKDOWN
             # Per-message callbacks (they live on LXMessage, not the router).
             # Register BEFORE dispatch so an immediate failure is not missed.
             # These fire on the RNS thread and report OUR OWN message's fate,

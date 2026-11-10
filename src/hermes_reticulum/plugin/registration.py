@@ -146,7 +146,10 @@ def register(ctx):
         pii_safe=True,
         platform_hint=(
             "You are on Reticulum/LXMF (RNode, Sideband, or other mesh client). "
-            "Messages are plain text only — no markdown formatting. "
+            "Replies are sent with the LXMF markdown renderer hint: clients that "
+            "render markdown (NomadNet, Columba, MeshChat) will format it; raw "
+            "or older clients show the markup literally. Use light formatting "
+            "only where it earns its bytes — plain text is still the default. "
             "Keep responses concise due to bandwidth constraints (especially over LoRa). "
             "The client may be off-grid; route replies efficiently."
         ),

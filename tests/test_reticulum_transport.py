@@ -178,11 +178,17 @@ class _FakeLXMessage:
         for key, value in kwargs.items():
             setattr(self, key, value)
         self.kwargs = kwargs
+        # Real LXMessage initialises fields to {} (LXMessage.py:224); the
+        # transport stamps FIELD_RENDERER into that dict before dispatch.
+        self.fields = {}
         self.delivery_callback = None
         self.failed_callback = None
         # Real messages carry a live state; OUTBOUND is the state a message is
         # in immediately after handle_outbound queues it.
         self.state = _FakeLXMessage.OUTBOUND
+
+    def get_fields(self):
+        return self.fields
 
     def register_delivery_callback(self, cb):
         self.delivery_callback = cb
@@ -323,6 +329,11 @@ def fake_rns(monkeypatch):
 
     fake_lxmf_mod = types.ModuleType("LXMF")
     fake_lxmf_mod.APP_NAME = "lxmf"
+    # Renderer constants (real values from LXMF.py:99-102) so the transport's
+    # FIELD_RENDERER stamping is exercised against the right numbers.
+    fake_lxmf_mod.FIELD_RENDERER = 0x0F
+    fake_lxmf_mod.RENDERER_PLAIN = 0x00
+    fake_lxmf_mod.RENDERER_MARKDOWN = 0x02
     fake_lxmf_mod.LXMessage = _FakeLXMessage
     fake_lxmf_mod.LXMRouter = _FakeRouter
 
@@ -388,6 +399,10 @@ class TestSendTo:
         assert msg.include_ticket is True
         assert callable(msg.delivery_callback)
         assert callable(msg.failed_callback)
+
+        # Outbound replies must declare the markdown renderer so NomadNet /
+        # Columba / MeshChat format the text instead of showing markup raw.
+        assert msg.fields.get(0x0F) == 0x02
 
         # The per-message callback reports OUR OWN message's fate, so it must
         # land in the outbound slot. Routing it to the inbound handler is the
