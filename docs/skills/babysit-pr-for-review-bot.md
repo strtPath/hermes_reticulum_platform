@@ -111,28 +111,47 @@ a fix push retriggers a fresh review.
 
 ### Wait for the bot to review the CURRENT head, not just for green CI
 
-The bot lags CI by minutes here. CI (ruff + pytest) goes green well before greptile submits
-its review, so a snapshot taken right after a green CI reads "no unresolved comments" while
-the bot has not yet looked at the new code — the classic false "5 out of 5". Do not call it
-ready on CI alone.
+The bot lags CI by minutes here. CI (ruff + pytest) goes green well before greptile finishes,
+so a snapshot taken right after a green CI reads "no unresolved comments" while the bot has
+not yet looked at the new code — the classic false "5 out of 5". Do not call it ready on CI
+alone.
 
-The authoritative signal is the **commit the bot's newest review is pinned to**. Read it:
+The bot leaves **two** signals, and only one of them exists in the clean case:
 
-```bash
-gh api repos/<owner>/<repo>/pulls/<n>/reviews \
-  --jq '[.[] | select(.user.login|startswith("greptile"))] | last | .commit_id'
-```
+1. **A review submission** pinned to a commit. Authoritative when present:
 
-Compare that to the PR head (`gh pr view <n> --json headRefOid --jq .headRefOid`). Only when
-they match has the bot reviewed the code you are about to merge. `scripts/pr-babysit.py`
-reports this as `bot reviewed: current head` / `STALE` / `unknown` — do not merge on a
-`STALE` or `unknown`.
+   ```bash
+   gh api repos/<owner>/<repo>/pulls/<n>/reviews \
+     --jq '[.[] | select(.user.login|startswith("greptile"))] | last | .commit_id'
+   ```
 
-Note: an inline comment's `commit_id` is NOT this signal — GitHub rewrites it to the current
-head as the PR moves; only a review submission's `commit_id`, or a comment's
-`original_commit_id`, records what was actually reviewed.
+2. **A check run scoped to the commit it read.** Greptile only *submits* a review when it has
+   findings. A clean pass leaves no review object at all — just the run. So reviews alone
+   report `unknown`/`STALE` on exactly the clean case this check exists to certify:
+
+   ```bash
+   gh api repos/<owner>/<repo>/commits/<head-sha>/check-runs \
+     --jq '.check_runs[] | select(.name|test("greptile";"i")) | {status,conclusion}'
+   ```
+
+   A run that completed with `success` or `failure` means that head was reviewed; `success`
+   means it produced no comments and `failure` means the comments are there to read.
+   `queued`/`in_progress` means keep waiting. Any other conclusion — `cancelled`,
+   `timed_out`, `startup_failure`, `neutral`, `skipped` — means the bot stopped before
+   looking, so it certifies nothing.
+
+Compare either signal to the PR head (`gh pr view <n> --json headRefOid --jq .headRefOid`).
+Only then has the bot reviewed the code you are about to merge. `scripts/pr-babysit.py` reads
+both and reports `bot reviewed: current head ... via review|check-run`, `NOT YET` (run still
+going), `NOT CERTIFIED` (run ended without a review), `STALE`, or `unknown` — do not merge on
+anything but `current head`.
+
+Note: an inline comment's `commit_id` is NOT a signal — GitHub rewrites it to the current head
+as the PR moves; only a review submission's `commit_id`, or a comment's `original_commit_id`,
+records what was actually reviewed.
 
 ## Files
 
 - `scripts/pr-babysit.py` — read-only snapshot of PR state: unresolved bot comments, CI,
-  mergeability. Never writes to GitHub.
+  mergeability, and whether the bot has reviewed the current head (review submission or its
+  check run on that commit). Never writes to GitHub.
