@@ -101,7 +101,7 @@ gateway card — see the card record in `tasks.md`.
 | 4 | Mid-turn commentary still reaches the peer (LOW tier overridden back on) | `display_overrides` `interim_assistant_messages: True` over `_TIER_LOW`'s `False` (`gateway/display_config.py:45-48`); delivered per segment at `gateway/run_turn_runner.py:322-346` | NOT-TESTED | override not written yet; no live run |
 | 5 | A fresh config gets the key only after the installer says yes | `install.sh` config write paths (`:221-249` append paths, `:253-307` YAML round-trip) | NOT-TESTED | not written yet; the non-interactive branch is ruled (skip, no key, print snippet) but unbuilt |
 | 6 | An existing `display.tool_progress_command` is never overwritten and never re-asked | same three write paths; the `approvals.timeout` precedent leaves user values alone | NOT-TESTED | not written yet; the append paths must also test for an existing `display:` key or they duplicate it |
-| 7 | A non-TTY install neither blocks nor enables the key | ruled 2026-11-04: no answer, no key; print the three-line YAML snippet | NOT-TESTED | not written yet; needs a `sys.stdin.isatty()` guard in the embedded Python block |
+| 7 | A non-TTY install neither blocks nor enables the key | ruled 2026-11-04: no answer, no key; print the three-line YAML snippet | NOT-TESTED | not written yet; the Python block's stdin is the heredoc, so `isatty()` there is always false — the guard belongs in bash (`[ -t 0 ]`) and the prompt must read `/dev/tty` |
 
 ## Card A7: YAML config hook
 
@@ -130,3 +130,11 @@ gateway commands (`hermes_cli/commands.py:100`, `:170`). See `plan.md` §19.2a.
 | # | Acceptance criterion | Evidence | Result | Gap |
 |---|---|---|---|---|
 | 1 | `/clarify` resolves on the mesh, or a findings doc proves the gateway gap | source read: `gateway/platforms/base.py:2830-2855` (numbered text + `mark_awaiting_text`), `gateway/run_turn_runner_clarify_delivery.py:29-39` (base path driven for a non-overriding adapter) | NOT-TESTED | source half answered; the live mesh exercise has not been run |
+
+## Card A13: `platform_hint` no longer forbids markdown
+
+| # | Acceptance criterion | Evidence | Result | Gap |
+|---|---|---|---|---|
+| 1 | Nothing in the hint forbids markdown, and fenced code arrives intact through chunking | - | NOT-TESTED | the hint rewrite lands in its own card (A13); code-fence integrity is already covered by `tests/test_reticulum_delivery.py:496` |
+| 2 | The bandwidth/concision instruction and the plain-text fallback caveat survive | - | NOT-TESTED | depends on A13 |
+| 3 | A client known not to render markdown is recorded as a findings note when seen | - | NOT-TESTED | no such client identified yet; expected failure mode is degraded (markers shown), not unreadable |

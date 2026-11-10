@@ -399,8 +399,13 @@ to the design:
   the early exits.
 - The script contains **no prompts today** (no `read`, no `input()`) and its documented
   invocation is `bash install.sh` from a checkout (`README.md:74`, `:101`), where stdin is the
-  terminal — but a piped or CI install would hit EOF on a bare `input()`. The build needs a TTY
-  guard.
+  terminal — but a piped or CI install would hit EOF on a bare `input()`.
+- The config editor is a Python here-document (`install.sh:197`, `<<'PYEOF'`), so **its stdin is
+  the script body, not the terminal**: `sys.stdin.isatty()` inside that block is always false,
+  and a bare `input()` there would consume the rest of the script rather than the user's answer.
+  The interactivity check therefore belongs in bash before the here-document (`[ -t 0 ]`),
+  passed in as argv/env, and the prompt itself must read `/dev/tty`; a missing `/dev/tty` means
+  non-interactive. (Greptile raised this on #36; the correction is its finding.)
 
 **Ruled 2026-11-04 (peer): a non-interactive install skips the prompt.** No answer means no key:
 leave the default (`False`), and print the three-line YAML snippet for the user to paste if they
