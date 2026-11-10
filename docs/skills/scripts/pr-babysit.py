@@ -5,6 +5,9 @@ Reports, for a PR:
   - unresolved review-bot comments (inline review comments, grouped by severity badge)
   - CI check status
   - mergeability
+  - whether the bot has reviewed the CURRENT head: from its review submission
+    when it has findings, or from its check run scoped to the head commit when
+    it found nothing (it submits no review object in that case)
 
 It NEVER writes to GitHub. The agent's only write is `git push` of a fix commit.
 
@@ -21,6 +24,7 @@ import sys
 
 BOT_LOGINS = ("greptile-apps", "greptile-apps[bot]")
 SEV_RE = re.compile(r'badges/(p\d)\.svg', re.I)
+BOT_CHECK_RE = re.compile(r"greptile", re.I)
 
 
 def gh(args):
@@ -139,14 +143,64 @@ def latest_bot_review(repo, pr):
     weaker and easily-stale source.
     """
     reviews, err = gh_json(["api", f"repos/{repo}/pulls/{pr}/reviews", "--paginate"])
-    if err or not reviews:
-        return None, err or "no reviews"
-    bot = [r for r in reviews
+    if err:
+        return None, err
+    # No reviews is the normal clean case, not an error: the bot only submits a
+    # review when it has findings (see ``reviewed_head_verdict``).
+    bot = [r for r in (reviews or [])
            if any(b in ((r.get("user") or {}).get("login", "")) for b in BOT_LOGINS)]
     if not bot:
         return None, None
     # Reviews come oldest-first; the last one is the most recent.
     return bot[-1].get("commit_id"), None
+
+
+def bot_check_state(repo, head_sha):
+    """``(state, name, err)`` for the bot's check run on ``head_sha``.
+
+    ``state`` is ``"success"``, ``"failure"``, ``"pending"`` or ``None`` when
+    the bot has no run for that commit. The run is scoped to the commit it
+    read, so a completed run on the head is proof the bot reviewed that head.
+    """
+    if not head_sha:
+        return None, None, None
+    runs, err = gh_json(["api", f"repos/{repo}/commits/{head_sha}/check-runs"])
+    if err or runs is None:
+        return None, None, err or "no output"
+    bot = [r for r in (runs.get("check_runs") or [])
+           if BOT_CHECK_RE.search(r.get("name") or "")]
+    if not bot:
+        return None, None, None
+    run = bot[-1]
+    name = run.get("name")
+    if run.get("status") in ("queued", "in_progress"):
+        return "pending", name, None
+    return ("success" if run.get("conclusion") == "success" else "failure"), name, None
+
+
+def reviewed_head_verdict(head_sha, reviewed_sha, check_state):
+    """``(reviewed_current_head, evidence)`` from the two signals the bot leaves.
+
+    A review submission is authoritative when it exists. But the bot only
+    SUBMITS a review when it has findings: a clean pass leaves no review object
+    at all, only a check run scoped to the commit it read. Reading reviews alone
+    therefore reported ``unknown``/``STALE`` on exactly the clean case this
+    snapshot exists to certify.
+
+    ``evidence`` is ``"review"``, ``"check-run"``, ``"check-pending"``,
+    ``"stale-review"`` or ``None``.
+    """
+    if not head_sha:
+        return None, None
+    if reviewed_sha and reviewed_sha == head_sha:
+        return True, "review"
+    if check_state in ("success", "failure"):
+        return True, "check-run"
+    if check_state == "pending":
+        return False, "check-pending"
+    if reviewed_sha:
+        return False, "stale-review"
+    return None, None
 
 
 def snapshot(pr, repo):
@@ -210,8 +264,17 @@ def snapshot(pr, repo):
     if rverr:
         rep["errors"].append(f"reviews: {rverr}")
     rep["bot_reviewed_sha"] = reviewed_sha
-    if rep["head_sha"] and reviewed_sha:
-        rep["bot_reviewed_head"] = (reviewed_sha == rep["head_sha"])
+
+    check_state, check_name, cerr = bot_check_state(repo, rep["head_sha"])
+    if cerr:
+        rep["errors"].append(f"bot check: {cerr}")
+    rep["bot_check_state"] = check_state
+    rep["bot_check_name"] = check_name
+
+    reviewed, evidence = reviewed_head_verdict(
+        rep["head_sha"], reviewed_sha, check_state)
+    rep["bot_reviewed_head"] = reviewed
+    rep["bot_review_evidence"] = evidence
     return rep
 
 
@@ -253,13 +316,19 @@ def main():
     # Readiness verdict: a clean snapshot is only trustworthy once the bot has
     # reviewed the CURRENT head. Otherwise CI is green but the bot is still
     # thinking (it lags CI by minutes) and its findings land after 'ready'.
+    evidence = rep.get("bot_review_evidence")
     if rep.get("bot_reviewed_head") is True:
-        print(f"bot reviewed: current head ({rep.get('head_sha','')[:8]}) — snapshot complete")
+        print(f"bot reviewed: current head ({str(rep.get('head_sha'))[:8]}) "
+              f"via {evidence} — snapshot complete")
+    elif evidence == "check-pending":
+        print(f"bot reviewed: NOT YET — {rep.get('bot_check_name') or 'bot check'} "
+              f"still running on {str(rep.get('head_sha'))[:8]}; WAIT, do not call it ready")
     elif rep.get("bot_reviewed_head") is False:
         print(f"bot reviewed: STALE — last reviewed {str(rep.get('bot_reviewed_sha'))[:8]}, "
               f"head is {str(rep.get('head_sha'))[:8]}; WAIT, do not call it ready")
     else:
-        print("bot reviewed: unknown (no bot review seen) — do not call it ready")
+        print("bot reviewed: unknown (no bot review or check on this head) "
+              "— do not call it ready")
     if rep["resolved_bot_comments"]:
         print(f"({len(rep['resolved_bot_comments'])} bot comments already resolved, not blocking)")
     for e in rep["errors"]:
