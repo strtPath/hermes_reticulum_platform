@@ -146,12 +146,15 @@ def register(ctx):
         pii_safe=True,
         platform_hint=(
             "You are on Reticulum/LXMF (RNode, Sideband, or other mesh client). "
-            "Replies are sent with the LXMF markdown renderer hint: clients that "
-            "render markdown (NomadNet, Columba, MeshChat) will format it; raw "
-            "or older clients show the markup literally. Use light formatting "
-            "only where it earns its bytes — plain text is still the default. "
-            "Keep responses concise due to bandwidth constraints (especially over LoRa). "
-            "The client may be off-grid; route replies efficiently."
+            "Single-message replies carry the LXMF markdown renderer hint: "
+            "clients that render markdown (NomadNet, Columba, MeshChat) will "
+            "format them; raw or older clients show the markup literally. "
+            "Replies too long for one packet are split and sent as plain text "
+            "with [pN i/N] part labels, so formatting cannot survive a split. "
+            "Use light formatting only where it earns its bytes — plain text "
+            "is still the default. Keep responses concise due to bandwidth "
+            "constraints (especially over LoRa). The client may be off-grid; "
+            "route replies efficiently."
         ),
         cron_deliver_env_var="RETICULUM_HOME_CHANNEL",
         allowed_users_env="HERMES_RETICULUM_ALLOWED_USERS",

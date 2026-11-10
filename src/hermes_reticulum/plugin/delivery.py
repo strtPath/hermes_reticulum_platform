@@ -22,6 +22,7 @@ initiative (spec section 16 invariant).
 """
 
 import logging
+import re
 import threading
 from dataclasses import dataclass
 
@@ -58,6 +59,11 @@ _ERR_UNKNOWN = "unknown"
 # Block content budget (LXMF 1.1.1): 368 bytes max content per link block.
 # Carried over verbatim from core/downlink.py:43 — do not re-derive.
 _BLOCK_CONTENT_BUDGET = 368
+
+# A part label added by sequence_chunks: ``[pN i/N] `` at the start of a
+# multi-part chunk. Single source of truth so the transport can tell a labeled
+# part from an unsplit whole without duplicating the prefix format.
+PART_LABEL_RE = re.compile(r"^\[p\d+ \d+/\d+\] ")
 
 
 def sequence_chunks(parts: list, tag: str) -> list:

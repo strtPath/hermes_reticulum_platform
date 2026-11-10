@@ -432,6 +432,32 @@ class TestSendTo:
         assert payload == "hello mesh"
         assert isinstance(reason, str)
 
+    def test_multipart_part_declares_plain_renderer(self, fake_rns, tmp_path):
+        """A chunk carrying a ``[pN i/N]`` part label must declare RENDERER_PLAIN.
+
+        NomadNet only parses the part labels on plain-renderer messages, and a
+        fence broken by the label or split across parts cannot render as
+        markdown — declaring MARKDOWN there turns code into mangled headings
+        (greptile P2 on PR #38)."""
+        fake_rns.Identity.recall.return_value = mock.Mock()
+        t = self._started_transport(fake_rns, tmp_path)
+
+        part = "[p1 1/2] some split content\nwith a ``` fence"
+        assert t.send_to(FAKE_HASH, part) is True
+        msg = t.router.outbound[0]
+        assert msg.fields.get(0x0F) == 0x00
+
+    def test_unlabeled_text_that_mentions_a_tag_stays_markdown(self, fake_rns, tmp_path):
+        """Only the actual prefix demotes: text merely containing [p1 1/2] is
+        still a whole reply and keeps the markdown declaration."""
+        fake_rns.Identity.recall.return_value = mock.Mock()
+        t = self._started_transport(fake_rns, tmp_path)
+
+        payload = "see the note about [p1 1/2] formatting"
+        assert t.send_to(FAKE_HASH, payload) is True
+        msg = t.router.outbound[0]
+        assert msg.fields.get(0x0F) == 0x02
+
     def test_send_to_malformed_hash_returns_false(self, fake_rns, tmp_path):
         t = self._started_transport(fake_rns, tmp_path)
         assert t.send_to("xyz", "nope") is False
