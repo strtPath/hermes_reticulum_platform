@@ -25,15 +25,16 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A1 | Docs foundation: spec split, step cards, PII quarantine rule, findings docs, the registration `_bool_conv` fix | - | public sweep is clean; spec + cards reviewable | done |
 | A2 | Automatic per-conversation context discovery; silence the dead step POST | A1 | resolved window == live n_ctx, no pin; log noise stops | closed (PR #14, merged 2026-10-12) |
 | A3 | Automated ACL rejection (code gate, canned reply, zero model involvement) | A1 | unauthorized peer gets `⛔ Access not authorized.` and nothing else | closed (PR #16, merged 2026-10-24) |
-| A4 | Command feedback verification + terse render + send-failure truth | A1 | `/status`, `/resume`, `/new`-confirm all visibly answered on the phone | open |
-| A5 | `/new` ack names new session id + auto-title | A4 | peer can find the new session after `/new` | open |
-| A6 | Tool-call visibility (step pusher) + `/verbose` (default on) | A4 | a 22-tool turn is no longer silent; `/verbose off` truncates like the CLI | open |
+| A4 | Command feedback: verify the gateway-handled commands on the mesh; send-failure truth as a WARNING | A1 | `/status`, `/resume`, `/new`→`yes` answered on the phone with zero adapter command code; failed LXMF delivery logs a WARNING | open (amended 2026-11-04) |
+| A5 | `/new` ack names new session id + auto-title — **dropped 2026-11-04 (peer)**; the ack is gateway-side and already carries the title | A4 | none; verification only | dropped |
+| A6 | Tool-call visibility: declare the platform's display tier/overrides so the gateway's existing progress lane renders (low tier by default; mid-turn commentary kept on; `/verbose` is the gateway's command) | A4 | a 22-tool turn is no longer silent after the peer opts in with `/verbose`; mid-turn commentary reaches the peer; `/verbose off` truncates like the CLI | open (amended 2026-11-04) |
 | A7 | YAML config hook (`apply_yaml_config_fn`), display name + announce interval as config keys | A1 | `config.yaml` keys work without env vars | open |
 | A8 | Ship `approvals.timeout: 900` with LoRa rationale | A1 | mesh approvals survive LoRa latency | done |
-| A9 | P-5 `/retry`, P-6 adapter-built `/status`, P-13 command audit | A4 | commands listed in §19.2 respond on the mesh | open |
-| A10 | P-8 `/clarify` verification, adapter-side plumbing only if gateway lacks it | A4 | `/clarify` resolves or a findings doc proves the gateway gap | open |
+| A9 | P-13 command audit — **dropped 2026-11-04 (peer)**; P-5/P-6 already superseded by gateway commands | A4 | none; no build | dropped |
+| A10 | P-8 `/clarify` verification (source read done; live run outstanding) | A4 | `/clarify` resolves on the mesh or a findings doc proves the gateway gap | open (amended 2026-11-04) |
 | A11 | Per-profile mesh identity + ACL profile-scoping: one shared parser; ACL + identity read profile-scoped via `platform_gate_env` | A3 | two profiles on one box carry different identities + trust lists; no raw `os.getenv` in the A3 read path | closed (guard PR #21; isolation proven live 2026-10-28: `build_profile_secret_scope` on both homes returns distinct trust lists, both fail-closed — see `docs/mesh-bridge-findings-2026-10-28-a11-profile-isolation.md`) |
-| A12 | Stop false `⛔ Access not authorized.` after a busy-session inline command: the base leaves `_gateway_accepted` False on the inline-dispatch paths, so the adapter's D7 deny signal fires for an allowlisted peer | A3 | `/stop`, `/new` and a clarify answer mid-turn get their own ack and no rejection; a genuine gateway deny still logs a desync line and sends the canned reply | proposed — awaiting peer ruling | 
+| A12 | Stop false `⛔ Access not authorized.` after a busy-session inline command: the base leaves `_gateway_accepted` False on the inline-dispatch paths, so the adapter's D7 deny signal fires for an allowlisted peer | A3 | `/stop`, `/new` and a clarify answer mid-turn get their own ack and no rejection; a genuine gateway deny still logs a desync line and sends the canned reply | proposed — awaiting peer ruling |
+| A13 | Retire the `platform_hint` line forbidding markdown, for a mesh that renders markdown and code blocks | - | the hint no longer forbids markdown; the bandwidth caveat survives | approved 2026-11-04 — buildable | 
 
 ## Cross-cutting constraint: no interactive UI over LXMF
 
@@ -53,7 +54,9 @@ Sections 18-21 of the old spec moved to `plan.md` (this bundle), under their own
 sections remain the governing text they were written from.
 
 Open decisions O-7 and O-8 stay where they were, in the design spec's §15 open-decision list
-(`docs/specs/adapter/spec.md`); card A5 decides O-7 and card A4 closes O-8.
+(`docs/specs/adapter/spec.md`); card A4 closes O-8. O-7's decided text stands, but the card that
+would have implemented it (A5) was dropped 2026-11-04 — the ack turned out to be gateway-side.
+See the A5 card record.
 
 ## Un-carded by peer decision
 
@@ -178,43 +181,241 @@ model-visible log lane. Supersedes the silent-drop behaviour documented in §17.
   design (a stranger learns a destination exists). Peer ruling accepts this trade for UX
   clarity; recorded, not re-litigated.
 
-## Card A4: Command feedback + terse render + send truth
+## Card A4: Command feedback + send truth
 
-**Build:** Phone-exercise `/status`, `/resume`, and the `/new` confirm→`yes` cycle; add
-`mesh_terse()` for confirm/clarify bodies; make `send()` return `SendResult.failed` on LXMF
-delivery failure and log WARNING from the delivery tracker.
+**Build:** Phone-exercise `/status`, `/resume`, and the `/new` confirm→`yes` cycle (gateway
+commands, no adapter code); make the delivery tracker log WARNING when a send is lost.
+`mesh_terse()` for the confirm body is **dropped** — see the amendment below.
 **Spec basis:** old §20 (mechanism verified from source; gateway core untouched; ride the base
 `send_slash_confirm` / `send_clarify` defaults).
 **Blocked by:** A1.
 **Acceptance:**
 - Given the phone on the mesh, When `/status` is sent, Then a reply packet is observed on the
   peer side (not just a gateway "response ready" log line).
-- Given `/new` on the mesh, When the confirm prompt arrives, Then it renders as one terse
-  line (`Confirm /new? reply: yes / always / cancel`) plus the verbatim destructive-detail
-  line, and a `yes` reply runs the reset.
-- Given a send whose LXMF delivery fails, When the command handler returns, Then the send is
-  reported failed and a WARNING names the lost delivery.
+- Given the phone on the mesh, When `/resume` is sent, Then the gateway's session listing / picker
+  text arrives and the named session becomes current.
+- Given the phone on the mesh, When `/new` is sent and the peer replies `yes`, Then the reset
+  runs and the peer sees the gateway's ack (`gateway.reset.header_titled`, title only). The
+  session id, if wanted, comes from `/status` — the dropped card A5 covered that.
+- Given a send whose LXMF delivery fails, When the failure callback runs, Then the send is
+  reported failed and a **WARNING** names the lost delivery.
 
-## Card A5: `/new` ack with session id + title
+**Amendment 2026-11-04 — command dispatch is gateway-side, so most of this card is verification.**
 
-**Build:** `/new`'s result ack names the new session's id and auto-title.
-**Spec basis:** peer ruling (§21.3 item 4 in `plan.md`): "a new session ID or name so that you
-can go back to it"; decides O-7. The lane key stays stable (no key churn).
-**Blocked by:** A4 (the ack path must be live first).
-**Acceptance:** Given `/new` completes, When the ack arrives, Then it names the session id and
-title, and `/resume` lists that session.
+Verified against the installed gateway source:
+
+- `MessageEvent.allow_gateway_control` defaults to `True` (`gateway/platforms/event.py:121`) and
+  `MessageEvent.is_command()` is gated on it (`:178`). The adapter builds the event without
+  setting the field (`src/hermes_reticulum/plugin/adapter.py:556`), so commands are allowed by
+  default, and `adapter.deliver_inbound` deliberately delegates to the gateway's
+  `handle_message` (`adapter.py:590`), which coerces and routes on the same flag
+  (`gateway/platforms/base.py:3941`).
+- `/status` (`hermes_cli/commands.py:170`, handler `gateway/slash_commands_status.py:242`),
+  `/resume` (`hermes_cli/commands.py:182`, handler `gateway/slash_commands_session.py:1054`),
+  `/new` (`hermes_cli/commands.py:87`), `/retry` (`:100`) and `/verbose` (`:208`) are all
+  non-`cli_only`, so every one of them is dispatched for this platform with no adapter code.
+- The confirm reply works as the card assumed: `_hm_slash_confirm_reply` runs on the inbound
+  path (`gateway/run_inbound.py:1150`) and bare `yes` resolves to `once` because it is in
+  `approval.inputs.confirm_once` (`locales/en.yaml:23`).
+
+Consequence — `mesh_terse()` cannot do what the card asked. The adapter never composes the
+confirm body: the gateway formats it (`gateway/run_busy.py:1578`) and, because the adapter does
+not override `send_slash_confirm`, the base returns `SendResult(success=False, "Not supported")`
+(`gateway/platforms/base.py:2820`) and the gateway replies with that same message text
+(`gateway/run_busy.py:1673`). The adapter receives only the finished locale string, so a
+terse re-render would mean parsing a translated, locale-dependent block to recover the detail
+— brittle, and the detail line is the part the peer must actually read.
+
+Measured cost of leaving it: 288 rendered characters for `/new` (`locales/en.yaml:794`,
+counted 2026-11-04), i.e. one LXMF packet, well inside this platform's 1024-byte
+`max_message_length`. Accepting the gateway's text as-is therefore costs one packet, not the
+card's assumed multi-line flood. The locale's `**bold**` markdown was the remaining worry (a
+client that renders it literally shows the markers); the ruling below settles that for the
+clients in use.
+
+What the peer actually sees today, for `/new`:
+
+```
+⚠️ **Confirm /new**
+
+This clears the current conversation history.
+
+Choose:
+• **Approve Once** — proceed this time only
+• **Always Approve** — proceed and silence this prompt permanently
+• **Cancel** — keep current conversation
+
+_Text fallback: reply `/approve`, `/always`, or `/cancel`._
+```
+
+Three dispositions were open; **ruled 2026-11-04 (peer): leave it as the Hermes default.** Reticulum
+clients mostly render markdown and code blocks, so the `**`/`_` markers are not a defect on this
+platform, and the menu text is the same one every other platform shows. Options 2 (a gateway
+`detail` argument) and 3 (a plugin locale pack) are not taken; each would be its own card if
+they are ever wanted.
+
+**Follow-up defect this ruling exposes (proposed card A13, awaiting peer ruling):** the platform's
+registration tells the model the opposite of the ruling above —
+`src/hermes_reticulum/plugin/registration.py:147-151` passes a `platform_hint` reading "Messages
+are plain text only — no markdown formatting". If clients render markdown, that hint suppresses
+formatting the peer could actually read (code blocks in particular). Fixing the hint is one string
+but it changes model behaviour on every mesh turn, so it is carded, not slipped into A4.
+
+**Remaining code in this card:** the WARNING level. `_handle_outbound_failure` logs at INFO
+today (`src/hermes_reticulum/plugin/adapter.py:953`); the acceptance above requires WARNING
+naming the lost delivery.
+
+## Card A5: `/new` ack with session id + title — DROPPED 2026-11-04
+
+**Status:** dropped by peer decision. No build, no branch, no PR. Kept as a record so the card is
+not re-proposed from the old parity table.
+
+The card assumed the adapter composes the `/new` ack. It does not — the gateway does
+(`gateway/slash_commands_session.py:242`, `:283`). What the gateway's ack actually carries:
+
+- title: yes — `gateway.reset.header_titled: "✨ New session started: {title}"` (`:283`), with the
+  untitled fallback `gateway.reset.header_new: "✨ New session started!"` (`:242`).
+- session id: **no**. Nothing in either string names it.
+
+The id is available on demand: `/status` returns `gateway.status.session_id`
+(`gateway/slash_commands_status.py:242-300`), and `/resume` lists titled sessions
+(`gateway/slash_commands_session.py:1054-1071`). So the peer's stated goal — "a new session ID or
+name so that you can go back to it" — is served by the gateway without adapter code.
+
+O-7 (`docs/specs/adapter/spec.md:575`) stays decided: the ack should name the id and title. The
+title half is implemented gateway-side; the id half is not. If the peer still wants the id in the
+ack itself, that is a **gateway** card, not an adapter build — the adapter cannot reach the text.
 
 ## Card A6: Tool visibility (P-1) + `/verbose` (P-7)
 
-**Build:** Adapter-side step pusher consuming gateway tool events; tool emoji from the shared
-`agent/tool_emoji.py` registry; `/verbose` per-session flag on the step pusher.
+**Build:** Declare the platform's display defaults (`display_tier` + `display_overrides`) on the
+`PlatformEntry` so the gateway's existing tool-progress lane renders correctly for Reticulum;
+add the `display.tool_progress_command` check/prompt to `install.sh`; verify emoji/truncation
+parity. Do **not** build a step pusher — see the amendment.
 **Spec basis:** peer rulings: auto title gen (already gateway-side), "verbose on, should be
 like the cli default, otherwise truncated like the cli does."
 **Blocked by:** A4.
 **Acceptance:**
-- Given a turn with 22 tool calls, When it runs on the mesh with `/verbose` on (default),
-  Then the peer sees tool-call progress like the CLI sees it.
+- Given a turn with 22 tool calls, When it runs on the mesh with the peer having run `/verbose`
+  to turn progress on, Then the peer sees tool-call progress like the CLI sees it.
 - Given `/verbose off`, When a turn runs, Then recaps arrive in the truncated form.
+- Given the adapter's tool emoji table, When the gateway's own label table is compared, Then
+  the same tool maps to the same emoji (`tests/test_tool_emoji.py:139
+  TestParityWithInstalledGateway`).
+- Given a `~/.hermes/config.yaml` with no `display.tool_progress_command`, When `install.sh` runs
+  interactively, Then it asks once and writes the key only if the answer is yes.
+- Given a config that already carries `display.tool_progress_command` (either value), When
+  `install.sh` runs, Then no prompt appears and the existing value is unchanged.
+- Given an install whose stdin is not a TTY, When `install.sh` runs, Then it does not block, does
+  not write the key, and prints the YAML snippet to paste.
+
+**Amendment 2026-11-04 — the progress lane already exists in the gateway, and it is the pusher.**
+
+Verified against the installed gateway source:
+
+- Tool progress is resolved per platform from `display.platforms.<platform>.tool_progress`
+  (`gateway/run_turn.py:872`, `gateway/run_turn.py:912`) and delivered by the gateway's own
+  progress renderer through **the adapter's ordinary `send()`**
+  (`gateway/run_turn_progress.py:626`). `/verbose` cycles that same setting
+  (`hermes_cli/commands.py:208`). Nothing needs to consume tool events in the adapter.
+- What is actually missing is only the declaration: `ctx.register_platform(...)` in
+  `src/hermes_reticulum/plugin/registration.py:134-158` passes no `display_tier` and no
+  `display_overrides`, although `PlatformEntry` supports both
+  (`gateway/platform_registry.py:117`, `:121`). With neither set, the resolver falls through to
+  `_GLOBAL_DEFAULTS` (`gateway/display_config.py:18`): `tool_progress: "all"` and
+  `tool_progress_grouping: "accumulate"`.
+- `accumulate` sets `can_edit` true (`gateway/run_turn_progress.py:591`), so the gateway calls
+  `edit_message`, which this adapter inherits unmodified from the base and which returns
+  `SendResult(success=False, "Not supported")` (`gateway/platforms/base.py:2650`). The renderer
+  then falls back to sending anew — the extra chatter and duplicate bubbles the 2026-10-26 live
+  run suppressed with a *user-side* `display.platforms.reticulum.tool_progress: false`
+  (`docs/mesh-bridge-findings-2026-10-26-adapter-live-delivery-one-shot.md`). A per-platform
+  declaration fixes it at the source instead of in one operator's config.
+
+**Ruled 2026-11-04 (peer): tool progress is `low` by default.** The registration declares
+`display_tier: "low"` (full override block below), so the peer opts in with `/verbose` rather
+than every mesh turn carrying progress packets.
+
+What `_TIER_LOW` turns off (`gateway/display_config.py:45-48`, inherited from `_TIER_HIGH`):
+`tool_progress: "off"`, `streaming: False`, `interim_assistant_messages: False`,
+`long_running_notifications: False`, `busy_ack_detail: False`; `tool_preview_length` would
+inherit `40` from the HIGH tier, which is why the override sets it to `0`. Command acks and turn
+replies are unaffected.
+
+**Ruled 2026-11-04 (peer), separately: keep `interim_assistant_messages` ON.** That is the
+mid-turn commentary the model writes alongside a tool call — the "let me check X first" prose the
+CLI shows while work is running. The agent emits it per tool round
+(`agent/stream_delivery.py:231`, called from `agent/turn_tool_round.py:158` after the row is
+persisted), and the gateway delivers each segment as its own message
+(`gateway/run_turn_runner.py:322-346` → `stream_consumer.on_commentary` or `_send_status_text`).
+It is genuinely useful for following a long turn, so the LOW tier's `False` is overridden back to
+`True`:
+
+```
+display_tier: "low"
+display_overrides: {"tool_progress_grouping": "separate",
+                     "tool_preview_length": 0,
+                     "interim_assistant_messages": True}
+```
+
+Accepted cost, recorded so nobody rediscoveres it as a bug: each commentary segment is its own
+`send()`, so a chatty model on a 22-tool turn can add a packet per tool round on top of the final
+reply. That is the trade the ruling takes — the peer sees progress instead of silence.
+
+**Blocker found while recording the ruling — `/verbose` is gated off for messaging chats.**
+`_handle_verbose_command` writes `display.platforms.<platform>.tool_progress` and persists it
+(`gateway/slash_commands.py:975-1009`), but for a chat with no local live session it first
+checks `display.tool_progress_command` (default **off**, `gateway/slash_commands.py:986`) and
+returns the "not enabled" string when unset. So with the tier shipped and nothing else, a mesh
+peer cannot turn progress on: A6's opt-in half is unreachable and row 1 below can only pass
+after an operator-side config edit.
+
+`display.tool_progress_command` is a top-level key, so a plugin cannot set it from its own
+subtree — it lands the same way `approvals.timeout` does (A8): through `install.sh` / the
+shipped config.
+
+The gate is applied twice from the same key, so one flip satisfies both: the registry drops a
+`cli_only` command unless its `gateway_config_gate` dotpath is truthy
+(`hermes_cli/commands.py:208-209`, gate logic `:504-523`), and the handler re-checks it and
+returns "not enabled" for a messaging chat (`gateway/slash_commands.py:986`). Default is `False`
+(`hermes_cli/config_defaults.py:913`).
+
+**Ruled 2026-11-04 (peer): ship the key through `install.sh`, and ask the installer.** The
+installer checks `display.tool_progress_command` in `~/.hermes/config.yaml` first; if the key is
+already present, its value is left alone (the same "an existing user value is left alone"
+convention the script already applies to `approvals.timeout`). If the key is absent, the
+installer prompts once, and only writes it when the answer is yes. Declining leaves the key
+absent — the gateway default (`False`) stands and `/verbose` stays unavailable on the mesh.
+
+Two implementation constraints found while reading `install.sh` — both belong to the build, not
+to the design:
+
+- The script has **three** config write paths and each `raise SystemExit(0)`s as soon as its own
+  keys look satisfied: append-everything (`install.sh:221-236`), append-plugins-only when an
+  `approvals:` block already exists (`:238-249`), and the YAML round-trip (`:253-307`, whose own
+  early exit is `:283-285`). The append paths test only for `plugins:` and `approvals:`, so
+  appending a top-level `display:` block into a file that already has one would duplicate the
+  key — a YAML error. The display check has to join each branch's condition, not be added after
+  the early exits.
+- The script contains **no prompts today** (no `read`, no `input()`) and its documented
+  invocation is `bash install.sh` from a checkout (`README.md:74`, `:101`), where stdin is the
+  terminal — but a piped or CI install would hit EOF on a bare `input()`.
+- The config editor is a Python here-document (`install.sh:197`, `<<'PYEOF'`), so **its stdin is
+  the script body, not the terminal**: `sys.stdin.isatty()` inside that block is always false,
+  and a bare `input()` there would consume the rest of the script rather than the user's answer.
+  The interactivity check therefore belongs in bash before the here-document (`[ -t 0 ]`),
+  passed in as argv/env, and the prompt itself must read `/dev/tty`; a missing `/dev/tty` means
+  non-interactive. (Greptile raised this on #36; the correction is its finding.)
+
+**Ruled 2026-11-04 (peer): a non-interactive install skips the prompt.** No answer means no key:
+leave the default (`False`), and print the three-line YAML snippet for the user to paste if they
+want `/verbose` later. Nothing is enabled unattended — turning a gateway command on without
+anyone asking is the one outcome this rule exists to prevent.
+
+**What the emoji half becomes:** the peer ruling asked the step push posts to use "the same
+registry Telegram/CLI use". Under gateway rendering the emoji come from the gateway's own display
+layer, so the requirement collapses into the parity check already in the tree
+(`tests/test_tool_emoji.py:139`), not into adapter-side lookup code.
 
 ## Card A7: YAML config hook
 
@@ -238,24 +439,62 @@ at the gateway's 300s default).
 **Acceptance:** Given an approval prompt on a multi-hop LoRa path, When the peer answers within
 900s, Then the approval is honoured.
 
-## Card A9: P-5 `/retry`, P-6 `/status` health block, P-13 command audit
+## Card A9: P-13 command audit — DROPPED 2026-11-04
 
-**Build:** Adapter-side `/retry` for failed sends; adapter-built `/status` answer (RNS attach
-state, announce cadence, peer pending-set depth); command audit entries.
-**Spec basis:** §19.2 in `plan.md` (parity gap table); `/usage` rides the gateway-provided command.
-**Blocked by:** A4.
-**Acceptance:** Each command in this card's list gets a visible, correct answer on the phone
-exercise.
+**Status:** dropped by peer decision. No build, no branch, no PR. Kept as a record so the card is
+not re-proposed from the old parity table.
+
+P-5 (`/retry`) and P-6 (adapter-built `/status`) were already removed: both are gateway commands
+(`hermes_cli/commands.py:100`, `:170`; handler `gateway/slash_commands_status.py:242`), non-
+`cli_only`, so they answer on the mesh today.
+
+P-13 itself does not earn a build, for three reasons recorded on 2026-11-04:
+
+1. **Its premise is gone.** Dispatch is a staged router, not a table lookup: `_hm_dispatch_idle_commands`
+   (`gateway/run_inbound.py:1155-1177`) resolves the event, tries the canonical handler, then
+   quick/plugin commands, then a skill-slash rewrite, and finally admits an unrecognised slash
+   command as a normal agent turn. The bridge needed the audit because a command could vanish;
+   under this router it becomes a turn.
+2. **Classifying "is this a command" in the adapter would duplicate gateway logic** and drift from
+   it — the exact failure mode that made P-6 worth deleting. The gateway owns the definition
+   (`MessageEvent.get_command`, `hermes_cli/commands.py`); an adapter-side copy is a second
+   source of truth on a security-adjacent path.
+3. **The security-relevant events are already logged.** A3 logs every ACL denial per peer, and the
+   adapter logs gateway desyncs; the incidents in `docs/mesh-bridge-findings-*` are denial- and
+   delivery-shaped, not "what command did the peer run" shaped.
+
+Nothing exists gateway-side as a structured command record (the only `audit_log` in the tree is
+dashboard auth, `hermes_cli/dashboard_auth/audit.py:96`; there is no `commands.log`). If an audit
+is ever wanted, it belongs in a card that consumes the gateway's dispatch hook rather than
+re-classifying inbound text in the adapter.
 
 ## Card A10: P-8 `/clarify` verification
 
-**Build:** Probe whether the gateway's `send_clarify` plumbing reaches plugin platforms; build
-an adapter-side callback only if it does not.
+**Build:** Verification only. The source read is done (amendment); what remains is a live mesh
+exercise of a clarify prompt and its answer. No adapter plumbing is expected.
 **Spec basis:** §19.2 in `plan.md`, P-8 row ("gateway plumbing existence unverified; adapter-side callback if
 absent").
 **Blocked by:** A4.
 **Acceptance:** Given `/clarify`-style output is possible on the mesh, When probed from source
 or a live run, Then either it works or a findings doc names the gateway gap precisely.
+
+**Amendment 2026-11-04 — the source half is answered; no plumbing is needed.**
+
+The base adapter's `send_clarify` already is the mesh-shaped implementation: with `choices` it
+emits the question, a numbered option list, and a hint, then calls
+`tools.clarify_gateway.mark_awaiting_text` so the next inbound message is captured as the answer;
+without `choices` it sends the question alone (`gateway/platforms/base.py:2830-2855`). The turn
+runner explicitly handles an adapter that has no native override and drives that base path
+(`gateway/run_turn_runner_clarify_delivery.py:29-39`). The adapter overrides neither method, so
+it gets the numbered-text path by construction — exactly what the cross-cutting "no interactive
+UI over LXMF" constraint requires, with no button to wait on.
+
+The answer-interception side is the same one the confirm cycle uses
+(`_hm_pending_reply_intercepts` -> `_hm_clarify_reply`, `gateway/run_inbound.py:1140-1155`).
+
+**Remaining work is the live run:** trigger a clarify from a mesh turn, answer with a number or
+text, and record the result in `verification.md`. If the live run contradicts this source read,
+the contradiction is a findings doc and a new card — not an adapter callback written on a guess.
 
 ## Card A11: Per-profile mesh identity + ACL profile-scoping
 
@@ -366,7 +605,31 @@ A3 criterion 10 intact and needs no gateway change; the gateway-side fix (set th
 successful inline dispatch) is the correct one but the gateway is a separate install, so it
 lands as an upstream report or a documented base-class override. Both are laid out in the
 findings doc's "Fix options".
-**Status:** proposed — awaiting peer ruling. No code before that ruling (AGENTS.md).
+**Status:** approved 2026-11-04 (peer): build it. The fix-shape question above is still open and
+must be settled before code — the adapter-side discriminator keeps A3 criterion 10 intact with no
+gateway change; the gateway-side fix is correct long-term but lives in a separate install.
+
+## Card A13: `platform_hint` no longer forbids markdown
+
+**Build:** Rewrite the `platform_hint` string in
+`src/hermes_reticulum/plugin/registration.py:147-151` so it stops telling the model "Messages
+are plain text only — no markdown formatting", and keeps the parts that are still true
+(bandwidth-driven concision, possible off-grid client).
+**Spec basis:** peer ruling 2026-11-04, recorded in the card A4 amendment: most Reticulum clients
+render markdown and code blocks, so the default Hermes text can stay as-is (A4) and the hint
+should not suppress formatting the peer can read.
+**Blocked by:** nothing. Deliberately not folded into A4 — that card's diff stays one card.
+**Acceptance:**
+- Given a mesh turn that produces code or a list, When the reply is composed, Then nothing in the
+  platform's hint forbids markdown, and fenced code arrives intact through the existing
+  content-aware chunking.
+- Given the same hint, When it is read, Then the bandwidth/concision instruction and the
+  plain-text *fallback* caveat survive (a client that does not render markdown still gets
+  something legible — state the expectation explicitly rather than assuming).
+- Given a client known not to render markdown, When it receives a formatted reply, Then the
+  degradation is recorded (a findings note naming the client), not discovered later as a bug.
+
+**Status:** approved 2026-11-04 (peer). Buildable as written.
 
 ## Branch and PR workflow
 

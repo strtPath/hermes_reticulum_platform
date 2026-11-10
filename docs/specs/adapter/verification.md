@@ -61,24 +61,47 @@ Spec: `docs/specs/adapter/a3-spec.md` (the implementing ruling record).
 | 9 | Dedicated cleanup task runs while the adapter is idle; cancelled on disconnect | `test_a3_14_cleanup_task_prunes_while_adapter_is_idle` | pass | - |
 | 10 | Gateway deny desync: adapter logs the desync line and sends the canned reply | `test_a3_15_gateway_deny_of_admitted_peer_gets_canned_reply`, `test_a3_16_gateway_deny_respects_cooldown`, `test_a3_17_gateway_deny_in_empty_allowlist_boot_is_silent` | pass | - |
 
-## Card A4: Command feedback + terse render + send truth
+## Card A4: Command feedback + send truth (amended 2026-11-04)
+
+Rows 1-3 are commands the gateway dispatches (see the card amendment); they need a phone
+exercise, not adapter code. Row 4 is the only code change.
 
 | # | Acceptance criterion | Evidence | Result | Gap |
 |---|---|---|---|---|
-| 1 | `/status`, `/resume`, `/new`-confirm visibly answered on the phone |  |  |  |
+| 1 | `/status` answered on the phone (reply packet observed peer-side) | gateway handler `gateway/slash_commands_status.py:242`; dispatch path common to every command | NOT-TESTED | no live mesh exercise yet |
+| 2 | `/resume` answered on the phone; named session becomes current | gateway handler `gateway/slash_commands_session.py:1054` | NOT-TESTED | no live mesh exercise yet |
+| 3 | `/new` + `yes` reply runs the reset | `_hm_slash_confirm_reply` wired at `gateway/run_inbound.py:1150`; `yes` in `approval.inputs.confirm_once` (`locales/en.yaml:23`) | NOT-TESTED | no live mesh exercise yet |
+| 4 | Failed LXMF delivery reported failed and logged at WARNING naming the lost delivery |  | NOT-TESTED | code change not made yet: `src/hermes_reticulum/plugin/adapter.py` logs this at INFO |
 
-## Card A5: `/new` ack with session id + title
+Dropped from the card 2026-11-04: `mesh_terse()` for the confirm body. The adapter receives the
+gateway's finished locale string and cannot re-render it without parsing a translated block;
+measured cost of the gateway text is 288 chars, one LXMF packet. **Ruled the same day: leave the
+Hermes default text** — Reticulum clients mostly render markdown, so the markers are not a
+defect. See the card A4 amendment in `tasks.md`.
+
+Row 3's `yes` reply is the one to watch in the live run: if the peer sends `/new` while a turn is
+running, that is the busy-session inline-dispatch path where the base can leave
+`_gateway_accepted` `False` — the false-rejection bug carded as A12 (`proposed`).
+
+## Card A5: `/new` ack with session id + title — dropped 2026-11-04
+
+No rows: the card was dropped by peer decision before implementation. The ack is composed
+gateway-side (`gateway/slash_commands_session.py:242`, `:283`) and already carries the title
+(`gateway.reset.header_titled`); the session id is reachable on demand from `/status`
+(`gateway.status.session_id`). If the peer later wants the id in the ack itself, that is a
+gateway card — see the card record in `tasks.md`.
+
+## Card A6: Tool visibility + `/verbose` (amended 2026-11-04)
 
 | # | Acceptance criterion | Evidence | Result | Gap |
 |---|---|---|---|---|
-| 1 | Peer can find the new session after `/new` |  |  |  |
-
-## Card A6: Tool visibility + `/verbose`
-
-| # | Acceptance criterion | Evidence | Result | Gap |
-|---|---|---|---|---|
-| 1 | A 22-tool turn is no longer silent |  |  |  |
-| 2 | `/verbose off` truncates like the CLI |  |  |  |
+| 1 | A 22-tool turn is no longer silent after the peer runs `/verbose` | gateway progress lane delivers through `adapter.send()` (`gateway/run_turn_progress.py:626`) | NOT-TESTED | tier ruled `low` 2026-11-04 (progress off by default, peer opts in); no `display_tier`/`display_overrides` declared yet in `registration.py:134-158` |
+| 2 | `/verbose off` truncates like the CLI | `/verbose` is the gateway command over `display.platforms.<platform>.tool_progress` (`hermes_cli/commands.py:208`, `gateway/run_turn.py:872`) | NOT-TESTED | key ruled 2026-11-04 (ship `display.tool_progress_command` via `install.sh`); the installer check/prompt is not written yet. Double-gated on the same key: registry `gateway_config_gate` (`hermes_cli/commands.py:504-523`) and handler (`gateway/slash_commands.py:986`) |
+| 3 | Tool emoji match the gateway's own labels | `tests/test_tool_emoji.py:139` `TestParityWithInstalledGateway` | NOT-TESTED | test exists; needs a green run recorded against the current gateway build |
+| 4 | Mid-turn commentary still reaches the peer (LOW tier overridden back on) | `display_overrides` `interim_assistant_messages: True` over `_TIER_LOW`'s `False` (`gateway/display_config.py:45-48`); delivered per segment at `gateway/run_turn_runner.py:322-346` | NOT-TESTED | override not written yet; no live run |
+| 5 | A fresh config gets the key only after the installer says yes | `install.sh` config write paths (`:221-249` append paths, `:253-307` YAML round-trip) | NOT-TESTED | not written yet; the non-interactive branch is ruled (skip, no key, print snippet) but unbuilt |
+| 6 | An existing `display.tool_progress_command` is never overwritten and never re-asked | same three write paths; the `approvals.timeout` precedent leaves user values alone | NOT-TESTED | not written yet; the append paths must also test for an existing `display:` key or they duplicate it |
+| 7 | A non-TTY install neither blocks nor enables the key | ruled 2026-11-04: no answer, no key; print the three-line YAML snippet | NOT-TESTED | not written yet; the Python block's stdin is the heredoc, so `isatty()` there is always false — the guard belongs in bash (`[ -t 0 ]`) and the prompt must read `/dev/tty` |
 
 ## Card A7: YAML config hook
 
@@ -96,14 +119,22 @@ Merged in PR #13 (squash `efef313`, base `dev`). The gateway reads `approvals.ti
 top-level config, which a plugin cannot set from its own subtree, so the value lands via
 `install.sh`; see spec §17.6 and ADR-0003.
 
-## Card A9: P-5 `/retry`, P-6 `/status`, P-13 command audit
+## Card A9: P-13 command audit — dropped 2026-11-04
+
+No rows: the card was dropped by peer decision before implementation (reasoning in the card
+record, `tasks.md`). P-5 `/retry` and P-6 adapter-built `/status` were already superseded by
+gateway commands (`hermes_cli/commands.py:100`, `:170`). See `plan.md` §19.2a.
+
+## Card A10: P-8 `/clarify` verification (amended 2026-11-04)
 
 | # | Acceptance criterion | Evidence | Result | Gap |
 |---|---|---|---|---|
-| 1 | Commands listed in plan.md §19.2 respond on the mesh |  |  |  |
+| 1 | `/clarify` resolves on the mesh, or a findings doc proves the gateway gap | source read: `gateway/platforms/base.py:2830-2855` (numbered text + `mark_awaiting_text`), `gateway/run_turn_runner_clarify_delivery.py:29-39` (base path driven for a non-overriding adapter) | NOT-TESTED | source half answered; the live mesh exercise has not been run |
 
-## Card A10: P-8 `/clarify` verification
+## Card A13: `platform_hint` no longer forbids markdown
 
 | # | Acceptance criterion | Evidence | Result | Gap |
 |---|---|---|---|---|
-| 1 | `/clarify` resolves, or a findings doc proves the gateway gap |  |  |  |
+| 1 | Nothing in the hint forbids markdown, and fenced code arrives intact through chunking | - | NOT-TESTED | the hint rewrite lands in its own card (A13); code-fence integrity is already covered by `tests/test_reticulum_delivery.py:496` |
+| 2 | The bandwidth/concision instruction and the plain-text fallback caveat survive | - | NOT-TESTED | depends on A13 |
+| 3 | A client known not to render markdown is recorded as a findings note when seen | - | NOT-TESTED | no such client identified yet; expected failure mode is degraded (markers shown), not unreadable |
