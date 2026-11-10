@@ -118,6 +118,22 @@ def test_failed_bot_check_still_means_the_head_was_reviewed(babysit, fakes):
     assert rep["bot_review_evidence"] == "check-run"
 
 
+@pytest.mark.parametrize("conclusion", [
+    "cancelled", "timed_out", "startup_failure", "neutral", "skipped",
+])
+def test_aborted_bot_run_does_not_certify_the_head(babysit, fakes, conclusion):
+    """Red-before: every non-success conclusion was folded into 'failure'.
+
+    A run that stopped early (cancelled, timed out, crashed at startup) did not
+    look at the head, so it must not read as 'snapshot complete'.
+    """
+    fakes(reviews=[], check_runs=[_check(conclusion=conclusion)])
+    rep = babysit.snapshot("1", "owner/repo")
+    assert rep["bot_reviewed_head"] is False
+    assert rep["bot_review_evidence"] == "check-aborted"
+    assert rep["bot_check_conclusion"] == conclusion
+
+
 def test_no_bot_signal_anywhere_stays_unknown(babysit, fakes):
     fakes(reviews=[], check_runs=[_check(name="ruff")])
     rep = babysit.snapshot("1", "owner/repo")

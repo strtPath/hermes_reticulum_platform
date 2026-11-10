@@ -155,27 +155,35 @@ def latest_bot_review(repo, pr):
     return bot[-1].get("commit_id"), None
 
 
-def bot_check_state(repo, head_sha):
-    """``(state, name, err)`` for the bot's check run on ``head_sha``.
+# Conclusions that mean the bot finished looking at the commit. Everything else
+# (cancelled, timed_out, startup_failure, neutral, skipped, stale) means it
+# stopped early: the head was NOT reviewed, so it must not certify readiness.
+REVIEW_CONCLUSIONS = {"success": "success", "failure": "failure"}
 
-    ``state`` is ``"success"``, ``"failure"``, ``"pending"`` or ``None`` when
-    the bot has no run for that commit. The run is scoped to the commit it
-    read, so a completed run on the head is proof the bot reviewed that head.
+
+def bot_check_state(repo, head_sha):
+    """``(state, name, conclusion, err)`` for the bot's check run on ``head_sha``.
+
+    ``state`` is ``"success"``, ``"failure"``, ``"pending"``, ``"aborted"`` or
+    ``None`` when the bot has no run for that commit. The run is scoped to the
+    commit it read, so only a run that completed with an accepted conclusion is
+    proof the bot reviewed that head.
     """
     if not head_sha:
-        return None, None, None
+        return None, None, None, None
     runs, err = gh_json(["api", f"repos/{repo}/commits/{head_sha}/check-runs"])
     if err or runs is None:
-        return None, None, err or "no output"
+        return None, None, None, err or "no output"
     bot = [r for r in (runs.get("check_runs") or [])
            if BOT_CHECK_RE.search(r.get("name") or "")]
     if not bot:
-        return None, None, None
+        return None, None, None, None
     run = bot[-1]
     name = run.get("name")
+    conclusion = run.get("conclusion")
     if run.get("status") in ("queued", "in_progress"):
-        return "pending", name, None
-    return ("success" if run.get("conclusion") == "success" else "failure"), name, None
+        return "pending", name, conclusion, None
+    return REVIEW_CONCLUSIONS.get(conclusion, "aborted"), name, conclusion, None
 
 
 def reviewed_head_verdict(head_sha, reviewed_sha, check_state):
@@ -188,7 +196,7 @@ def reviewed_head_verdict(head_sha, reviewed_sha, check_state):
     snapshot exists to certify.
 
     ``evidence`` is ``"review"``, ``"check-run"``, ``"check-pending"``,
-    ``"stale-review"`` or ``None``.
+    ``"check-aborted"``, ``"stale-review"`` or ``None``.
     """
     if not head_sha:
         return None, None
@@ -198,6 +206,8 @@ def reviewed_head_verdict(head_sha, reviewed_sha, check_state):
         return True, "check-run"
     if check_state == "pending":
         return False, "check-pending"
+    if check_state == "aborted":
+        return False, "check-aborted"
     if reviewed_sha:
         return False, "stale-review"
     return None, None
@@ -265,11 +275,13 @@ def snapshot(pr, repo):
         rep["errors"].append(f"reviews: {rverr}")
     rep["bot_reviewed_sha"] = reviewed_sha
 
-    check_state, check_name, cerr = bot_check_state(repo, rep["head_sha"])
+    check_state, check_name, check_conclusion, cerr = bot_check_state(
+        repo, rep["head_sha"])
     if cerr:
         rep["errors"].append(f"bot check: {cerr}")
     rep["bot_check_state"] = check_state
     rep["bot_check_name"] = check_name
+    rep["bot_check_conclusion"] = check_conclusion
 
     reviewed, evidence = reviewed_head_verdict(
         rep["head_sha"], reviewed_sha, check_state)
@@ -323,6 +335,10 @@ def main():
     elif evidence == "check-pending":
         print(f"bot reviewed: NOT YET — {rep.get('bot_check_name') or 'bot check'} "
               f"still running on {str(rep.get('head_sha'))[:8]}; WAIT, do not call it ready")
+    elif evidence == "check-aborted":
+        print(f"bot reviewed: NOT CERTIFIED — {rep.get('bot_check_name') or 'bot check'} "
+              f"ended {rep.get('bot_check_conclusion') or 'without a conclusion'} on "
+              f"{str(rep.get('head_sha'))[:8]}; WAIT, do not call it ready")
     elif rep.get("bot_reviewed_head") is False:
         print(f"bot reviewed: STALE — last reviewed {str(rep.get('bot_reviewed_sha'))[:8]}, "
               f"head is {str(rep.get('head_sha'))[:8]}; WAIT, do not call it ready")

@@ -134,13 +134,17 @@ The bot leaves **two** signals, and only one of them exists in the clean case:
      --jq '.check_runs[] | select(.name|test("greptile";"i")) | {status,conclusion}'
    ```
 
-   A completed run on the head (either conclusion) means that head was reviewed; `success`
-   means it produced no comments; `queued`/`in_progress` means keep waiting.
+   A run that completed with `success` or `failure` means that head was reviewed; `success`
+   means it produced no comments and `failure` means the comments are there to read.
+   `queued`/`in_progress` means keep waiting. Any other conclusion — `cancelled`,
+   `timed_out`, `startup_failure`, `neutral`, `skipped` — means the bot stopped before
+   looking, so it certifies nothing.
 
 Compare either signal to the PR head (`gh pr view <n> --json headRefOid --jq .headRefOid`).
 Only then has the bot reviewed the code you are about to merge. `scripts/pr-babysit.py` reads
 both and reports `bot reviewed: current head ... via review|check-run`, `NOT YET` (run still
-going), `STALE`, or `unknown` — do not merge on anything but `current head`.
+going), `NOT CERTIFIED` (run ended without a review), `STALE`, or `unknown` — do not merge on
+anything but `current head`.
 
 Note: an inline comment's `commit_id` is NOT a signal — GitHub rewrites it to the current head
 as the PR moves; only a review submission's `commit_id`, or a comment's `original_commit_id`,
