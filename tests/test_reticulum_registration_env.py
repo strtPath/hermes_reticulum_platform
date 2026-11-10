@@ -141,3 +141,41 @@ def test_is_connected_ignores_a_runtime_state_var(monkeypatch):
     assert registration._is_connected(None) is True
     monkeypatch.setenv("RETICULUM_CONNECTED", "true")
     assert registration._is_connected(None) is True
+
+
+# ── The platform hint (card A13) ──────────────────────────────────────────
+# The hint is the only place the platform tells the model how to format its
+# replies. It used to forbid markdown, which contradicted what the clients
+# actually render, so card A13 pins the corrected contract here.
+
+
+def test_platform_hint_no_longer_forbids_markdown():
+    """Red-before: the hint read "Messages are plain text only — no markdown".
+
+    Most LXMF clients render markdown and fenced code, so that sentence
+    suppressed formatting the peer could actually read.
+    """
+    hint = registration._PLATFORM_HINT.lower()
+    assert "plain text only" not in hint
+    assert "no markdown" not in hint
+
+
+def test_platform_hint_states_that_clients_render_markdown():
+    """The replacement has to say so, not merely drop the prohibition."""
+    hint = registration._PLATFORM_HINT.lower()
+    assert "markdown" in hint
+    assert "code block" in hint
+
+
+def test_platform_hint_keeps_the_bandwidth_caveat():
+    """Markdown is allowed, but every byte is still airtime on LoRa."""
+    hint = registration._PLATFORM_HINT.lower()
+    assert "concise" in hint
+    assert "bandwidth" in hint
+
+
+def test_platform_hint_covers_clients_without_markdown_rendering():
+    """A client showing raw text must still get a legible message."""
+    hint = registration._PLATFORM_HINT.lower()
+    assert "raw text" in hint
+    assert "without formatting" in hint

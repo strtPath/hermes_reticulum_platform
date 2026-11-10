@@ -34,7 +34,7 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A10 | P-8 `/clarify` verification (source read done; live run outstanding) | A4 | `/clarify` resolves on the mesh or a findings doc proves the gateway gap | open (amended 2026-11-04) |
 | A11 | Per-profile mesh identity + ACL profile-scoping: one shared parser; ACL + identity read profile-scoped via `platform_gate_env` | A3 | two profiles on one box carry different identities + trust lists; no raw `os.getenv` in the A3 read path | closed (guard PR #21; isolation proven live 2026-10-28: `build_profile_secret_scope` on both homes returns distinct trust lists, both fail-closed — see `docs/mesh-bridge-findings-2026-10-28-a11-profile-isolation.md`) |
 | A12 | Stop false `⛔ Access not authorized.` after a busy-session inline command: the base leaves `_gateway_accepted` False on the inline-dispatch paths, so the adapter's D7 deny signal fires for an allowlisted peer | A3 | `/stop`, `/new` and a clarify answer mid-turn get their own ack and no rejection; a genuine gateway deny still logs a desync line and sends the canned reply | proposed — awaiting peer ruling |
-| A13 | Retire the `platform_hint` line forbidding markdown, for a mesh that renders markdown and code blocks | - | the hint no longer forbids markdown; the bandwidth caveat survives | approved 2026-11-04 — buildable | 
+| A13 | Retire the `platform_hint` line forbidding markdown, for a mesh that renders markdown and code blocks | - | the hint no longer forbids markdown; the bandwidth caveat survives | in-review 2026-11-04 — `step/A13-platform-hint` | 
 
 ## Cross-cutting constraint: no interactive UI over LXMF
 
@@ -611,10 +611,11 @@ gateway change; the gateway-side fix is correct long-term but lives in a separat
 
 ## Card A13: `platform_hint` no longer forbids markdown
 
-**Build:** Rewrite the `platform_hint` string in
-`src/hermes_reticulum/plugin/registration.py:147-151` so it stops telling the model "Messages
+**Build:** Rewrite the `platform_hint` string (then inline at
+`src/hermes_reticulum/plugin/registration.py:147-151`) so it stops telling the model "Messages
 are plain text only — no markdown formatting", and keeps the parts that are still true
-(bandwidth-driven concision, possible off-grid client).
+(bandwidth-driven concision, possible off-grid client). It now lives in the module constant
+`_PLATFORM_HINT` (`:111-127`).
 **Spec basis:** peer ruling 2026-11-04, recorded in the card A4 amendment: most Reticulum clients
 render markdown and code blocks, so the default Hermes text can stay as-is (A4) and the hint
 should not suppress formatting the peer can read.
@@ -629,7 +630,12 @@ should not suppress formatting the peer can read.
 - Given a client known not to render markdown, When it receives a formatted reply, Then the
   degradation is recorded (a findings note naming the client), not discovered later as a bug.
 
-**Status:** approved 2026-11-04 (peer). Buildable as written.
+**Progress:** the hint is now the module constant `_PLATFORM_HINT`
+(`src/hermes_reticulum/plugin/registration.py:120-127`) and four tests pin it in
+`tests/test_reticulum_registration_env.py` (red-before: the old string fails three of them).
+
+**Status:** in-review 2026-11-04 — branch `step/A13-platform-hint`, stacked on
+`docs/amend-cards-2026-11-04` (that branch carries this card). Evidence in `verification.md`.
 
 ## Branch and PR workflow
 
