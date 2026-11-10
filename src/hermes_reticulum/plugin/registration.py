@@ -108,6 +108,28 @@ def _env_enablement() -> dict | None:
     return {"display_name": display, **seed}
 
 
+# Platform hint injected into the agent's system prompt for mesh turns.
+#
+# Card A13: this used to read "Messages are plain text only — no markdown
+# formatting", which suppressed fenced code and lists that most LXMF clients
+# (Sideband and friends) do render. The peer ruled 2026-11-04 to keep the
+# Hermes default confirm text because clients render markdown, so the hint must
+# not tell the model the opposite. The bandwidth caveat stays: every byte here
+# is airtime, so formatting has to earn its place, and a client that shows raw
+# text must still get a legible message.
+_PLATFORM_HINT = (
+    "You are on Reticulum/LXMF (RNode, Sideband, or other mesh client). "
+    "Single-message replies carry the LXMF markdown renderer hint: most clients "
+    "(NomadNet, Columba, MeshChat) render markdown, including fenced code "
+    "blocks, so use formatting where it helps; raw or older clients show the "
+    "markup as raw text, so keep the message readable without formatting. "
+    "Replies too long for one packet are split and re-sent as plain text with "
+    "[pN i/N] part labels, so formatting cannot survive a split. "
+    "Keep responses concise due to bandwidth constraints (especially over LoRa). "
+    "The client may be off-grid; route replies efficiently."
+)
+
+
 def register(ctx):
     """
     Called by the Hermes plugin system to register the Reticulum platform.
@@ -144,18 +166,7 @@ def register(ctx):
         emoji="🛜",
         max_message_length=1024,
         pii_safe=True,
-        platform_hint=(
-            "You are on Reticulum/LXMF (RNode, Sideband, or other mesh client). "
-            "Single-message replies carry the LXMF markdown renderer hint: "
-            "clients that render markdown (NomadNet, Columba, MeshChat) will "
-            "format them; raw or older clients show the markup literally. "
-            "Replies too long for one packet are split and sent as plain text "
-            "with [pN i/N] part labels, so formatting cannot survive a split. "
-            "Use light formatting only where it earns its bytes — plain text "
-            "is still the default. Keep responses concise due to bandwidth "
-            "constraints (especially over LoRa). The client may be off-grid; "
-            "route replies efficiently."
-        ),
+        platform_hint=_PLATFORM_HINT,
         cron_deliver_env_var="RETICULUM_HOME_CHANNEL",
         allowed_users_env="HERMES_RETICULUM_ALLOWED_USERS",
         allow_all_env="HERMES_RETICULUM_ALLOW_ALL",
