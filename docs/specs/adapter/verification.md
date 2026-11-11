@@ -143,12 +143,15 @@ gateway commands (`hermes_cli/commands.py:100`, `:170`). See `plan.md` §19.2a.
 | 5 | Accepted inline dispatch whose send FAILED: no desync, no rejection (marker records the attempt) | `test_a12_02_inline_ack_send_failure_is_not_a_deny` | PASS | - |
 | 6 | Accepted inline dispatch with the reply still in flight at return: no desync, no rejection | `test_a12_03_inline_reply_in_flight_at_return_is_not_a_deny` | PASS | - |
 | 7 | CI stub extended to the busy-session path; new case red-before/green-after | `test_a12_05_ci_stub_busy_session_path` (runs in stub mode, skipped against the real base); the conftest stub now models both claim and no-claim paths | PASS | - |
+| 8 | The marker's assumption holds on the REAL base: its command/confirm/clarify inline paths enter this adapter's `send()` before returning | `test_a12_06_real_base_inline_dispatch_enters_send` (`/model`, `/approve`, clarify text; skipped in stub mode) — no seam replaces `handle_message`; busy is armed at the session-key lookup and the rest runs the real `_handle_message_while_active` → `_dispatch_inline_reply` → `_send_with_retry` → `send()` chain | PASS | - |
 
 Red-before, recorded on `dev` at 2026-11-11: rows 1-3 and 5-6 fail (five parametrized cases) —
 the inline ack is followed by `⛔ Access not authorized.` and the `gateway desync` WARNING line,
 exactly the live 2026-11-01 sequence; row 4 passes before and after, pinning criterion 10.
-Green after in both modes: real base 73 passed / 1 skipped, CI stub 74 passed
-(`HERMES_GATEWAY_ROOT` unset forces the stub). Full suite: 585 passed; the only failure
+Green after in both modes: real base 76 passed / 1 skipped, CI stub 74 passed / 3 skipped.
+Stub mode is forced with `env HOME=/nonexistent HERMES_GATEWAY_ROOT=/nonexistent
+HERMES_VENV_PATH=/nonexistent` — unsetting one variable is not enough, the conftest also
+falls back to the default Hermes checkout and venv. Full suite: 588 passed; the only failure
 (`test_tool_emoji` gateway-parity row) is pre-existing drift on `dev`, unrelated to A12.
 Discriminator: `deliver_inbound` installs a fresh attempts list into the `_SEND_ATTEMPTS`
 ContextVar around the `handle_message` await; `send()` ticks it at entry. A deny is read only

@@ -1463,6 +1463,70 @@ async def test_a12_05_ci_stub_busy_session_path(monkeypatch, caplog):
     await adapter.disconnect()
 
 
+@pytest.mark.skipif(
+    _GATEWAY_BASE_IS_STUB,
+    reason="runs the gateway's real inline dispatch; CI-stub mode has no real base",
+)
+@pytest.mark.parametrize("text,clarify", [
+    ("/model", False),   # generic bypass command -> _dispatch_inline_reply
+    ("/approve", False),  # confirm-style bypass command
+    ("yes", True),        # clarify answer routed to the text-intercept
+])
+@pytest.mark.asyncio
+async def test_a12_06_real_base_inline_dispatch_enters_send(monkeypatch, caplog, text, clarify):
+    """Greptile P2 (PR #40): pin the assumption A12 rests on — with the REAL base
+    installed, its own command/confirm/clarify inline paths enter this adapter's
+    send() before returning, so the send-attempt marker ticks on production code.
+    No seam replaces ``handle_message`` here: the busy state is armed at the
+    session-key lookup (the base explicitly supports guards installed without an
+    owner task) and everything after the busy check is the real
+    ``_handle_message_while_active`` -> ``_dispatch_inline_reply`` ->
+    ``_send_with_retry`` -> ``send()`` chain."""
+    caplog.set_level(logging.WARNING)
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_A)
+    if clarify:
+        from tools import clarify_gateway as _clarify_mod
+        monkeypatch.setattr(_clarify_mod, "get_pending_for_session",
+                            lambda *a, **k: object())
+    factory = CountingFactory()
+    adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
+    # The inline path REPLIES BY RETURN VALUE: _dispatch_inline_reply AWAITS the
+    # handler and sends the text itself (unlike the fresh-inbound path whose
+    # response is delivered by the background session task).
+    async def _ack_handler(event):
+        return "Inline ack."
+    adapter.set_message_handler(_ack_handler)
+    assert type(adapter).handle_message is BasePlatformAdapter.handle_message, (
+        "this test must run the inherited base pipeline, never a stand-in"
+    )
+    assert await adapter.connect() is True
+
+    real_key = adapter._event_session_key
+
+    def key_and_arm(event):
+        key = real_key(event)
+        # Arm busy exactly where handle_message reads it; the base treats a
+        # guard with no recorded owner task as NOT stale ("as tests do").
+        adapter._active_sessions.setdefault(key, asyncio.Event())
+        return key
+
+    monkeypatch.setattr(adapter, "_event_session_key", key_and_arm)
+
+    factory.transport._inbound_cb(PEER_A, text)
+    assert await _wait_for(lambda: any(
+        dest == PEER_A and sent == "Inline ack."
+        for dest, sent in adapter._transport.sent
+    )), "the real inline dispatcher must send the handler's reply itself"
+    await _settle()
+    assert adapter._transport.sent == [(PEER_A, "Inline ack.")], (
+        "no rejection may follow the inline ack (A12 false alarm)"
+    )
+    assert not any(
+        "gateway desync" in record.getMessage().lower() for record in caplog.records
+    ), "a send was attempted, so the flag-False return is not a deny"
+    await adapter.disconnect()
+
+
 # ── Part A (P1-1, P2-4) + Part B (single reader) + Part C (bounded worker) ─
 # Regression tests for the Greptile findings; each locks the contracted
 # behaviour so a later "optimisation" cannot silently reintroduce the bug.
