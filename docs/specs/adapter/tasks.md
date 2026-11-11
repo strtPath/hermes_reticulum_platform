@@ -33,8 +33,8 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A9 | P-13 command audit — **dropped 2026-11-04 (peer)**; P-5/P-6 already superseded by gateway commands | A4 | none; no build | dropped |
 | A10 | P-8 `/clarify` verification (source read done; live run outstanding) | A4 | `/clarify` resolves on the mesh or a findings doc proves the gateway gap | open (amended 2026-11-04) |
 | A11 | Per-profile mesh identity + ACL profile-scoping: one shared parser; ACL + identity read profile-scoped via `platform_gate_env` | A3 | two profiles on one box carry different identities + trust lists; no raw `os.getenv` in the A3 read path | closed (guard PR #21; isolation proven live 2026-10-28: `build_profile_secret_scope` on both homes returns distinct trust lists, both fail-closed — see `docs/mesh-bridge-findings-2026-10-28-a11-profile-isolation.md`) |
-| A12 | Stop false `⛔ Access not authorized.` after a busy-session inline command: the base leaves `_gateway_accepted` False on the inline-dispatch paths, so the adapter's D7 deny signal fires for an allowlisted peer | A3 | `/stop`, `/new` and a clarify answer mid-turn get their own ack and no rejection; a genuine gateway deny still logs a desync line and sends the canned reply | proposed — awaiting peer ruling |
-| A13 | Retire the `platform_hint` line forbidding markdown, for a mesh that renders markdown and code blocks | - | the hint no longer forbids markdown; the bandwidth caveat survives | in-review 2026-11-04 — `step/A13-platform-hint` | 
+| A12 | Stop false `⛔ Access not authorized.` after a busy-session inline command: the base leaves `_gateway_accepted` False on the inline-dispatch paths, so the adapter's D7 deny signal fires for an allowlisted peer | A3 | `/stop`, `/new` and a clarify answer mid-turn get their own ack and no rejection; a genuine gateway deny still logs a desync line and sends the canned reply | under-review 2026-11-11 — `step/A12-false-desync` |
+| A13 | Retire the `platform_hint` line forbidding markdown, for a mesh that renders markdown and code blocks | - | the hint no longer forbids markdown; the bandwidth caveat survives | merged 2026-11-10 (PR #37) | 
 
 ## Cross-cutting constraint: no interactive UI over LXMF
 
@@ -599,15 +599,16 @@ dispatch *is* a claim. The D7 deny signal must stay reliable for genuine denies 
 - Given the A3 suite plus a busy-session regression case in the CI stub (the stub currently
   covers only the fresh-inbound path), When the suite runs, Then all pass, including the new
   case that reproduces the false alarm red-before/green-after.
-**Open decision for the peer:** which fix shape. The adapter-side discriminator (treat False as
-a deny only when no send was attempted for the event during the `handle_message` await) keeps
-A3 criterion 10 intact and needs no gateway change; the gateway-side fix (set the flag after a
-successful inline dispatch) is the correct one but the gateway is a separate install, so it
-lands as an upstream report or a documented base-class override. Both are laid out in the
-findings doc's "Fix options".
-**Status:** approved 2026-11-04 (peer): build it. The fix-shape question above is still open and
-must be settled before code — the adapter-side discriminator keeps A3 criterion 10 intact with no
-gateway change; the gateway-side fix is correct long-term but lives in a separate install.
+**Fix-shape ruling (peer, 2026-11-11):** option 1 — the adapter-side evidence-based
+discriminator. `_gateway_accepted is False` counts as a deny only when no send was *attempted*
+for the event during the `handle_message` await; the marker is a context-local attempts list
+installed around the await and ticked at `send()` entry. Option 2 rejected (half-fixes).
+Option 3 (gateway sets the flag after a successful inline dispatch) is still the correct
+long-term shape and lives in the upstream report
+`docs/upstream-report-2026-11-11-gateway-inline-dispatch-accepted-flag.md`, not in this repo.
+**Status:** under-review 2026-11-11 — branch `step/A12-false-desync`. Red-before recorded in
+`verification.md` (five cases fail on `dev`: the rejection fires after the inline ack); green
+after in both gateway modes (real base and CI stub). Live mesh confirmation is still open.
 
 ## Card A13: `platform_hint` no longer forbids markdown
 
@@ -634,8 +635,10 @@ should not suppress formatting the peer can read.
 (`src/hermes_reticulum/plugin/registration.py:120-127`) and four tests pin it in
 `tests/test_reticulum_registration_env.py` (red-before: the old string fails three of them).
 
-**Status:** in-review 2026-11-04 — branch `step/A13-platform-hint`, stacked on
-`docs/amend-cards-2026-11-04` (that branch carries this card). Evidence in `verification.md`.
+**Status:** merged 2026-11-10 (PR #37, squash into `dev`). Criterion 3's named client arrived
+2026-11-11: `reticulum-mobile-app` (github.com/thatSFguy/reticulum-mobile-app) renders no
+markdown — native message bubbles, no renderer field — recorded in
+`docs/mesh-bridge-findings-2026-11-11-nonrendering-client-reticulum-mobile.md`.
 
 ## Branch and PR workflow
 

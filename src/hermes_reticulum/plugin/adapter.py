@@ -22,6 +22,7 @@ Foundation stage (design: docs/spec-reticulum-platform-adapter.md):
 
 import asyncio
 import contextlib
+import contextvars
 import datetime
 import heapq
 import inspect
@@ -48,6 +49,18 @@ from hermes_reticulum.plugin.identity import (
 from hermes_reticulum.plugin.transport import ReticulumTransport
 
 logger = logging.getLogger("hermes_reticulum.adapter")
+
+# A12 (docs/specs/adapter/tasks.md): evidence for the D7 deny discriminator.
+# ``deliver_inbound`` installs a fresh attempts list into this ContextVar
+# around the ``handle_message`` await; ``send()`` records the attempt at
+# entry while a marker is set. The ContextVar propagates into coroutines
+# awaited by ``handle_message`` and into tasks it creates, so sends
+# belonging to unrelated concurrent turns (cron deliveries, the rejection
+# worker) never reach this check — the attempts list is scoped to the one
+# inbound event's pipeline call.
+_SEND_ATTEMPTS: contextvars.ContextVar["list[str] | None"] = contextvars.ContextVar(
+    "hermes_reticulum_send_attempts", default=None
+)
 
 # A3 (docs/specs/adapter/a3-spec.md): the canned rejection. A literal string
 # constant, never model output (I2). It carries no identity and no explanation
@@ -616,14 +629,37 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         ``_gateway_accepted`` flag the gateway sets on the event (False when its
         own authz/ingress gate dropped the event); a desync there is logged and
         answered through the transport seam under the same D4/D6 rules.
+
+        A12 refines that read: ``_gateway_accepted is False`` is a deny signal
+        ONLY when the gateway sent nothing for this event during the
+        ``handle_message`` call. The base's busy-session inline dispatch
+        (``/stop``, ``/new``, clarify answers) handles the event inline, sends
+        its own ack through this adapter's ``send()``, and returns without ever
+        setting the flag — reading that False as a deny produced the false
+        ``⛔ Access not authorized.`` after every inline command (findings
+        2026-11-01). A genuine gate drop attempts no send, so the two cases are
+        separated by a per-call send-attempt marker: a fresh list goes into
+        ``_SEND_ATTEMPTS`` around the call and ``send()`` ticks it at entry.
+        The marker records the ATTEMPT, never its result, so an ack whose send
+        failed or was still in flight at return still counts as evidence the
+        gateway handled the event.
         """
         source_hash = getattr(getattr(event, "source", None), "user_id", None)
         handle = getattr(self, "handle_message", None)
         if callable(handle):
-            result = handle(event)
-            if inspect.isawaitable(result):
-                result = await result
-            if source_hash and getattr(event, "_gateway_accepted", True) is False:
+            send_attempts: list[str] = []
+            token = _SEND_ATTEMPTS.set(send_attempts)
+            try:
+                result = handle(event)
+                if inspect.isawaitable(result):
+                    result = await result
+            finally:
+                _SEND_ATTEMPTS.reset(token)
+            if (
+                source_hash
+                and not send_attempts
+                and getattr(event, "_gateway_accepted", True) is False
+            ):
                 await self._note_gateway_desync(source_hash)
             return
         result = None
@@ -690,6 +726,12 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         success the send is recorded in the propagation pending set, because
         node acceptance is not proof of delivery (spec section 6).
         """
+        # A12: record the attempt while a ``deliver_inbound`` marker is set —
+        # at entry, before any validation, because the deny discriminator
+        # reads the attempt itself, not its outcome (see deliver_inbound).
+        attempts = _SEND_ATTEMPTS.get()
+        if attempts is not None:
+            attempts.append(chat_id)
         if not self.is_connected or self._transport is None:
             return SendResult(
                 success=False,

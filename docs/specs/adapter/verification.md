@@ -81,7 +81,8 @@ defect. See the card A4 amendment in `tasks.md`.
 
 Row 3's `yes` reply is the one to watch in the live run: if the peer sends `/new` while a turn is
 running, that is the busy-session inline-dispatch path where the base can leave
-`_gateway_accepted` `False` — the false-rejection bug carded as A12 (`proposed`).
+`_gateway_accepted` `False` — the false-rejection bug carded as A12 (under review,
+`step/A12-false-desync`, 2026-11-11).
 
 ## Card A5: `/new` ack with session id + title — dropped 2026-11-04
 
@@ -131,13 +132,35 @@ gateway commands (`hermes_cli/commands.py:100`, `:170`). See `plan.md` §19.2a.
 |---|---|---|---|---|
 | 1 | `/clarify` resolves on the mesh, or a findings doc proves the gateway gap | source read: `gateway/platforms/base.py:2830-2855` (numbered text + `mark_awaiting_text`), `gateway/run_turn_runner_clarify_delivery.py:29-39` (base path driven for a non-overriding adapter) | NOT-TESTED | source half answered; the live mesh exercise has not been run |
 
+## Card A12: No false desync rejection on a busy-session inline dispatch
+
+| # | Acceptance criterion | Evidence | Result | Gap |
+|---|---|---|---|---|
+| 1 | `/stop` mid-turn: stop ack only, no rejection, no desync line | `test_a12_01_inline_command_ack_gets_no_false_rejection[/stop]` | PASS | live confirmation outstanding |
+| 2 | `/new` (or `/reset`) mid-turn + inline confirm answer: no desync, no rejection | `test_a12_01[.../new]` (the command ack); the confirm answer rides the same inline text path pinned by `[yes]` | PASS | live confirmation outstanding |
+| 3 | Pending clarify, text answer dispatched inline: no desync, no rejection | `test_a12_01[...yes]` | PASS | live confirmation outstanding |
+| 4 | Genuine gateway deny still logs the desync line and sends the canned reply (A3 criterion 10 intact) | `test_a12_04_real_gate_drop_still_denies`; the A3 D7 suite (`test_a3_15/16/17`) still green | PASS | - |
+| 5 | Accepted inline dispatch whose send FAILED: no desync, no rejection (marker records the attempt) | `test_a12_02_inline_ack_send_failure_is_not_a_deny` | PASS | - |
+| 6 | Accepted inline dispatch with the reply still in flight at return: no desync, no rejection | `test_a12_03_inline_reply_in_flight_at_return_is_not_a_deny` | PASS | - |
+| 7 | CI stub extended to the busy-session path; new case red-before/green-after | `test_a12_05_ci_stub_busy_session_path` (runs in stub mode, skipped against the real base); the conftest stub now models both claim and no-claim paths | PASS | - |
+
+Red-before, recorded on `dev` at 2026-11-11: rows 1-3 and 5-6 fail (five parametrized cases) —
+the inline ack is followed by `⛔ Access not authorized.` and the `gateway desync` WARNING line,
+exactly the live 2026-11-01 sequence; row 4 passes before and after, pinning criterion 10.
+Green after in both modes: real base 73 passed / 1 skipped, CI stub 74 passed
+(`HERMES_GATEWAY_ROOT` unset forces the stub). Full suite: 585 passed; the only failure
+(`test_tool_emoji` gateway-parity row) is pre-existing drift on `dev`, unrelated to A12.
+Discriminator: `deliver_inbound` installs a fresh attempts list into the `_SEND_ATTEMPTS`
+ContextVar around the `handle_message` await; `send()` ticks it at entry. A deny is read only
+when the flag is False AND the list stayed empty.
+
 ## Card A13: `platform_hint` no longer forbids markdown
 
 | # | Acceptance criterion | Evidence | Result | Gap |
 |---|---|---|---|---|
 | 1 | Nothing in the hint forbids markdown, and fenced code arrives intact through chunking | `_PLATFORM_HINT` (`src/hermes_reticulum/plugin/registration.py:120-127`); `test_platform_hint_no_longer_forbids_markdown`, `test_platform_hint_states_that_clients_render_markdown`; code integrity across chunks: `tests/test_reticulum_delivery.py:496` `test_code_block_preserved_across_chunk_boundary` | PASS | - |
 | 2 | The bandwidth/concision instruction and the plain-text fallback caveat survive | `test_platform_hint_keeps_the_bandwidth_caveat`, `test_platform_hint_covers_clients_without_markdown_rendering` | PASS | - |
-| 3 | A client known not to render markdown is recorded as a findings note when seen | - | NOT-TESTED | no such client identified yet; the hint asks for legibility without formatting, so the failure mode is degraded (markers shown), not unreadable |
+| 3 | A client known not to render markdown is recorded as a findings note when seen | `reticulum-mobile-app` (github.com/thatSFguy/reticulum-mobile-app): native Kotlin/Swift bubbles, no markdown rendering and no renderer-field support; recorded in `docs/mesh-bridge-findings-2026-11-11-nonrendering-client-reticulum-mobile.md` | PASS | - |
 
 Red-before, recorded: the previous string ("Messages are plain text only — no markdown
 formatting") fails rows 1 and 2 of the assertion set; only the bandwidth check passes.
