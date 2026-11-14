@@ -158,6 +158,84 @@ def _fence_info(stripped: str, closing: bool = False) -> tuple[int, str | None]:
     return run, ch
 
 
+def _drain_prefix(blob: str, room: int) -> tuple[str, str]:
+    """Longest prefix of ``blob`` fitting ``room`` bytes: (prefix, rest)."""
+    used, i = 0, 0
+    for ch in blob:
+        cb = len(ch.encode("utf-8"))
+        if used + cb > room:
+            break
+        used += cb
+        i += 1
+    return blob[:i], blob[i:]
+
+
+def _drain_suffix(blob: str, room: int) -> tuple[str, str]:
+    """Longest suffix of ``blob`` fitting ``room`` bytes: (suffix, rest)."""
+    used, i = 0, len(blob)
+    for ch in reversed(blob):
+        cb = len(ch.encode("utf-8"))
+        if used + cb > room:
+            break
+        used += cb
+        i -= 1
+    return blob[i:], blob[:i]
+
+
+def _fold_blank_runs(parts: list[str], budget: int) -> list[str]:
+    """Pack whitespace-only parts into neighbours, preserving byte order.
+
+    A blank run between two parts splits three ways: the run's front
+    rides onto the end of the previous part, its tail onto the start of
+    the next part, and whatever is left in the middle keeps its place as
+    budget-sized slices.  (Front-onto-next / tail-onto-previous would
+    fill slack just as well but reorders mixed runs like ``" \\n" * n``
+    against the original text — byte order outranks compactness here.)
+    A run at either end has only one neighbour to pack into.  If the
+    budget cannot hold a single whitespace codepoint, slicing can never
+    advance and the remainder is emitted whole (lossless beats an
+    over-budget part, and beats hanging).
+    """
+    merged: list[str] = []
+    pending = ""
+    for p in parts:
+        if not p.strip():
+            pending += p
+            continue
+        if pending:
+            if merged:
+                head, pending = _drain_prefix(
+                    pending, budget - len(merged[-1].encode("utf-8"))
+                )
+                merged[-1] += head
+            tail, pending = _drain_suffix(
+                pending, budget - len(p.encode("utf-8"))
+            )
+            while pending:
+                piece, pending = _drain_prefix(pending, budget)
+                if not piece:
+                    merged.append(pending)
+                    pending = ""
+                    break
+                merged.append(piece)
+            p = tail + p
+        merged.append(p)
+    if pending:
+        # Trailing blanks: only the previous part can take them.
+        if merged:
+            head, pending = _drain_prefix(
+                pending, budget - len(merged[-1].encode("utf-8"))
+            )
+            merged[-1] += head
+        while pending:
+            piece, pending = _drain_prefix(pending, budget)
+            if not piece:
+                merged.append(pending)
+                break
+            merged.append(piece)
+    return merged
+
+
 def _content_aware_chunks(text: str, budget: int) -> list:
     """Split ``text`` on content-aware boundaries into parts of at most
     ``budget`` bytes.
@@ -181,8 +259,11 @@ def _content_aware_chunks(text: str, budget: int) -> list:
     Contract: every part is at most ``budget`` bytes, no part is empty
     (same contract as :func:`_utf8_codepoint_chunks`), and joining the
     parts reproduces ``text`` exactly.  Whitespace-only parts are
-    packed into a neighbouring part's slack when possible; a whitespace
-    run wider than both neighbours' slack survives, split to budget.
+    packed into a neighbouring part's slack, preserving byte order.
+    A whitespace run with no content-side neighbour to carry it — e.g.
+    a leading indent wider than the budget — still emits its own
+    whitespace-only part; that is inherent to losslessness, not a
+    folding miss.
     """
     if not text:
         return []
@@ -391,72 +472,8 @@ def _content_aware_chunks(text: str, budget: int) -> list:
 
     # Fold whitespace-only parts into a neighbouring part so they do
     # not ship as their own labelled packet (seen live as an empty
-    # bubble between p12 2/7 and 3/7).  Packing order: forward into
-    # the next part's slack, then backward into the previous part's
-    # slack.  Anything still left over (a whitespace run wider than
-    # both neighbours' combined slack) is emitted in budget-sized
-    # slices — never as one over-budget blob, which sequence_chunks
-    # would silently truncate downstream.
-    if len(out) > 1:
-        merged: list[str] = []
-        pending = ""
-
-        def _drain_forward(blob: str, room: int) -> tuple:
-            """Longest prefix of ``blob`` fitting ``room`` bytes."""
-            used, i = 0, 0
-            for ch in blob:
-                cb = len(ch.encode("utf-8"))
-                if used + cb > room:
-                    break
-                used += cb
-                i += 1
-            return blob[:i], blob[i:]
-
-        def _drain_backward(blob: str, room: int) -> tuple:
-            """Longest suffix of ``blob`` fitting ``room`` bytes."""
-            used, i = 0, len(blob)
-            for ch in reversed(blob):
-                cb = len(ch.encode("utf-8"))
-                if used + cb > room:
-                    break
-                used += cb
-                i -= 1
-            return blob[i:], blob[:i]
-
-        for p in out:
-            if not p.strip():
-                pending += p
-                continue
-            if pending:
-                head, pending = _drain_forward(
-                    pending, budget - len(p.encode("utf-8"))
-                )
-                p = head + p
-                if pending and merged:
-                    tail, pending = _drain_backward(
-                        pending, budget - len(merged[-1].encode("utf-8"))
-                    )
-                    merged[-1] += tail
-                # Whatever neither neighbour could absorb sits between
-                # them in the original text: emit it in order before
-                # the next part, budget-sized.
-                while pending:
-                    piece, pending = _drain_forward(pending, budget)
-                    merged.append(piece)
-            merged.append(p)
-        if pending:
-            # Trailing blanks: back-fill the last part, then slice.
-            if merged:
-                head, pending = _drain_forward(
-                    pending, budget - len(merged[-1].encode("utf-8"))
-                )
-                merged[-1] += head
-            while pending:
-                piece, pending = _drain_forward(pending, budget)
-                merged.append(piece)
-        out = merged
-
-    return out
+    # bubble between p12 2/7 and 3/7).
+    return _fold_blank_runs(out, budget)
 
 
 def _split_oversized_line(line: str, budget: int) -> list:

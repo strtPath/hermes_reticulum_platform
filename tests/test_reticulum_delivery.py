@@ -852,6 +852,11 @@ class TestContentAwareChunks:
             lambda: "x" * rng.randint(1, 900),
             lambda: " " * rng.randint(0, 60) + "tok" * rng.randint(1, 150),
             lambda: "\n" * rng.randint(0, 500),
+            # Round 2: homogeneous whitespace runs permute to nothing;
+            # mixed runs are what exposed the fold's reorder bug.
+            lambda: " \n" * rng.randint(0, 250),
+            lambda: "\t\n" * rng.randint(0, 250),
+            lambda: "\r\n" * rng.randint(0, 250),
             lambda: "🙂" * rng.randint(1, 200),
             lambda: "line\r\n" * rng.randint(1, 60),
         ]
@@ -865,3 +870,32 @@ class TestContentAwareChunks:
             assert "".join(parts) == text, f"lossy for {text[:40]!r}"
             assert all(len(p.encode("utf-8")) <= budget for p in parts)
             assert all(p for p in parts), f"empty part for {text[:40]!r}"
+
+    def test_fold_blank_runs_mixed_whitespace_order(self):
+        # Round 2 P2: the old fold drained the run's FRONT onto the next
+        # part and its TAIL onto the previous. Invisible for one-char
+        # runs; mixed runs like (" \n" * n) came back reordered, breaking
+        # the byte-for-byte contract. Now: front onto previous, tail
+        # onto next, middle stays in place.
+        parts = ["x" * 366 + "\n", " \n" * 200, "y" * 366 + "\n"]
+        merged = delivery._fold_blank_runs(parts, 368)
+        assert "".join(merged) == "".join(parts), "fold reordered bytes"
+        assert all(len(p.encode("utf-8")) <= 368 for p in merged)
+        assert all(p for p in merged)
+
+    def test_fold_blank_runs_leading_and_trailing(self):
+        # One-sided runs pack into the only neighbour available.
+        parts = [" " * 300, "x" * 300, "\n" * 100]
+        merged = delivery._fold_blank_runs(parts, 368)
+        assert "".join(merged) == "".join(parts)
+        assert all(len(p.encode("utf-8")) <= 368 for p in merged)
+        assert all(p for p in merged)
+
+    def test_degenerate_budget_terminates_and_is_lossless(self):
+        # Round 2 P3: budget smaller than a whitespace codepoint's
+        # UTF-8 width made the fold's slice loop fail to advance (hang).
+        # chunk_for_send never gets that small a budget, but the fold
+        # must terminate and stay lossless anyway.
+        text = "x" * 40 + "\u3000" * 400 + "y" * 40
+        parts = delivery._content_aware_chunks(text, 2)
+        assert "".join(parts) == text
