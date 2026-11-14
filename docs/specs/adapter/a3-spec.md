@@ -193,6 +193,20 @@ admission reject and text on success (falsy-but-not-None never happens), and the
 delivers non-falsy replies itself via `_send_final_text`. The observable effect,
 criterion 10, holds.
 
+A12 refinement (ruling 2026-11-11, card A12 in `tasks.md`): False on the flag is a deny
+signal ONLY when the gateway attempted no send to this event's peer during the
+`handle_message` call. The base's busy-session inline dispatch (`/stop`, `/new`,
+confirm/clarify answers) handles the event, sends its own ack through the adapter's `send()`,
+and returns without touching the flag — reading that bare False as a deny is the 2026-11-01
+false alarm. The adapter keeps a per-call evidence marker: a fresh attempts list installed
+around the await (context-local, so concurrent deliveries never see each other's marker),
+ticked by `send()` at entry with the destination; the deny read requires the event's own peer
+ABSENT from the list — a send routed elsewhere proves nothing about this event. The marker
+records the attempt, not its outcome: a failed or still-in-flight ack is evidence the event
+was handled. Known residue (card A14): an inline path that handles yet sends nothing —
+handler yields no text, or the base swallows the inline-dispatch exception — leaves no
+evidence either and still reads as a deny until the upstream flag fix lands.
+
 ## 5. Acceptance criteria (Given/When/Then)
 
 1. Given `HERMES_RETICULUM_ALLOWED_USERS` lists hash A, When peer B (absent) sends any
@@ -222,9 +236,10 @@ criterion 10, holds.
    `test_allowlist_matching_is_case_and_colon_tolerant`) stay green; any test relying on
    allow-all-on-unset-env behavior is re-expressed against the new closed default.
 10. Given the adapter admits a peer and the gateway authz then denies the delivered
-    event, When the delivery outcome is inspected, Then the adapter logs a desync line
-    naming the gateway deny and sends the canned reply to that peer via the transport
-    seam (cooldown and D6 suppression apply).
+    event, When the delivery outcome is inspected — post-call `_gateway_accepted` is False
+    AND no send to that peer was attempted during the call (A12 refinement, card A12) —
+    Then the adapter logs a desync line naming the gateway deny and sends the canned reply
+    to that peer via the transport seam (cooldown and D6 suppression apply).
 
 ## 6. Out of scope (this card)
 

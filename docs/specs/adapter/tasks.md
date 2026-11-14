@@ -35,6 +35,7 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A11 | Per-profile mesh identity + ACL profile-scoping: one shared parser; ACL + identity read profile-scoped via `platform_gate_env` | A3 | two profiles on one box carry different identities + trust lists; no raw `os.getenv` in the A3 read path | closed (guard PR #21; isolation proven live 2026-10-28: `build_profile_secret_scope` on both homes returns distinct trust lists, both fail-closed — see `docs/mesh-bridge-findings-2026-10-28-a11-profile-isolation.md`) |
 | A12 | Stop false `⛔ Access not authorized.` after a busy-session inline command: the base leaves `_gateway_accepted` False on the inline-dispatch paths, so the adapter's D7 deny signal fires for an allowlisted peer | A3 | `/stop`, `/new` and a clarify answer mid-turn get their own ack and no rejection; a genuine gateway deny still logs a desync line and sends the canned reply | under-review 2026-11-11 — `step/A12-false-desync` |
 | A13 | Retire the `platform_hint` line forbidding markdown, for a mesh that renders markdown and code blocks | - | the hint no longer forbids markdown; the bandwidth caveat survives | merged 2026-11-10 (PR #37) | 
+| A14 | A12 residue: inline paths that handle an event but send nothing (handler yields no text; the base swallows the inline-dispatch exception) still read as a D7 deny under A12's evidence rule | A12 | the upstream flag fix lands and the evidence rule retires, or an upstream-safe signal separates handled-but-silent from dropped; until then the documented silent-inline paths are known false-alarm surfaces | open, proposed 2026-11-14 |
 
 ## Cross-cutting constraint: no interactive UI over LXMF
 
@@ -588,8 +589,8 @@ dispatch *is* a claim. The D7 deny signal must stay reliable for genuine denies 
 - Given a clarify prompt is pending and the agent is blocked, When the peer's text answer is
   dispatched inline, Then no desync line and no rejection are produced.
 - Given the adapter admits a peer and the gateway genuinely denies the delivered event (authz
-  mismatch), When the event returns with `_gateway_accepted` False and no send was attempted for
-  it, Then the desync line is logged and the canned reply is sent — A3 criterion 10 still holds.
+  mismatch), When the event returns with `_gateway_accepted` False and no send to that peer was
+  attempted during the call, Then the desync line is logged and the canned reply is sent — A3 criterion 10 still holds.
 - Given an accepted inline dispatch whose reply send fails (LXMF delivery failure), When the
   event returns with `_gateway_accepted` False, Then no desync line and no rejection are
   produced — the marker records the send attempt, not its result.
@@ -602,13 +603,49 @@ dispatch *is* a claim. The D7 deny signal must stay reliable for genuine denies 
 **Fix-shape ruling (peer, 2026-11-11):** option 1 — the adapter-side evidence-based
 discriminator. `_gateway_accepted is False` counts as a deny only when no send was *attempted*
 for the event during the `handle_message` await; the marker is a context-local attempts list
-installed around the await and ticked at `send()` entry. Option 2 rejected (half-fixes).
+installed around the await and ticked at `send()` entry. The deny read matches the recorded
+destinations against the event's own peer — a send routed to a different destination is no
+evidence about this event (review round 1, 2026-11-14). Option 2 rejected (half-fixes).
 Option 3 (gateway sets the flag after a successful inline dispatch) is still the correct
 long-term shape and lives in the upstream report
 `docs/upstream-report-2026-11-11-gateway-inline-dispatch-accepted-flag.md`, not in this repo.
+**Known limits (review 2026-11-14):** the evidence rule separates *handled-and-replied* from
+*dropped*; it cannot separate *handled-but-silent* inline paths — a bypass/clarify handler
+that yields no text (early return, `base.py:3492`) or a swallowed inline-dispatch exception
+(`base.py:4018-4019`, `:4038-4039`) — from a genuine deny. Those still read as a denial; the
+residue is carded as A14, not papered over here.
 **Status:** under-review 2026-11-11 — branch `step/A12-false-desync`. Red-before recorded in
 `verification.md` (five cases fail on `dev`: the rejection fires after the inline ack); green
-after in both gateway modes (real base and CI stub). Live mesh confirmation is still open.
+after in both gateway modes (real base and CI stub). Senior cold review round 1 (2026-11-14,
+3/5, nine findings): round-1 commits close findings 1-7 and 9 (peer-scoped deny read, marker
+context-scoping pinned by new tests, stub self-guard, parametrization honesty,
+comment/docstring/verification corrections, upstream-report citations); A13's status paperwork
+moved to its own docs branch (finding 8). Round-2 re-review pending. Live mesh confirmation
+is still open.
+
+## Card A14: Handled-but-silent inline paths still read as a D7 deny
+
+**Build:** A12's evidence rule (False flag + no send to this peer = deny) cannot distinguish
+an inline path that handled the event but produced no send from the gateway's authz drop:
+a bypass/clarify handler that returns no text exits `_dispatch_inline_reply` before any send
+(`base.py:3492`), and a handler exception is swallowed by the dispatch branches'
+`except Exception` (`base.py:4018-4019`, `:4038-4039`). Live traffic so far only used
+commands that always reply, so the false alarm has not recurred — but the surface exists and
+the docs must say so (senior review of A12, finding 1).
+**Spec basis:** A3 4.5 / criterion 10 as refined by A12 (`a3-spec.md` 4.5).
+**Blocked by:** A12 (it refines that card's rule). The upstream flag fix — option 3 in
+`docs/upstream-report-2026-11-11-gateway-inline-dispatch-accepted-flag.md` — makes the
+evidence rule unnecessary and this card closes by retiring it.
+**Acceptance:**
+- Given a busy-session inline path that handles the event and sends nothing, When the event
+  returns with the flag False, Then the adapter does NOT log a desync line or send the canned
+  reply — or the path is proven unreachable from this platform and the finding is documented
+  as unreachable instead.
+- Given the upstream flag fix lands, When the adapter runs against that gateway, Then the
+  evidence rule retires to the plain flag read, the A12 marker tests are archived with a
+  pointer, and A3 criterion 10 stays green throughout.
+**Status:** open, proposed 2026-11-14. No build until the upstream report or an
+upstream-safe adapter signal settles the shape.
 
 ## Card A13: `platform_hint` no longer forbids markdown
 
