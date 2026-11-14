@@ -178,8 +178,11 @@ def _content_aware_chunks(text: str, budget: int) -> list:
     old codepoint walker.  No regex, no lookahead beyond the current
     fence block.
 
-    No empty parts are produced for non-empty input (same contract as
-    :func:`_utf8_codepoint_chunks`).
+    Contract: every part is at most ``budget`` bytes, no part is empty
+    (same contract as :func:`_utf8_codepoint_chunks`), and joining the
+    parts reproduces ``text`` exactly.  Whitespace-only parts are
+    packed into a neighbouring part's slack when possible; a whitespace
+    run wider than both neighbours' slack survives, split to budget.
     """
     if not text:
         return []
@@ -386,32 +389,71 @@ def _content_aware_chunks(text: str, budget: int) -> list:
     if cur:
         out.append("".join(cur))
 
-    # Fold whitespace-only parts into the following part (the blanks
-    # become leading blank lines of the next chunk). A whitespace-only
-    # part ships as its own labeled packet and renders as an empty
-    # bubble on mesh clients (seen live between p12 2/7 and 3/7).
-    # Losslessness first: if the fold would push the next part over
-    # budget, keep the part separate.
+    # Fold whitespace-only parts into a neighbouring part so they do
+    # not ship as their own labelled packet (seen live as an empty
+    # bubble between p12 2/7 and 3/7).  Packing order: forward into
+    # the next part's slack, then backward into the previous part's
+    # slack.  Anything still left over (a whitespace run wider than
+    # both neighbours' combined slack) is emitted in budget-sized
+    # slices — never as one over-budget blob, which sequence_chunks
+    # would silently truncate downstream.
     if len(out) > 1:
         merged: list[str] = []
         pending = ""
+
+        def _drain_forward(blob: str, room: int) -> tuple:
+            """Longest prefix of ``blob`` fitting ``room`` bytes."""
+            used, i = 0, 0
+            for ch in blob:
+                cb = len(ch.encode("utf-8"))
+                if used + cb > room:
+                    break
+                used += cb
+                i += 1
+            return blob[:i], blob[i:]
+
+        def _drain_backward(blob: str, room: int) -> tuple:
+            """Longest suffix of ``blob`` fitting ``room`` bytes."""
+            used, i = 0, len(blob)
+            for ch in reversed(blob):
+                cb = len(ch.encode("utf-8"))
+                if used + cb > room:
+                    break
+                used += cb
+                i -= 1
+            return blob[i:], blob[:i]
+
         for p in out:
             if not p.strip():
                 pending += p
                 continue
-            if pending and len((pending + p).encode("utf-8")) <= budget:
-                merged.append(pending + p)
-            else:
-                if pending:
-                    merged.append(pending)
-                merged.append(p)
-            pending = ""
+            if pending:
+                head, pending = _drain_forward(
+                    pending, budget - len(p.encode("utf-8"))
+                )
+                p = head + p
+                if pending and merged:
+                    tail, pending = _drain_backward(
+                        pending, budget - len(merged[-1].encode("utf-8"))
+                    )
+                    merged[-1] += tail
+                # Whatever neither neighbour could absorb sits between
+                # them in the original text: emit it in order before
+                # the next part, budget-sized.
+                while pending:
+                    piece, pending = _drain_forward(pending, budget)
+                    merged.append(piece)
+            merged.append(p)
         if pending:
-            # Trailing blanks: fold onto the last part if they fit.
-            if merged and len((merged[-1] + pending).encode("utf-8")) <= budget:
-                merged[-1] += pending
-            else:
-                merged.append(pending)
+            # Trailing blanks: back-fill the last part, then slice.
+            if merged:
+                head, pending = _drain_forward(
+                    pending, budget - len(merged[-1].encode("utf-8"))
+                )
+                merged[-1] += head
+            while pending:
+                piece, pending = _drain_forward(pending, budget)
+                merged.append(piece)
         out = merged
 
     return out
@@ -435,7 +477,9 @@ def _split_oversized_line(line: str, budget: int) -> list:
     returned parts reproduces the original line exactly.  Every part
     is at most ``budget`` bytes.  A trailing line terminator is
     reserved out of the budget so it rides on the last part instead
-    of becoming its own whitespace-only part.
+    of becoming its own whitespace-only part.  Input that is itself
+    all whitespace may still yield whitespace-only parts — byte
+    preservation outranks bubble cosmetics there.
     """
     if not line:
         return [line]
@@ -465,7 +509,14 @@ def _split_oversized_line(line: str, budget: int) -> list:
     for ch in body:
         b = len(ch.encode("utf-8"))
         if cur and cur_bytes + b > body_budget:
-            if ws_pos > 0 and cur_bytes - ws_bytes + b <= body_budget:
+            if (
+                ws_pos > 0
+                and cur_bytes - ws_bytes + b <= body_budget
+                # A boundary is only usable if the prefix it emits
+                # carries content; cutting after a pure-indent run
+                # would emit a whitespace-only part (empty bubble).
+                and "".join(cur[:ws_pos]).strip()
+            ):
                 # Word boundary in reach and the carried-over word
                 # still fits: cut there, keep the word whole.
                 out.append("".join(cur[:ws_pos]))
@@ -481,7 +532,10 @@ def _split_oversized_line(line: str, budget: int) -> list:
             ws_bytes = 0
         cur.append(ch)
         cur_bytes += b
-        if ch in (" ", "\t"):
+        if ch.isspace() and ch not in ("\r", "\n"):
+            # Word boundary: any non-linebreak whitespace (space, tab,
+            # NBSP, ideographic space) so non-ASCII prose does not cut
+            # mid-word.
             ws_pos = len(cur)
             ws_bytes = cur_bytes
     if cur:
@@ -794,6 +848,18 @@ def chunk_for_send(text: str, tag: str) -> list:
         if budget <= 0:
             return []
         parts = _content_aware_chunks(text, budget)
+        # Belt and braces: if any chunker path ever emits a part over
+        # budget, re-split it at word boundaries (lossless) instead of
+        # trusting sequence_chunks, whose truncation would drop bytes.
+        parts = [
+            piece
+            for p in parts
+            for piece in (
+                _split_oversized_line(p, budget)
+                if len(p.encode("utf-8")) > budget
+                else (p,)
+            )
+        ]
         if len(parts) == seen:
             break
         seen = len(parts)

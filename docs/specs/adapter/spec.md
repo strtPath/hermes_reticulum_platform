@@ -538,6 +538,15 @@ single empty part must not produce an empty announce or a zero-length packet. De
 behaviour rather than leaving it to chance: an empty reply is a bug in the turn, not something
 to send. Log it and send nothing.
 
+**Chunk output contract.** Every part from `chunk_for_send` must be non-empty, must fit
+368 bytes including its `[tag i/N]` prefix, and the parts must reassemble to the original
+text byte-for-byte. Whitespace-only parts render as empty bubbles on MeshChatX (seen live
+between p12 2/7 and 3/7), so the chunker folds blank runs into neighbouring parts' slack
+forward first, then backward; a blank run wider than both neighbours' combined slack
+survives, split into budget-sized parts — byte preservation outranks cosmetics, but an
+over-budget part never ships. `sequence_chunks`' truncation is a guard rail, not a policy:
+if it ever fires, that is a chunker bug to fix upstream, not content to drop.
+
 **Malformed inbound.** A message whose destination hash is not 32 hex characters, whose payload
 fails to decode, or that arrives from a peer not in the allowlist must be dropped with a log
 line and no reply. Do not reply to unparseable input, and do not crash the drain loop on it.
