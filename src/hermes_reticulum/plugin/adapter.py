@@ -53,11 +53,14 @@ logger = logging.getLogger("hermes_reticulum.adapter")
 # A12 (docs/specs/adapter/tasks.md): evidence for the D7 deny discriminator.
 # ``deliver_inbound`` installs a fresh attempts list into this ContextVar
 # around the ``handle_message`` await; ``send()`` records the attempt at
-# entry while a marker is set. The ContextVar propagates into coroutines
-# awaited by ``handle_message`` and into tasks it creates, so sends
-# belonging to unrelated concurrent turns (cron deliveries, the rejection
-# worker) never reach this check — the attempts list is scoped to the one
-# inbound event's pipeline call.
+# entry while a marker is set. Tasks created BEFORE the marker hold their
+# own context and never see it, so an unrelated turn already in flight
+# (a cron delivery, the rejection worker) cannot tick this event's list.
+# Sends made from inside the event's own pipeline call — including tasks
+# that call spawns — DO tick it, by design: that is exactly the inline
+# ack the discriminator must see. The read additionally matches the
+# recorded destinations against the event's own peer, so a send routed
+# elsewhere is no evidence this event was handled.
 _SEND_ATTEMPTS: contextvars.ContextVar["list[str] | None"] = contextvars.ContextVar(
     "hermes_reticulum_send_attempts", default=None
 )
@@ -631,18 +634,24 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         answered through the transport seam under the same D4/D6 rules.
 
         A12 refines that read: ``_gateway_accepted is False`` is a deny signal
-        ONLY when the gateway sent nothing for this event during the
-        ``handle_message`` call. The base's busy-session inline dispatch
+        ONLY when the gateway attempted no send to THIS event's peer during
+        the ``handle_message`` call. The base's busy-session inline dispatch
         (``/stop``, ``/new``, clarify answers) handles the event inline, sends
         its own ack through this adapter's ``send()``, and returns without ever
         setting the flag — reading that False as a deny produced the false
         ``⛔ Access not authorized.`` after every inline command (findings
-        2026-11-01). A genuine gate drop attempts no send, so the two cases are
-        separated by a per-call send-attempt marker: a fresh list goes into
-        ``_SEND_ATTEMPTS`` around the call and ``send()`` ticks it at entry.
-        The marker records the ATTEMPT, never its result, so an ack whose send
-        failed or was still in flight at return still counts as evidence the
-        gateway handled the event.
+        2026-11-01). A genuine gate drop attempts no send to the peer, so the
+        two cases are separated by a per-call send-attempt marker: a fresh
+        list goes into ``_SEND_ATTEMPTS`` around the call and ``send()`` ticks
+        it at entry, recording the destination; the deny read requires the
+        event's own peer to be ABSENT from it (a send routed to another peer
+        is not evidence this event was handled). The marker records the
+        ATTEMPT, never its result, so an ack whose send failed or was still in
+        flight at return still counts as evidence the gateway handled the
+        event. Known limit (card A14): an inline path that handles the event
+        yet sends nothing — the handler yields no text, or the base swallows
+        an inline-dispatch exception — leaves no evidence either and still
+        reads as a deny until the upstream flag fix lands.
         """
         source_hash = getattr(getattr(event, "source", None), "user_id", None)
         handle = getattr(self, "handle_message", None)
@@ -657,7 +666,7 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
                 _SEND_ATTEMPTS.reset(token)
             if (
                 source_hash
-                and not send_attempts
+                and source_hash not in send_attempts
                 and getattr(event, "_gateway_accepted", True) is False
             ):
                 await self._note_gateway_desync(source_hash)
