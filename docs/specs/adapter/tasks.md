@@ -34,7 +34,7 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A10 | P-8 `/clarify` verification (source read done; live run outstanding) | A4 | `/clarify` resolves on the mesh or a findings doc proves the gateway gap | open (amended 2026-11-04) |
 | A11 | Per-profile mesh identity + ACL profile-scoping: one shared parser; ACL + identity read profile-scoped via `platform_gate_env` | A3 | two profiles on one box carry different identities + trust lists; no raw `os.getenv` in the A3 read path | closed (guard PR #21; isolation proven live 2026-10-28: `build_profile_secret_scope` on both homes returns distinct trust lists, both fail-closed — see `docs/mesh-bridge-findings-2026-10-28-a11-profile-isolation.md`) |
 | A12 | Stop false `⛔ Access not authorized.` after a busy-session inline command: the base leaves `_gateway_accepted` False on the inline-dispatch paths, so the adapter's D7 deny signal fires for an allowlisted peer | A3 | `/stop`, `/new` and a clarify answer mid-turn get their own ack and no rejection; a genuine gateway deny still logs a desync line and sends the canned reply | under-review 2026-11-11 — `step/A12-false-desync` |
-| A13 | Retire the `platform_hint` line forbidding markdown, for a mesh that renders markdown and code blocks | - | the hint no longer forbids markdown; the bandwidth caveat survives | merged 2026-11-10 (PR #37) | 
+| A13 | Retire the `platform_hint` line forbidding markdown, for a mesh that renders markdown and code blocks | - | the hint no longer forbids markdown; the bandwidth caveat survives | in-review 2026-11-04 — `step/A13-platform-hint` | 
 | A14 | A12 residue: inline paths that handle an event but send nothing (handler yields no text; the base swallows the inline-dispatch exception) still read as a D7 deny under A12's evidence rule | A12 | the upstream flag fix lands and the evidence rule retires, or an upstream-safe signal separates handled-but-silent from dropped; until then the documented silent-inline paths are known false-alarm surfaces | open, proposed 2026-11-14 |
 
 ## Cross-cutting constraint: no interactive UI over LXMF
@@ -672,10 +672,8 @@ should not suppress formatting the peer can read.
 (`src/hermes_reticulum/plugin/registration.py:120-127`) and four tests pin it in
 `tests/test_reticulum_registration_env.py` (red-before: the old string fails three of them).
 
-**Status:** merged 2026-11-10 (PR #37, squash into `dev`). Criterion 3's named client arrived
-2026-11-11: `reticulum-mobile-app` (github.com/thatSFguy/reticulum-mobile-app) renders no
-markdown — native message bubbles, no renderer field — recorded in
-`docs/mesh-bridge-findings-2026-11-11-nonrendering-client-reticulum-mobile.md`.
+**Status:** in-review 2026-11-04 — branch `step/A13-platform-hint`, stacked on
+`docs/amend-cards-2026-11-04` (that branch carries this card). Evidence in `verification.md`.
 
 ## Branch and PR workflow
 
