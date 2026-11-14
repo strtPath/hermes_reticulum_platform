@@ -170,7 +170,8 @@ Discriminator: `deliver_inbound` installs a fresh attempts list into the `_SEND_
 ContextVar around the `handle_message` await; `send()` ticks it at entry with the
 destination. A deny is read only when the flag is False AND the event's own peer is absent
 from the attempts list. Handled-but-silent inline paths (no-text handler, swallowed inline
-exception) stay indistinguishable from a deny — known residue, card A14.
+exception, queue-mode busy-text debounce at `base.py:4081-4085`) stay indistinguishable
+from a deny — known residue, card A14.
 
 ## Card A13: `platform_hint` no longer forbids markdown
 

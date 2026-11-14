@@ -20,16 +20,19 @@ handles `/stop`, `/new`, `/reset` and clarify/confirm text answers while a turn 
 Both its branches (the bypass-command branch dispatch at `base.py:4017`, the
 awaiting-text/clarify dispatch at `base.py:4037`) call `_dispatch_inline_reply`, which awaits
 the handler and — when it produced text — sends the reply through the platform's own send
-path (`base.py:3498`); both branches then return WITHOUT setting the flag. The event *was*
+path (`base.py:3497`); both branches then return WITHOUT setting the flag.
 handled, yet the flag still reads False — an adapter following the contract above then
 reports a gateway deny that never happened.
 
 Two sibling paths handle the event and send NOTHING: a handler that returns no text exits
 `_dispatch_inline_reply` early (`base.py:3492`), and a handler exception is swallowed by the
-dispatch branches' `except Exception` (`base.py:4018-4019`, `:4038-4039`). On those paths no
-adapter-side evidence rule can separate handled from dropped — the flag itself has to be set
-correctly, which is the strongest argument for fixing this in the gateway rather than in
-adapters.
+dispatch branches' `except Exception` (`base.py:4018-4019`, `:4038-4039`). A third path reaches the same shape by
+config, not accident: with the busy text mode set to `queue`, follow-up text mid-turn goes
+through `_queue_text_debounce` and `_handle_message_while_active` returns without the flag
+(`base.py:4081-4085`; the runner defers to that path at `run_busy.py:977-982`). On all these
+paths no adapter-side evidence rule can separate handled from dropped — the flag itself has
+to be set correctly, which is the strongest argument for fixing this in the gateway rather
+than in adapters.
 
 Live evidence (2026-11-01, this repo's gateway logs): `gateway desync — adapter admitted
 <hash> but the gateway authz layer denied the delivered event`, immediately after a `/stop`

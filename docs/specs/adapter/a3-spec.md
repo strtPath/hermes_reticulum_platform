@@ -204,7 +204,8 @@ ticked by `send()` at entry with the destination; the deny read requires the eve
 ABSENT from the list — a send routed elsewhere proves nothing about this event. The marker
 records the attempt, not its outcome: a failed or still-in-flight ack is evidence the event
 was handled. Known residue (card A14): an inline path that handles yet sends nothing —
-handler yields no text, or the base swallows the inline-dispatch exception — leaves no
+handler yields no text, the base swallows the inline-dispatch exception, or queue-mode
+busy-text debounce parks the follow-up without a send (`base.py:4081-4085`) — leaves no
 evidence either and still reads as a deny until the upstream flag fix lands.
 
 ## 5. Acceptance criteria (Given/When/Then)
