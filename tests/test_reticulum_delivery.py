@@ -735,3 +735,61 @@ class TestContentAwareChunks:
         parts = delivery._content_aware_chunks(text, 368)
         assert "".join(parts) == text
         # Must finish in reasonable time (test timeout handles that).
+
+    # ── live defect p12: mid-word cuts + whitespace-only parts ──
+
+    def test_oversized_prose_line_splits_at_word_boundary(self):
+        # Live defect (p12 1/7→2/7): "…a small dec" / "ision burden…".
+        # An oversized prose line must cut at a space, never mid-word.
+        line = " ".join(f"word{i}" for i in range(80)) + "\n"
+        parts = delivery._split_oversized_line(line, 300)
+        assert "".join(parts) == line
+        assert all(len(p.encode("utf-8")) <= 300 for p in parts)
+        for i, p in enumerate(parts[:-1]):
+            assert p.endswith(" "), (
+                f"mid-word split at part {i}: ...{p[-8:]!r} | "
+                f"{parts[i + 1][:8]!r}..."
+            )
+
+    def test_oversized_word_falls_back_to_codepoint(self):
+        # A single token longer than the budget (URL, base64 blob)
+        # has no boundary in reach: codepoint split, as before.
+        token = "https://example.com/" + "x" * 500
+        parts = delivery._split_oversized_line(token, 300)
+        assert "".join(parts) == token
+        assert all(len(p.encode("utf-8")) <= 300 for p in parts)
+
+    def test_line_terminator_never_becomes_its_own_part(self):
+        # A line at/over budget used to emit its trailing "\n" as a
+        # separate whitespace-only part (empty bubble on the phone).
+        line = "b" * 300 + "\n"
+        parts = delivery._split_oversized_line(line, 300)
+        assert "".join(parts) == line
+        assert all(len(p.encode("utf-8")) <= 300 for p in parts)
+        assert all(p.strip() for p in parts), "no whitespace-only parts"
+
+    def test_no_whitespace_only_parts_over_oversized_lines(self):
+        # Blank line between two oversized lines: the old code flushed
+        # the blank run as its own part ("\\n\\n") — rendered live as an
+        # empty bubble between p12 2/7 and 3/7.
+        line1 = ("word " * 120)[:600] + "\n"
+        line2 = "b" * 300 + "\n"
+        text = line1 + "\n" + line2
+        parts = delivery._content_aware_chunks(text, 300)
+        assert "".join(parts) == text
+        assert all(len(p.encode("utf-8")) <= 300 for p in parts)
+        assert all(p.strip() for p in parts), (
+            f"whitespace-only part in {[p[:20] for p in parts]!r}"
+        )
+
+    def test_chunk_for_send_never_cuts_prose_words(self):
+        # End-to-end: labeled parts must not split a word at the seam.
+        para = ("the quick brown fox jumps over the lazy dog " * 12) + "\n\n"
+        para += ("pack my box with five dozen liquor jugs " * 12) + "\n"
+        parts = delivery.chunk_for_send(para, "p12")
+        assert len(parts) > 1
+        for a, b in zip(parts, parts[1:]):
+            assert a[-1] in " \t\n" or b[0] in " \t\n", (
+                f"mid-word cut: ...{a[-8:]!r} | {b[:8]!r}..."
+            )
+        assert all(p.strip() for p in parts)

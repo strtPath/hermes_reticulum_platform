@@ -386,36 +386,108 @@ def _content_aware_chunks(text: str, budget: int) -> list:
     if cur:
         out.append("".join(cur))
 
+    # Fold whitespace-only parts into the following part (the blanks
+    # become leading blank lines of the next chunk). A whitespace-only
+    # part ships as its own labeled packet and renders as an empty
+    # bubble on mesh clients (seen live between p12 2/7 and 3/7).
+    # Losslessness first: if the fold would push the next part over
+    # budget, keep the part separate.
+    if len(out) > 1:
+        merged: list[str] = []
+        pending = ""
+        for p in out:
+            if not p.strip():
+                pending += p
+                continue
+            if pending and len((pending + p).encode("utf-8")) <= budget:
+                merged.append(pending + p)
+            else:
+                if pending:
+                    merged.append(pending)
+                merged.append(p)
+            pending = ""
+        if pending:
+            # Trailing blanks: fold onto the last part if they fit.
+            if merged and len((merged[-1] + pending).encode("utf-8")) <= budget:
+                merged[-1] += pending
+            else:
+                merged.append(pending)
+        out = merged
+
     return out
 
 
 def _split_oversized_line(line: str, budget: int) -> list:
-    """Split a single line that exceeds ``budget`` bytes at codepoint
-    boundaries.
+    """Split a single line that exceeds ``budget`` bytes at word
+    boundaries, falling back to codepoint boundaries only where there
+    is no word to protect.
 
-    Single-line blobs (no newlines) have no structural information to
-    preserve, so a codepoint-level split is the best we can do.  For
-    multi-line text the parent ``_content_aware_chunks`` handles fence
-    and paragraph boundaries before we ever reach this fallback.
+    A raw codepoint walk cuts prose mid-word (seen live: "…a small
+    dec" / "ision burden…" split across two packets), which the phone
+    renders as broken sentences.  On overflow we back up to the last
+    whitespace inside the current part so the partial word moves whole
+    into the next part.  A word longer than the budget (URL, base64,
+    long token) has no boundary in reach and splits at codepoints, as
+    before.  For multi-line text the parent ``_content_aware_chunks``
+    handles fence and paragraph boundaries before we get here.
 
     Returns at least one part; no empty parts.  Lossless: joining the
-    returned parts reproduces the original line exactly.
+    returned parts reproduces the original line exactly.  Every part
+    is at most ``budget`` bytes.  A trailing line terminator is
+    reserved out of the budget so it rides on the last part instead
+    of becoming its own whitespace-only part.
     """
     if not line:
+        return [line]
+    # Reserve the trailing terminator first: a line of exactly budget
+    # bytes otherwise emits its "\n" as a separate (whitespace-only)
+    # part, which renders as an empty bubble.
+    term = ""
+    body = line
+    while body and body[-1] in ("\r", "\n"):
+        term = body[-1] + term
+        body = body[:-1]
+    term_bytes = len(term.encode("utf-8"))
+    body_budget = budget - term_bytes
+    if body_budget <= 0 or not body:
+        # Pathological: terminator alone fills the budget, or the
+        # whole line is terminator characters — split the raw line.
+        term, body, body_budget = "", line, budget
+    elif len(body.encode("utf-8")) <= body_budget:
         return [line]
     out: list[str] = []
     cur: list[str] = []
     cur_bytes = 0
-    for ch in line:
+    # Last safe word boundary inside ``cur``: index just past the last
+    # space/tab, plus the byte length of that prefix.
+    ws_pos = 0
+    ws_bytes = 0
+    for ch in body:
         b = len(ch.encode("utf-8"))
-        if cur and cur_bytes + b > budget:
-            out.append("".join(cur))
-            cur = []
-            cur_bytes = 0
+        if cur and cur_bytes + b > body_budget:
+            if ws_pos > 0 and cur_bytes - ws_bytes + b <= body_budget:
+                # Word boundary in reach and the carried-over word
+                # still fits: cut there, keep the word whole.
+                out.append("".join(cur[:ws_pos]))
+                cur = cur[ws_pos:]
+                cur_bytes -= ws_bytes
+            else:
+                # No boundary in reach, or one word alone exceeds the
+                # budget (URL/blob): hard cut at the codepoint.
+                out.append("".join(cur))
+                cur = []
+                cur_bytes = 0
+            ws_pos = 0
+            ws_bytes = 0
         cur.append(ch)
         cur_bytes += b
+        if ch in (" ", "\t"):
+            ws_pos = len(cur)
+            ws_bytes = cur_bytes
     if cur:
         out.append("".join(cur))
+    if term and out:
+        out[-1] += term
     return out or [line]
 
 
