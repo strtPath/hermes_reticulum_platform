@@ -735,3 +735,167 @@ class TestContentAwareChunks:
         parts = delivery._content_aware_chunks(text, 368)
         assert "".join(parts) == text
         # Must finish in reasonable time (test timeout handles that).
+
+    # ── live defect p12: mid-word cuts + whitespace-only parts ──
+
+    def test_oversized_prose_line_splits_at_word_boundary(self):
+        # Live defect (p12 1/7→2/7): "…a small dec" / "ision burden…".
+        # An oversized prose line must cut at a space, never mid-word.
+        line = " ".join(f"word{i}" for i in range(80)) + "\n"
+        parts = delivery._split_oversized_line(line, 300)
+        assert "".join(parts) == line
+        assert all(len(p.encode("utf-8")) <= 300 for p in parts)
+        for a, b in zip(parts, parts[1:]):
+            assert not (
+                a[-1] not in " \t\n\r" and b[0] not in " \t\n\r"
+            ), f"mid-word cut: ...{a[-8:]!r} | {b[:8]!r}..."
+
+    def test_oversized_word_falls_back_to_codepoint(self):
+        # A single token longer than the budget (URL, base64 blob)
+        # has no boundary in reach: codepoint split, as before.
+        token = "https://example.com/" + "x" * 500
+        parts = delivery._split_oversized_line(token, 300)
+        assert "".join(parts) == token
+        assert all(len(p.encode("utf-8")) <= 300 for p in parts)
+
+    def test_line_terminator_never_becomes_its_own_part(self):
+        # A line at/over budget used to emit its trailing "\n" as a
+        # separate whitespace-only part (empty bubble on the phone).
+        line = "b" * 300 + "\n"
+        parts = delivery._split_oversized_line(line, 300)
+        assert "".join(parts) == line
+        assert all(len(p.encode("utf-8")) <= 300 for p in parts)
+        assert all(p.strip() for p in parts), "no whitespace-only parts"
+
+    def test_no_whitespace_only_parts_over_oversized_lines(self):
+        # Blank line between two oversized lines: the old code flushed
+        # the blank run as its own part ("\\n\\n") — rendered live as an
+        # empty bubble between p12 2/7 and 3/7.
+        line1 = ("word " * 120)[:600] + "\n"
+        line2 = "b" * 300 + "\n"
+        text = line1 + "\n" + line2
+        parts = delivery._content_aware_chunks(text, 300)
+        assert "".join(parts) == text
+        assert all(len(p.encode("utf-8")) <= 300 for p in parts)
+        assert all(p.strip() for p in parts), (
+            f"whitespace-only part in {[p[:20] for p in parts]!r}"
+        )
+
+    def test_chunk_for_send_never_cuts_prose_words(self):
+        # End-to-end: labeled parts must not split a word at the seam.
+        para = ("the quick brown fox jumps over the lazy dog " * 12) + "\n\n"
+        para += ("pack my box with five dozen liquor jugs " * 12) + "\n"
+        parts = delivery.chunk_for_send(para, "p12")
+        assert len(parts) > 1
+        for a, b in zip(parts, parts[1:]):
+            assert a[-1] in " \t\n" or b[0] in " \t\n", (
+                f"mid-word cut: ...{a[-8:]!r} | {b[:8]!r}..."
+            )
+        assert all(p.strip() for p in parts)
+
+    # ── review round 2: fold budgeting, indents, unicode spaces ──
+
+    def test_whitespace_blob_stays_within_budget(self):
+        # Review P1: the fold used to append the accumulated blank run
+        # as one part without a budget check — " "*500 came back as a
+        # single 500-byte part, which sequence_chunks truncates.
+        for text in (" " * 500, "\n" * 500, "\n" * 800 + "hi\n"):
+            parts = delivery._content_aware_chunks(text, 368)
+            assert "".join(parts) == text
+            assert all(len(p.encode("utf-8")) <= 368 for p in parts), (
+                f"over-budget part for {text[:12]!r}"
+            )
+            assert all(p for p in parts), "no empty parts"
+
+    def test_blank_run_between_blobs_folds_not_bubbles(self):
+        # Review P2: a blank run between two near-full lines should be
+        # packed into the neighbours' slack (forward then backward),
+        # not shipped as its own whitespace-only part.
+        line1 = "b" * 290 + "\n"
+        line2 = "c" * 290 + "\n"
+        text = line1 + "\n" * 8 + line2
+        parts = delivery._content_aware_chunks(text, 300)
+        assert "".join(parts) == text
+        assert all(len(p.encode("utf-8")) <= 300 for p in parts)
+        assert all(p.strip() for p in parts), (
+            f"whitespace-only part in {[p[:20] for p in parts]!r}"
+        )
+
+    def test_indented_line_first_part_carries_content(self):
+        # Review P2: a word cut right after a pure-indent run emits a
+        # whitespace-only first part (empty bubble).
+        line = " " * 40 + "word " * 200 + "\n"
+        parts = delivery._split_oversized_line(line, 368)
+        assert "".join(parts) == line
+        assert all(len(p.encode("utf-8")) <= 368 for p in parts)
+        assert parts[0].strip(), f"whitespace-only head: {parts[0]!r}"
+
+    def test_nbsp_prose_splits_at_nbsp(self):
+        # Review P3: only space/tab counted as word boundaries, so
+        # NBSP-separated prose cut mid-word.
+        line = "a" * 200 + "\xa0" + "b" * 200
+        parts = delivery._split_oversized_line(line, 300)
+        assert "".join(parts) == line
+        assert all(len(p.encode("utf-8")) <= 300 for p in parts)
+        assert parts[0][-1] == "\xa0", f"seam: {parts[0][-8:]!r}"
+
+    def test_property_lossless_bounded_parts(self):
+        # Review P2: randomized corpus over the whole chunker — the
+        # cheapest net for a chunker. Lossless, non-empty, <= budget.
+        import random
+
+        rng = random.Random(20261114)
+        pieces = [
+            lambda: " ".join(
+                rng.choice(["hi", "there", "wörd", "—", "你好"]) for _ in range(rng.randint(1, 40))
+            ),
+            lambda: "x" * rng.randint(1, 900),
+            lambda: " " * rng.randint(0, 60) + "tok" * rng.randint(1, 150),
+            lambda: "\n" * rng.randint(0, 500),
+            # Round 2: homogeneous whitespace runs permute to nothing;
+            # mixed runs are what exposed the fold's reorder bug.
+            lambda: " \n" * rng.randint(0, 250),
+            lambda: "\t\n" * rng.randint(0, 250),
+            lambda: "\r\n" * rng.randint(0, 250),
+            lambda: "🙂" * rng.randint(1, 200),
+            lambda: "line\r\n" * rng.randint(1, 60),
+        ]
+        for _ in range(120):
+            text = "".join(
+                rng.choice(pieces)() + rng.choice(["\n", "\n\n", ""])
+                for _ in range(rng.randint(1, 6))
+            )
+            budget = rng.choice([300, 368])
+            parts = delivery._content_aware_chunks(text, budget)
+            assert "".join(parts) == text, f"lossy for {text[:40]!r}"
+            assert all(len(p.encode("utf-8")) <= budget for p in parts)
+            assert all(p for p in parts), f"empty part for {text[:40]!r}"
+
+    def test_fold_blank_runs_mixed_whitespace_order(self):
+        # Round 2 P2: the old fold drained the run's FRONT onto the next
+        # part and its TAIL onto the previous. Invisible for one-char
+        # runs; mixed runs like (" \n" * n) came back reordered, breaking
+        # the byte-for-byte contract. Now: front onto previous, tail
+        # onto next, middle stays in place.
+        parts = ["x" * 366 + "\n", " \n" * 200, "y" * 366 + "\n"]
+        merged = delivery._fold_blank_runs(parts, 368)
+        assert "".join(merged) == "".join(parts), "fold reordered bytes"
+        assert all(len(p.encode("utf-8")) <= 368 for p in merged)
+        assert all(p for p in merged)
+
+    def test_fold_blank_runs_leading_and_trailing(self):
+        # One-sided runs pack into the only neighbour available.
+        parts = [" " * 300, "x" * 300, "\n" * 100]
+        merged = delivery._fold_blank_runs(parts, 368)
+        assert "".join(merged) == "".join(parts)
+        assert all(len(p.encode("utf-8")) <= 368 for p in merged)
+        assert all(p for p in merged)
+
+    def test_degenerate_budget_terminates_and_is_lossless(self):
+        # Round 2 P3: budget smaller than a whitespace codepoint's
+        # UTF-8 width made the fold's slice loop fail to advance (hang).
+        # chunk_for_send never gets that small a budget, but the fold
+        # must terminate and stay lossless anyway.
+        text = "x" * 40 + "\u3000" * 400 + "y" * 40
+        parts = delivery._content_aware_chunks(text, 2)
+        assert "".join(parts) == text
