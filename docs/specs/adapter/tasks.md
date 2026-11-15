@@ -701,15 +701,19 @@ real-base runs did not depend on the dead comparisons (round-2 review confirmed)
 re-audit must land before their evidence rows are quoted as complete.
 **Round-3 review notes (2026-11-15), for the builder:** the blast radius is wider than
 MessageType — the same double-load also kills `ProcessingOutcome` identity at
-`base.py:3434-3435` (the `{...SUCCESS: ...}.get(outcome)` lookup; its members arrive via
-the canonical module through `gateway/run_turn.py`, another symptom of the same split). The
+`base.py:3434-3435` (the `{...SUCCESS: ...}.get(outcome)` lookup). Foreign members are
+minted by modules that import `ProcessingOutcome` straight from `gateway.platforms.event` —
+`gateway/session_ingress.py:8` and `gateway/session_producer_lifecycle.py:20` — and
+`session_producer_lifecycle.py:59` walks them into
+`_run_processing_hook('on_processing_complete', ...)`; `gateway/run_turn.py:25` imports it
+from base, so that path is safe. Another symptom of the same split. The
 parenthetical site list above also misses two `message_type == MessageType.*` comparisons —
 `base.py:4090` (`merge_text=`) and `base.py:4132` (`MessageType.VOICE`) — add them to the
 re-audit list. And row 1 of the acceptance above hides a trap: the "exactly one module
 object" count clause already passes on the broken state — only one object is live at count
 time, the first being collected once its classes keep the namespace alive — so a count-only
-fix is green on the defect; the identity assert is the load-bearing half. Full verdict: `~/.hermes/reviews/pr40-seniordev-round3-verdict.txt`
-on the dev machine.
+fix is green on the defect; the identity assert is the load-bearing half. Full verdict:
+`~/.hermes/reviews/pr40-seniordev-round3-verdict.txt` on the dev machine.
 
 ## Card A13: `platform_hint` no longer forbids markdown
 
