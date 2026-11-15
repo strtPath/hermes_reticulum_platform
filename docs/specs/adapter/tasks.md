@@ -620,7 +620,7 @@ without the flag (`base.py:4081-4085`; the runner defers to that path at `run_bu
 over here. Queue mode is a deliberate config choice (`busy_input_mode: queue`, legacy
 `busy_text_mode: queue` — `run_config_loaders.py:296-306`, wired at `run_adapters.py:1381`),
 the obvious one on a slow link, so this clause is reachable by intent, not only by accident.
-**Status:** under-review 2026-11-11 — branch `step/A12-false-desync`. Red-before recorded in
+**Status:** merged 2026-11-15 — PR #40 (merge commit into `dev`). Red-before recorded in
 `verification.md` (five cases fail on `dev`: the rejection fires after the inline ack); green
 after in both gateway modes (real base and CI stub). Senior cold review round 1 (2026-11-14,
 3/5, nine findings): round-1 commits close findings 1-7 and 9 (peer-scoped deny read, marker
@@ -631,10 +631,13 @@ finding): all nine round-1 closures verified by repro and mutation; the residue 
 was short the queue-mode busy-text debounce path — completed here and in A14. Round 3
 (2026-11-15): zero findings, 5/5 — merge bar met; all anchors verified against the installed
 gateway, mutations re-run independently, suites green in both modes and on the merge with
-dev. Merged 2026-11-15 (PR #40, merge commit into `dev`). The reviewer's two non-blocking
-notes (A15 blast radius beyond MessageType; the count-check clause of A15 acceptance row 1
-already passes on the broken state) are kept in `~/.hermes/reviews/
-pr40-seniordev-round3-verdict.txt` for whoever builds A15. Live mesh confirmation is still
+dev. Of the reviewer's three non-blocking notes, the two A15-relevant ones (A15 blast
+radius beyond MessageType; the count-check clause of A15 acceptance row 1 already passing
+on the broken state) are recorded on the A15 card itself; the third — a3-spec 4.5 and
+verification.md cite only the primary `base.py:4081-4085` anchor while the full config
+chain lives in the A12 card and A14 — was judged in scope for those docs' purpose and left
+as is. Full verdict text lives on the dev machine under
+`~/.hermes/reviews/pr40-seniordev-round3-verdict.txt`. Live mesh confirmation is still
 open: one `/stop` mid-turn over a real RNode session remains the outstanding acceptance
 criterion.
 
@@ -696,6 +699,14 @@ adapter card's verification leans on.
 **Status:** open, proposed 2026-11-14. Test-honesty only; no shipping-code change. A12's
 real-base runs did not depend on the dead comparisons (round-2 review confirmed), but the
 re-audit must land before their evidence rows are quoted as complete.
+**Round-3 review notes (2026-11-15), for the builder:** the blast radius is wider than
+MessageType — the same double-load also kills `ProcessingOutcome` identity at
+`base.py:3434-3435`, so `base_mod.ProcessingOutcome is ProcessingOutcome` and the outcome
+comparisons at `base.py:4090` and `:4132` are dead too. And row 1 of the acceptance above
+hides a trap: the "exactly one module object" count clause already passes on the broken
+state (both objects are named `gateway.platforms.event`) — the identity assert is the
+load-bearing half. Full verdict: `~/.hermes/reviews/pr40-seniordev-round3-verdict.txt`
+on the dev machine.
 
 ## Card A13: `platform_hint` no longer forbids markdown
 

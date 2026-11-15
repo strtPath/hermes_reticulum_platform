@@ -81,8 +81,8 @@ defect. See the card A4 amendment in `tasks.md`.
 
 Row 3's `yes` reply is the one to watch in the live run: if the peer sends `/new` while a turn is
 running, that is the busy-session inline-dispatch path where the base can leave
-`_gateway_accepted` `False` — the false-rejection bug carded as A12 (under review,
-`step/A12-false-desync`, 2026-11-11).
+`_gateway_accepted` `False` — the false-rejection bug carded as A12 (2026-11-11; merged
+2026-11-15, PR #40).
 
 ## Card A5: `/new` ack with session id + title — dropped 2026-11-04
 
