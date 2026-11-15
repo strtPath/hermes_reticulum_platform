@@ -40,7 +40,7 @@ different thing: our adapter's own plain-text split artifact, present whatever t
 - Nothing here is a bug in the adapter or the renderer-field work (shipped separately in
   PR #38; A13/PR #37 is the hint string itself); the client simply does not advertise or
   honour any formatting. The `[pN i/N]` part labels work the same way: the adapter declares
-  them `RENDERER_PLAIN` for every recipient (`transport.py:745-771`), so that mechanism is
+  them `RENDERER_PLAIN` for every recipient (`transport.py:747-772`), so that mechanism is
   ours, not something this client opted into.
 - The `_PLATFORM_HINT` wording from A13 already covers this case: it tells the model most
   clients render markdown while a plain-text fallback caveat keeps answers legible without
