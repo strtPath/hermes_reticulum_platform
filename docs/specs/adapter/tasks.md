@@ -33,7 +33,7 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A9 | P-13 command audit — **dropped 2026-11-04 (peer)**; P-5/P-6 already superseded by gateway commands | A4 | none; no build | dropped |
 | A10 | P-8 `/clarify` verification (source read done; live run outstanding) | A4 | `/clarify` resolves on the mesh or a findings doc proves the gateway gap | open (amended 2026-11-04) |
 | A11 | Per-profile mesh identity + ACL profile-scoping: one shared parser; ACL + identity read profile-scoped via `platform_gate_env` | A3 | two profiles on one box carry different identities + trust lists; no raw `os.getenv` in the A3 read path | closed (guard PR #21; isolation proven live 2026-10-28: `build_profile_secret_scope` on both homes returns distinct trust lists, both fail-closed — see `docs/mesh-bridge-findings-2026-10-28-a11-profile-isolation.md`) |
-| A12 | Stop false `⛔ Access not authorized.` after a busy-session inline command: the base leaves `_gateway_accepted` False on the inline-dispatch paths, so the adapter's D7 deny signal fires for an allowlisted peer | A3 | `/stop`, `/new` and a clarify answer mid-turn get their own ack and no rejection; a genuine gateway deny still logs a desync line and sends the canned reply | under-review 2026-11-11 — `step/A12-false-desync` |
+| A12 | Stop false `⛔ Access not authorized.` after a busy-session inline command: the base leaves `_gateway_accepted` False on the inline-dispatch paths, so the adapter's D7 deny signal fires for an allowlisted peer | A3 | `/stop`, `/new` and a clarify answer mid-turn get their own ack and no rejection; a genuine gateway deny still logs a desync line and sends the canned reply | merged 2026-11-15 (PR #40, senior review 5/5 round 3); live `/stop` mesh confirmation still open |
 | A13 | Retire the `platform_hint` line forbidding markdown, for a mesh that renders markdown and code blocks | - | the hint no longer forbids markdown; the bandwidth caveat survives | in-review 2026-11-04 — `step/A13-platform-hint` | 
 | A14 | A12 residue: inline paths that handle an event but send nothing (handler yields no text; the base swallows the inline-dispatch exception; queue-mode busy-text debounce parks the follow-up) still read as a D7 deny under A12's evidence rule | A12 | the upstream flag fix lands and the evidence rule retires, or an upstream-safe signal separates handled-but-silent from dropped; until then the documented silent-inline paths are known false-alarm surfaces | open, proposed 2026-11-14 |
 | A15 | Real-base harness double-loads `gateway.platforms.event`, so `MessageType` comparisons inside `base.py` are dead in tests — a green-suite blind spot | - | one event module loaded, conftest identity assert, and the silently-untested base branches re-audited | open, proposed 2026-11-14 |
@@ -628,8 +628,15 @@ context-scoping pinned by new tests, stub self-guard, parametrization honesty,
 comment/docstring/verification corrections, upstream-report citations); A13's status paperwork
 moved to its own docs branch (finding 8). Senior re-review round 2 (2026-11-14, 4/5, one
 finding): all nine round-1 closures verified by repro and mutation; the residue enumeration
-was short the queue-mode busy-text debounce path — completed here and in A14. Round-3
-re-review pending. Live mesh confirmation is still open.
+was short the queue-mode busy-text debounce path — completed here and in A14. Round 3
+(2026-11-15): zero findings, 5/5 — merge bar met; all anchors verified against the installed
+gateway, mutations re-run independently, suites green in both modes and on the merge with
+dev. Merged 2026-11-15 (PR #40, merge commit into `dev`). The reviewer's two non-blocking
+notes (A15 blast radius beyond MessageType; the count-check clause of A15 acceptance row 1
+already passes on the broken state) are kept in `~/.hermes/reviews/
+pr40-seniordev-round3-verdict.txt` for whoever builds A15. Live mesh confirmation is still
+open: one `/stop` mid-turn over a real RNode session remains the outstanding acceptance
+criterion.
 
 ## Card A14: Handled-but-silent inline paths still read as a D7 deny
 
