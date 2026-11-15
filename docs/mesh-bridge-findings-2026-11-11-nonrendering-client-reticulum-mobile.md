@@ -15,8 +15,25 @@ native mobile app for Reticulum/LXMF.
 Repo feature set reviewed 2026-11-11: message bubbles are rendered as native Kotlin/Swift text
 views. There is no markdown renderer, no renderer selection field, and no plain/markdown
 capability signalling anywhere in the feature list. Markdown replies from the bridge therefore
-degrade by showing their markers verbatim: `**bold**`, fenced code ``` lines, list dashes and
-`[pN i/N]` part labels all arrive as literal characters.
+degrade by showing their markers verbatim: `**bold**`, fenced code blocks, list dashes and
+link brackets arrive as literal characters. (The `[pN i/N]` part labels on split replies are a
+different thing: our adapter's own plain-text split artifact, present whatever the client does
+— see "Consequence" below.)
+
+## Evidence (re-runnable; branch `master`, checked 2026-11-15)
+
+- No renderer field: a repo-wide code search for `FIELD_RENDERER` returns 0 hits —
+  `gh api -X GET search/code -f q='repo:thatSFguy/reticulum-mobile-app FIELD_RENDERER' --jq .total_count`
+  gives `0`.
+- The bubble is a plain text view:
+  `androidApp/src/main/kotlin/io/github/thatsfguy/reticulum/android/ui/screens/MessagesScreen.kt:2017-2028`
+  renders content as `Text(linkify(content = msg.content, ...))` — a Compose `Text` over a
+  link-annotated string, with no markdown pass.
+- Rich rendering is credited to micron pages only: `docs/TECHNICAL.md:72` lists
+  "NomadNet browser — micron rendering | ✅ rich" — that is the built-in browser, not the
+  LXMF message bubble.
+- App version: the latest Android release when the report came in was `android-v1.2.129`
+  (published 2026-11-09); the peer did not state the exact tag they ran.
 
 ## Consequence for the bridge
 

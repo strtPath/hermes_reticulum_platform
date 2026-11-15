@@ -179,7 +179,7 @@ from a deny — known residue, card A14.
 |---|---|---|---|---|
 | 1 | Nothing in the hint forbids markdown, and fenced code arrives intact through chunking | `_PLATFORM_HINT` (`src/hermes_reticulum/plugin/registration.py:120-127`); `test_platform_hint_no_longer_forbids_markdown`, `test_platform_hint_states_that_clients_render_markdown`; code integrity across chunks: `tests/test_reticulum_delivery.py:496` `test_code_block_preserved_across_chunk_boundary` | PASS | - |
 | 2 | The bandwidth/concision instruction and the plain-text fallback caveat survive | `test_platform_hint_keeps_the_bandwidth_caveat`, `test_platform_hint_covers_clients_without_markdown_rendering` | PASS | - |
-| 3 | A client known not to render markdown is recorded as a findings note when seen | `reticulum-mobile-app` (github.com/thatSFguy/reticulum-mobile-app): native Kotlin/Swift bubbles, no markdown rendering and no renderer-field support; recorded in `docs/mesh-bridge-findings-2026-11-11-nonrendering-client-reticulum-mobile.md` | PASS | - |
+| 3 | A client known not to render markdown is recorded as a findings note when seen | `reticulum-mobile-app` (github.com/thatSFguy/reticulum-mobile-app): native Kotlin/Swift bubbles, no markdown rendering and no renderer-field support (repo code search for `FIELD_RENDERER`: 0 hits; evidence block in the note); recorded in `docs/mesh-bridge-findings-2026-11-11-nonrendering-client-reticulum-mobile.md` | PASS | - |
 
 Red-before, recorded: the previous string ("Messages are plain text only — no markdown
 formatting") fails rows 1 and 2 of the assertion set; only the bandwidth check passes.

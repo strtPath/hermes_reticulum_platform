@@ -37,6 +37,7 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A13 | Retire the `platform_hint` line forbidding markdown, for a mesh that renders markdown and code blocks | - | the hint no longer forbids markdown; the bandwidth caveat survives | merged 2026-11-10 (PR #37) | 
 | A14 | A12 residue: inline paths that handle an event but send nothing (handler yields no text; the base swallows the inline-dispatch exception; queue-mode busy-text debounce parks the follow-up) still read as a D7 deny under A12's evidence rule | A12 | the upstream flag fix lands and the evidence rule retires, or an upstream-safe signal separates handled-but-silent from dropped; until then the documented silent-inline paths are known false-alarm surfaces | open, proposed 2026-11-14 |
 | A15 | Real-base harness double-loads `gateway.platforms.event`, so `MessageType` comparisons inside `base.py` are dead in tests — a green-suite blind spot | - | one event module loaded, conftest identity assert, and the silently-untested base branches re-audited | open, proposed 2026-11-14 |
+| A16 | `scripts/security-sweep.py` silently passes a nonexistent path argument, so `security-sweep.py origin/dev..HEAD` is a false green | - | nonexistent paths exit nonzero and a git-range-looking argument is honored or rejected loudly | open, proposed 2026-11-15 |
 
 ## Cross-cutting constraint: no interactive UI over LXMF
 
@@ -690,6 +691,24 @@ adapter card's verification leans on.
 real-base runs did not depend on the dead comparisons (round-2 review confirmed), but the
 re-audit must land before their evidence rows are quoted as complete.
 
+## Card A16: security-sweep blesses nonexistent paths
+
+**Build:** `scripts/security-sweep.py /nonexistent/file.md` prints the clean line and exits 0
+— verified during the PR #43 review (2026-11-15). The naive positional form
+`scripts/security-sweep.py origin/dev..HEAD` is therefore a green light that scanned nothing,
+not an error. Make a nonexistent path argument exit nonzero naming the path, and either honor
+a git-range-looking positional (`a..b`) as `--commits a..b` or reject it with usage.
+**Spec basis:** AGENTS.md asks for verification evidence a second party can re-run; a scanner
+that exits 0 while scanning nothing manufactures false evidence. The sweeps recorded in this
+repo all used `--commits`, so recorded results stand.
+**Acceptance:**
+- Given a nonexistent path argument, When the sweep runs, Then it exits nonzero naming the
+  path and prints no "clean" line.
+- Given a positional matching `a..b`, When the sweep runs, Then it is treated as a commit
+  range or rejected with usage text — never scanned as a literal path.
+**Status:** open, proposed 2026-11-15 (from senior review of PR #43). Tooling only; no
+shipping-code change.
+
 ## Card A13: `platform_hint` no longer forbids markdown
 
 **Build:** Rewrite the `platform_hint` string (then inline at
@@ -715,7 +734,7 @@ should not suppress formatting the peer can read.
 (`src/hermes_reticulum/plugin/registration.py:120-127`) and four tests pin it in
 `tests/test_reticulum_registration_env.py` (red-before: the old string fails three of them).
 
-**Status:** merged 2026-11-10 (PR #37, squash into `dev`). Criterion 3's named client arrived
+**Status:** merged 2026-11-10 (PR #37, merge commit into `dev`). Criterion 3's named client arrived
 2026-11-11: `reticulum-mobile-app` (github.com/thatSFguy/reticulum-mobile-app) renders no
 markdown — native message bubbles, no renderer field — recorded in
 `docs/mesh-bridge-findings-2026-11-11-nonrendering-client-reticulum-mobile.md`.
