@@ -33,8 +33,10 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A9 | P-13 command audit — **dropped 2026-11-04 (peer)**; P-5/P-6 already superseded by gateway commands | A4 | none; no build | dropped |
 | A10 | P-8 `/clarify` verification (source read done; live run outstanding) | A4 | `/clarify` resolves on the mesh or a findings doc proves the gateway gap | open (amended 2026-11-04) |
 | A11 | Per-profile mesh identity + ACL profile-scoping: one shared parser; ACL + identity read profile-scoped via `platform_gate_env` | A3 | two profiles on one box carry different identities + trust lists; no raw `os.getenv` in the A3 read path | closed (guard PR #21; isolation proven live 2026-10-28: `build_profile_secret_scope` on both homes returns distinct trust lists, both fail-closed — see `docs/mesh-bridge-findings-2026-10-28-a11-profile-isolation.md`) |
-| A12 | Stop false `⛔ Access not authorized.` after a busy-session inline command: the base leaves `_gateway_accepted` False on the inline-dispatch paths, so the adapter's D7 deny signal fires for an allowlisted peer | A3 | `/stop`, `/new` and a clarify answer mid-turn get their own ack and no rejection; a genuine gateway deny still logs a desync line and sends the canned reply | proposed — awaiting peer ruling |
+| A12 | Stop false `⛔ Access not authorized.` after a busy-session inline command: the base leaves `_gateway_accepted` False on the inline-dispatch paths, so the adapter's D7 deny signal fires for an allowlisted peer | A3 | `/stop`, `/new` and a clarify answer mid-turn get their own ack and no rejection; a genuine gateway deny still logs a desync line and sends the canned reply | under-review 2026-11-11 — `step/A12-false-desync` |
 | A13 | Retire the `platform_hint` line forbidding markdown, for a mesh that renders markdown and code blocks | - | the hint no longer forbids markdown; the bandwidth caveat survives | in-review 2026-11-04 — `step/A13-platform-hint` | 
+| A14 | A12 residue: inline paths that handle an event but send nothing (handler yields no text; the base swallows the inline-dispatch exception; queue-mode busy-text debounce parks the follow-up) still read as a D7 deny under A12's evidence rule | A12 | the upstream flag fix lands and the evidence rule retires, or an upstream-safe signal separates handled-but-silent from dropped; until then the documented silent-inline paths are known false-alarm surfaces | open, proposed 2026-11-14 |
+| A15 | Real-base harness double-loads `gateway.platforms.event`, so `MessageType` comparisons inside `base.py` are dead in tests — a green-suite blind spot | - | one event module loaded, conftest identity assert, and the silently-untested base branches re-audited | open, proposed 2026-11-14 |
 
 ## Cross-cutting constraint: no interactive UI over LXMF
 
@@ -588,8 +590,8 @@ dispatch *is* a claim. The D7 deny signal must stay reliable for genuine denies 
 - Given a clarify prompt is pending and the agent is blocked, When the peer's text answer is
   dispatched inline, Then no desync line and no rejection are produced.
 - Given the adapter admits a peer and the gateway genuinely denies the delivered event (authz
-  mismatch), When the event returns with `_gateway_accepted` False and no send was attempted for
-  it, Then the desync line is logged and the canned reply is sent — A3 criterion 10 still holds.
+  mismatch), When the event returns with `_gateway_accepted` False and no send to that peer was
+  attempted during the call, Then the desync line is logged and the canned reply is sent — A3 criterion 10 still holds.
 - Given an accepted inline dispatch whose reply send fails (LXMF delivery failure), When the
   event returns with `_gateway_accepted` False, Then no desync line and no rejection are
   produced — the marker records the send attempt, not its result.
@@ -599,15 +601,94 @@ dispatch *is* a claim. The D7 deny signal must stay reliable for genuine denies 
 - Given the A3 suite plus a busy-session regression case in the CI stub (the stub currently
   covers only the fresh-inbound path), When the suite runs, Then all pass, including the new
   case that reproduces the false alarm red-before/green-after.
-**Open decision for the peer:** which fix shape. The adapter-side discriminator (treat False as
-a deny only when no send was attempted for the event during the `handle_message` await) keeps
-A3 criterion 10 intact and needs no gateway change; the gateway-side fix (set the flag after a
-successful inline dispatch) is the correct one but the gateway is a separate install, so it
-lands as an upstream report or a documented base-class override. Both are laid out in the
-findings doc's "Fix options".
-**Status:** approved 2026-11-04 (peer): build it. The fix-shape question above is still open and
-must be settled before code — the adapter-side discriminator keeps A3 criterion 10 intact with no
-gateway change; the gateway-side fix is correct long-term but lives in a separate install.
+**Fix-shape ruling (peer, 2026-11-11):** option 1 — the adapter-side evidence-based
+discriminator. `_gateway_accepted is False` counts as a deny only when no send was *attempted*
+for the event during the `handle_message` await; the marker is a context-local attempts list
+installed around the await and ticked at `send()` entry. The deny read matches the recorded
+destinations against the event's own peer — a send routed to a different destination is no
+evidence about this event (review round 1, 2026-11-14). Option 2 rejected (half-fixes).
+Option 3 (gateway sets the flag after a successful inline dispatch) is still the correct
+long-term shape and lives in the upstream report
+`docs/upstream-report-2026-11-11-gateway-inline-dispatch-accepted-flag.md`, not in this repo.
+**Known limits (review 2026-11-14):** the evidence rule separates *handled-and-replied* from
+*dropped*; it cannot separate *handled-but-silent* inline paths — a bypass/clarify handler
+that yields no text (early return, `base.py:3492`), a swallowed inline-dispatch exception
+(`base.py:4018-4019`, `:4038-4039`), or a queue-mode busy-text debounce — with the busy text
+mode set to `queue`, follow-up text is parked by `_queue_text_debounce` and the base returns
+without the flag (`base.py:4081-4085`; the runner defers to that path at `run_busy.py:977-982`)
+— from a genuine deny. Those still read as a denial; the residue is carded as A14, not papered
+over here. Queue mode is a deliberate config choice (`busy_input_mode: queue`, legacy
+`busy_text_mode: queue` — `run_config_loaders.py:296-306`, wired at `run_adapters.py:1381`),
+the obvious one on a slow link, so this clause is reachable by intent, not only by accident.
+**Status:** under-review 2026-11-11 — branch `step/A12-false-desync`. Red-before recorded in
+`verification.md` (five cases fail on `dev`: the rejection fires after the inline ack); green
+after in both gateway modes (real base and CI stub). Senior cold review round 1 (2026-11-14,
+3/5, nine findings): round-1 commits close findings 1-7 and 9 (peer-scoped deny read, marker
+context-scoping pinned by new tests, stub self-guard, parametrization honesty,
+comment/docstring/verification corrections, upstream-report citations); A13's status paperwork
+moved to its own docs branch (finding 8). Senior re-review round 2 (2026-11-14, 4/5, one
+finding): all nine round-1 closures verified by repro and mutation; the residue enumeration
+was short the queue-mode busy-text debounce path — completed here and in A14. Round-3
+re-review pending. Live mesh confirmation is still open.
+
+## Card A14: Handled-but-silent inline paths still read as a D7 deny
+
+**Build:** A12's evidence rule (False flag + no send to this peer = deny) cannot distinguish
+an inline path that handled the event but produced no send from the gateway's authz drop:
+a bypass/clarify handler that returns no text exits `_dispatch_inline_reply` before any send
+(`base.py:3492`), and a handler exception is swallowed by the dispatch branches'
+`except Exception` (`base.py:4018-4019`, `:4038-4039`). A third path joins them by config,
+not accident: with the busy text mode set to `queue`, follow-up text mid-turn goes through
+`_queue_text_debounce` and `_handle_message_while_active` returns without setting the flag
+(`base.py:4081-4085`; the runner defers to the base path at `run_busy.py:977-982`; mode wiring
+`run_config_loaders.py:296-306` -> `run_adapters.py:1381`) — queued, silent, flag False, and
+the adapter fires the 2026-11-01 symptom again (senior review round 2, 2026-11-14).
+Live traffic so far only used
+commands that always reply, so the false alarm has not recurred — but the surface exists and
+the docs must say so (senior review of A12, finding 1).
+**Spec basis:** A3 4.5 / criterion 10 as refined by A12 (`a3-spec.md` 4.5).
+**Blocked by:** A12 (it refines that card's rule). The upstream flag fix — option 3 in
+`docs/upstream-report-2026-11-11-gateway-inline-dispatch-accepted-flag.md` — makes the
+evidence rule unnecessary and this card closes by retiring it.
+**Acceptance:**
+- Given a busy-session inline path that handles the event and sends nothing, When the event
+  returns with the flag False, Then the adapter does NOT log a desync line or send the canned
+  reply — or the path is proven unreachable from this platform and the finding is documented
+  as unreachable instead.
+- Given the busy text mode is `queue` and a plain follow-up arrives mid-turn, When the
+  debounce path queues it and the event returns with the flag False, Then the adapter does
+  NOT log a desync line or send the canned reply — or the mode is proven unsettable for this
+  platform and documented as unreachable.
+- Given the upstream flag fix lands, When the adapter runs against that gateway, Then the
+  evidence rule retires to the plain flag read, the A12 marker tests are archived with a
+  pointer, and A3 criterion 10 stays green throughout.
+**Status:** open, proposed 2026-11-14. No build until the upstream report or an
+upstream-safe adapter signal settles the shape.
+
+## Card A15: the real-base harness double-loads `gateway.platforms.event`
+
+**Build:** conftest loads `gateway.platforms.base` before `gateway.platforms.event`
+(conftest.py:104-112); `base.py:441`'s module-level import executes event.py once and conftest
+then re-executes it under the same module name. Two enum classes share a repr but not
+identity, so `base_mod.MessageType is MessageType` is False and every
+`event.message_type == MessageType...` comparison inside base (1562, 1704-1735, 3702, 4076)
+evaluates False in real-base runs — those branches are silently untested. Surfaced while
+repro-ing the A14 queue-mode residue (senior review round 2, 2026-11-14): the repro needed a
+forced `_is_queue_text_debounce_candidate` because the dead comparison routes every text event
+down the else-branch. Same defect class as A12/A14's lesson: a green suite that is not
+exercising what its docstring claims.
+**Spec basis:** none — harness correctness; it undermines the real-base evidence mode every
+adapter card's verification leans on.
+**Acceptance:**
+- Given real-base mode, When conftest finishes loading, Then exactly one
+  `gateway.platforms.event` module object exists and a conftest assert pins
+  `base.MessageType is MessageType`.
+- Given that assert holds, When the real-base suite runs, Then the branches that were dead
+  (photo/queue/merge routing in `_handle_message_while_active` and the sites above) are
+  re-audited and any verification row whose premise leaned on a dead comparison is corrected.
+**Status:** open, proposed 2026-11-14. Test-honesty only; no shipping-code change. A12's
+real-base runs did not depend on the dead comparisons (round-2 review confirmed), but the
+re-audit must land before their evidence rows are quoted as complete.
 
 ## Card A13: `platform_hint` no longer forbids markdown
 

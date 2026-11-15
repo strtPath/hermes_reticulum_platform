@@ -81,7 +81,8 @@ defect. See the card A4 amendment in `tasks.md`.
 
 Row 3's `yes` reply is the one to watch in the live run: if the peer sends `/new` while a turn is
 running, that is the busy-session inline-dispatch path where the base can leave
-`_gateway_accepted` `False` — the false-rejection bug carded as A12 (`proposed`).
+`_gateway_accepted` `False` — the false-rejection bug carded as A12 (under review,
+`step/A12-false-desync`, 2026-11-11).
 
 ## Card A5: `/new` ack with session id + title — dropped 2026-11-04
 
@@ -130,6 +131,47 @@ gateway commands (`hermes_cli/commands.py:100`, `:170`). See `plan.md` §19.2a.
 | # | Acceptance criterion | Evidence | Result | Gap |
 |---|---|---|---|---|
 | 1 | `/clarify` resolves on the mesh, or a findings doc proves the gateway gap | source read: `gateway/platforms/base.py:2830-2855` (numbered text + `mark_awaiting_text`), `gateway/run_turn_runner_clarify_delivery.py:29-39` (base path driven for a non-overriding adapter) | NOT-TESTED | source half answered; the live mesh exercise has not been run |
+
+## Card A12: No false desync rejection on a busy-session inline dispatch
+
+| # | Acceptance criterion | Evidence | Result | Gap |
+|---|---|---|---|---|
+| 1 | `/stop` mid-turn: stop ack only, no rejection, no desync line | `test_a12_01_inline_command_ack_gets_no_false_rejection[/stop]` | PASS | live confirmation outstanding |
+| 2 | `/new` (or `/reset`) mid-turn + inline confirm answer: no desync, no rejection | `test_a12_01[/new]` (the command ack); the confirm-style bypass command on the REAL base is pinned by `test_a12_06` (`/approve`) | PASS | live confirmation outstanding |
+| 3 | Pending clarify, text answer dispatched inline: no desync, no rejection | `test_a12_01[yes]` (stub pipeline; same code path as the other parametrized rows — see red-before note) plus `test_a12_06` (clarify answer routed into the real `_dispatch_inline_reply`) | PASS | live confirmation outstanding |
+| 4 | Genuine gateway deny still logs the desync line and sends the canned reply (A3 criterion 10 intact) | `test_a12_04_real_gate_drop_still_denies`; the A3 D7 suite (`test_a3_15/16/17`) still green | PASS | - |
+| 5 | Accepted inline dispatch whose send FAILED: no desync, no rejection (marker records the attempt) | `test_a12_02_inline_ack_send_failure_is_not_a_deny` | PASS | - |
+| 6 | Accepted inline dispatch with the reply still in flight at return: no desync, no rejection | `test_a12_03_inline_reply_in_flight_at_return_is_not_a_deny` | PASS | - |
+| 7 | CI stub extended to the busy-session path | `test_a12_05_ci_stub_busy_session_path` (stub mode; skipped against the real base); the conftest stub models the no-claim inline path, and the test self-guards: it records the flag at handler entry and asserts the handler was reached UNCLAIMED, so the shape it depends on cannot silently vanish. NOT red-before (pre-fix `dev`'s stub had no busy branch for it to be wrong about — review finding 4); it is a shape-preservation guard | PASS | - |
+| 8 | The marker's assumption holds on the REAL base: its command/confirm/clarify inline paths enter this adapter's `send()` before returning | `test_a12_06_real_base_inline_dispatch_enters_send` (`/model`, `/approve`, clarify text; skipped in stub mode) — no seam replaces `handle_message`; busy is armed at the session-key lookup and the rest runs the real `_handle_message_while_active` → `_dispatch_inline_reply` → `_send_with_retry` → `send()` chain | PASS | - |
+| 9 | A send routed to a DIFFERENT peer during the await must not silence a genuine deny | `test_a12_07_send_to_other_peer_does_not_mask_a_deny` — red under the pre-round-1 peer-blind read, green with the peer-matched read (mutation-verified on the branch, 2026-11-14) | PASS | - |
+| 10 | A send from a turn already in flight (task created before this event's delivery) must not tick the marker | `test_a12_08_concurrent_turn_send_does_not_mask_a_deny` — red when the ContextVar is swapped for a plain instance attribute, green as shipped (mutation-verified) | PASS | - |
+| 11 | The attempts marker is installed fresh around the await, reset after, never leaking into an outer marker | `test_a12_09_marker_installed_for_await_and_reset_after` — red under the same instance-attribute swap | PASS | - |
+
+Red-before, recorded on `dev` at 2026-11-11: rows 1-3 and 5-6 fail — the inline ack is
+followed by `⛔ Access not authorized.` and the `gateway desync` WARNING line, exactly the
+live 2026-11-01 sequence. The five red cases are `test_a12_01` parametrized over three
+command shapes plus rows 5-6: one inline-dispatch code path, deliberately parametrized over
+the documented trigger shapes — a12_01 now asserts the parametrized text is what actually
+reaches the dispatcher, so the parametrization cannot overstate coverage (review finding 5);
+row 4 passes before and after, pinning criterion 10. Row 7 was recorded red-before in error —
+it is green against pre-fix `dev` (the stub there had no busy branch at all); the round-1
+self-guard closes that vacuity (review finding 4). Rows 9-11 are mutation-pinned on the
+branch rather than dev-red, verified 2026-11-14: row 9 red under the peer-blind read, rows
+10-11 red under a plain instance-attribute swap of the marker (the ContextVar is now
+load-bearing *and* tested).
+Green after in both modes: real base 79 passed / 1 skipped, CI stub 77 passed / 3 skipped.
+Stub mode is forced with `env HOME=/nonexistent HERMES_GATEWAY_ROOT=/nonexistent
+HERMES_VENV_PATH=/nonexistent` — unsetting one variable is not enough, the conftest also
+falls back to the default Hermes checkout and venv. Full suite: 591 passed / 4 skipped; the
+only failure (`test_tool_emoji` gateway-parity row) is pre-existing drift on `dev`, unrelated
+to A12.
+Discriminator: `deliver_inbound` installs a fresh attempts list into the `_SEND_ATTEMPTS`
+ContextVar around the `handle_message` await; `send()` ticks it at entry with the
+destination. A deny is read only when the flag is False AND the event's own peer is absent
+from the attempts list. Handled-but-silent inline paths (no-text handler, swallowed inline
+exception, queue-mode busy-text debounce at `base.py:4081-4085`) stay indistinguishable
+from a deny — known residue, card A14.
 
 ## Card A13: `platform_hint` no longer forbids markdown
 

@@ -16,6 +16,7 @@ import os
 import sys
 import threading
 import time
+from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -25,6 +26,7 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 from hermes_reticulum.core.acl import AccessControl
 from hermes_reticulum.plugin.adapter import (
+    _SEND_ATTEMPTS,
     REJECT_QUEUE_MAX,
     FakeTransport,
     ReticulumPlatformAdapter,
@@ -1257,6 +1259,409 @@ async def test_a3_17_gateway_deny_in_empty_allowlist_boot_is_silent(monkeypatch,
     assert await _wait_for(lambda: len(adapter._transport.sent) == 1)
     assert adapter._transport.sent == [(PEER_B, adapter.REJECTION_TEXT)]
     await adapter.disconnect()
+
+
+# ── A12: busy-session inline dispatch must not read as a gateway deny ──────
+# Card: docs/specs/adapter/tasks.md (A12); findings:
+# docs/mesh-bridge-findings-2026-11-01-false-desync-after-busy-command.md.
+# Ruled fix shape (peer, 2026-11-11): option 1, adapter-side evidence —
+# ``_gateway_accepted is False`` is a deny signal only when no send was
+# ATTEMPTED for the event during the ``handle_message`` await. The marker
+# records the attempt, never its result.
+
+_GATEWAY_BASE_IS_STUB = getattr(
+    sys.modules.get("gateway.platforms.base"), "__file__", None
+) is None
+
+
+class BusyInlineDispatcher:
+    """Stand-in for the base's busy-session inline dispatch.
+
+    Faithful to ``_handle_message_while_active`` (see the findings doc):
+    the command or clarify answer is handled inline, its ack goes out
+    through the adapter's own ``send()``, and ``handle_message`` returns
+    WITHOUT touching ``event._gateway_accepted`` — the base left it False
+    on entry. The adapter must not read that False as an authz deny
+    (A3 4.5 D7); the canned rejection on an admitted peer is the A12
+    false alarm.
+    """
+
+    ACK = "⚡ Stopped. You can continue this session."
+
+    def __init__(self, adapter, mode="await"):
+        self.adapter = adapter
+        self.mode = mode
+        self.events = []
+        self.ack_task = None
+
+    async def __call__(self, event):
+        self.events.append(event)
+        # Faithful to the real base: ``handle_message`` initialises the flag
+        # False on entry on EVERY path; only a fresh-inbound claim flips it
+        # True. (The real MessageEvent carries the False default; the CI stub
+        # event only gets it from the stub's own pipeline — set it here so
+        # every mode exercises the same post-condition the adapter reads.)
+        event._gateway_accepted = False
+        chat = event.source.user_id
+        if self.mode == "gate_drop":
+            # A genuine gate drop: the event is dropped, NOTHING is sent,
+            # the flag stays False — this is the real D7 signal.
+            return None
+        if self.mode == "other_peer":
+            # The event is denied (flag stays False) but a send leaves for a
+            # DIFFERENT peer. Review PR #40 F6: attempts are matched against
+            # the event's own peer, so this is NOT evidence of handling.
+            await self.adapter.send(PEER_B, "notice for another peer")
+            return None
+        if self.mode == "inflight":
+            # The ack send starts but does not complete before
+            # handle_message returns: the reply is in flight at return.
+            self.ack_task = asyncio.create_task(self.adapter.send(chat, self.ACK))
+            await asyncio.sleep(0)  # let the task enter send()
+            return None
+        if self.mode == "failed_ack":
+            # The ack send is attempted and fails: the marker records the
+            # attempt, not its result (acceptance criterion 5).
+            result = await self.adapter.send(chat, "")  # empty message: refused
+            assert result.success is False
+            return None
+        await self.adapter.send(chat, self.ACK)
+        return None
+
+
+def _make_a12_adapter(monkeypatch, mode):
+    """Connected adapter with PEER_A allowlisted and an inline-dispatch
+    stand-in installed over ``handle_message`` (the pattern the A3 D7
+    suite already uses). Returns (adapter, factory, dispatcher)."""
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_A)
+    factory = CountingFactory()
+    adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
+    adapter.set_message_handler(HandlerRecorder())
+    dispatcher = BusyInlineDispatcher(adapter, mode=mode)
+    monkeypatch.setattr(adapter, "handle_message", dispatcher)
+    return adapter, factory, dispatcher
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["/stop", "/new", "yes"])
+async def test_a12_01_inline_command_ack_gets_no_false_rejection(
+    monkeypatch, caplog, text
+):
+    """Acceptance 1-3 (stop, new, clarify answer): the inline dispatch sends
+    its own ack and returns with the flag unset-False; no canned rejection
+    and no desync line may follow for the allowlisted peer."""
+    caplog.set_level(logging.WARNING)
+    adapter, factory, dispatcher = _make_a12_adapter(monkeypatch, "await")
+    assert await adapter.connect() is True
+
+    factory.transport._inbound_cb(PEER_A, text)
+    assert await _wait_for(lambda: any(
+        dest == PEER_A and sent == BusyInlineDispatcher.ACK
+        for dest, sent in adapter._transport.sent
+    ))
+    await _settle()
+    assert adapter._transport.sent == [(PEER_A, BusyInlineDispatcher.ACK)], (
+        "the inline ack must be the ONLY outbound message; a rejection after "
+        "the ack is exactly the A12 false alarm"
+    )
+    assert not any(
+        "gateway desync" in record.getMessage().lower() for record in caplog.records
+    ), "an accepted inline dispatch must not log a desync line"
+    # Review PR #40 (round 1): one code path deliberately parametrized over
+    # several command shapes — pin that the parametrized text is what
+    # actually reached the dispatcher, so the rows stay honest coverage.
+    assert dispatcher.events, f"no event reached the dispatcher for {text!r}"
+    assert dispatcher.events[0].text == text, (
+        f"dispatcher saw {dispatcher.events[0].text!r}, not {text!r}"
+    )
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a12_02_inline_ack_send_failure_is_not_a_deny(monkeypatch, caplog):
+    """Acceptance 5: an accepted inline dispatch whose ack send FAILS must
+    still produce no desync and no rejection — the marker records the
+    attempt, not its result."""
+    caplog.set_level(logging.WARNING)
+    adapter, factory, dispatcher = _make_a12_adapter(monkeypatch, "failed_ack")
+    assert await adapter.connect() is True
+
+    factory.transport._inbound_cb(PEER_A, "/stop")
+    await _settle()
+    assert adapter._transport.sent == [], (
+        "the failed ack sends nothing and must not be answered by a rejection"
+    )
+    assert not any(
+        "gateway desync" in record.getMessage().lower() for record in caplog.records
+    )
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a12_03_inline_reply_in_flight_at_return_is_not_a_deny(
+    monkeypatch, caplog
+):
+    """Acceptance 6: the ack send is still in flight when handle_message
+    returns; the attempt was recorded, so no desync and no rejection."""
+    caplog.set_level(logging.WARNING)
+    adapter, factory, dispatcher = _make_a12_adapter(monkeypatch, "inflight")
+    assert await adapter.connect() is True
+
+    factory.transport._inbound_cb(PEER_A, "/stop")
+    await _settle()
+    if dispatcher.ack_task is not None:
+        await dispatcher.ack_task
+    assert adapter._transport.sent == [(PEER_A, BusyInlineDispatcher.ACK)]
+    assert not any(
+        "gateway desync" in record.getMessage().lower() for record in caplog.records
+    )
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a12_04_real_gate_drop_still_denies(monkeypatch, caplog):
+    """Acceptance 4 (criterion 10 preserved): flag False AND no send
+    attempted during the await is still a genuine gateway deny — the desync
+    line fires and the canned reply goes out."""
+    caplog.set_level(logging.WARNING)
+    adapter, factory, dispatcher = _make_a12_adapter(monkeypatch, "gate_drop")
+    assert await adapter.connect() is True
+
+    factory.transport._inbound_cb(PEER_A, "/stop")
+    assert await _wait_for(lambda: any(
+        dest == PEER_A and sent == adapter.REJECTION_TEXT
+        for dest, sent in adapter._transport.sent
+    ))
+    assert any(
+        "gateway desync" in record.getMessage().lower() for record in caplog.records
+    ), "a genuine deny must still log the desync line"
+    await adapter.disconnect()
+
+
+@pytest.mark.skipif(
+    not _GATEWAY_BASE_IS_STUB,
+    reason="the busy-session claim/no-claim shape is modelled by the conftest "
+    "CI stub; a real base cannot be forced busy across this seam",
+)
+@pytest.mark.asyncio
+async def test_a12_05_ci_stub_busy_session_path(monkeypatch, caplog):
+    """Acceptance 7: the CI stub (conftest) now models BOTH base paths —
+    the fresh-inbound claim and the busy-session inline dispatch that
+    returns without claiming. The A12 discriminator holds against the
+    stub's pipeline."""
+    caplog.set_level(logging.WARNING)
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_A)
+    factory = CountingFactory()
+    adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
+
+    observed: list = []
+
+    class InlineAckHandler:
+        """The gateway side of the inline path: answers the event and sends
+        its ack through the adapter's send(); never claims the event."""
+
+        async def __call__(self, event):
+            # Review PR #40 (round 1) self-guard: the handler must be reached
+            # on the stub's NO-CLAIM busy path, with the flag left False. If
+            # the stub ever claims before the handler runs, the shape this
+            # test models is gone and the test must go red, not ride along
+            # vacuously (it was green against pre-fix `dev` for exactly this
+            # missing guard — see verification.md, card A12).
+            observed.append(getattr(event, "_gateway_accepted", None))
+            await adapter.send(event.source.user_id, BusyInlineDispatcher.ACK)
+
+    adapter.set_message_handler(InlineAckHandler())
+    adapter._stub_busy_session = True
+    assert await adapter.connect() is True
+
+    factory.transport._inbound_cb(PEER_A, "/stop")
+    assert await _wait_for(lambda: any(
+        dest == PEER_A and sent == BusyInlineDispatcher.ACK
+        for dest, sent in adapter._transport.sent
+    ))
+    await _settle()
+    assert observed == [False], (
+        "the busy-session path must reach the handler UNCLAIMED (flag False); "
+        "without this the stub test cannot tell claim from no-claim"
+    )
+    assert adapter._transport.sent == [(PEER_A, BusyInlineDispatcher.ACK)]
+    assert not any(
+        "gateway desync" in record.getMessage().lower() for record in caplog.records
+    )
+    await adapter.disconnect()
+
+
+@pytest.mark.skipif(
+    _GATEWAY_BASE_IS_STUB,
+    reason="runs the gateway's real inline dispatch; CI-stub mode has no real base",
+)
+@pytest.mark.parametrize("text,clarify", [
+    ("/model", False),   # generic bypass command -> _dispatch_inline_reply
+    ("/approve", False),  # confirm-style bypass command
+    ("yes", True),        # clarify answer routed to the text-intercept
+])
+@pytest.mark.asyncio
+async def test_a12_06_real_base_inline_dispatch_enters_send(monkeypatch, caplog, text, clarify):
+    """Greptile P2 (PR #40): pin the assumption A12 rests on — with the REAL base
+    installed, its own command/confirm/clarify inline paths enter this adapter's
+    send() before returning, so the send-attempt marker ticks on production code.
+    No seam replaces ``handle_message`` here: the busy state is armed at the
+    session-key lookup (the base explicitly supports guards installed without an
+    owner task) and everything after the busy check is the real
+    ``_handle_message_while_active`` -> ``_dispatch_inline_reply`` ->
+    ``_send_with_retry`` -> ``send()`` chain."""
+    caplog.set_level(logging.WARNING)
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_A)
+    if clarify:
+        from tools import clarify_gateway as _clarify_mod
+        monkeypatch.setattr(_clarify_mod, "get_pending_for_session",
+                            lambda *a, **k: object())
+    factory = CountingFactory()
+    adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
+    # The inline path REPLIES BY RETURN VALUE: _dispatch_inline_reply AWAITS the
+    # handler and sends the text itself (unlike the fresh-inbound path whose
+    # response is delivered by the background session task).
+    async def _ack_handler(event):
+        return "Inline ack."
+    adapter.set_message_handler(_ack_handler)
+    assert type(adapter).handle_message is BasePlatformAdapter.handle_message, (
+        "this test must run the inherited base pipeline, never a stand-in"
+    )
+    assert await adapter.connect() is True
+
+    real_key = adapter._event_session_key
+
+    def key_and_arm(event):
+        key = real_key(event)
+        # Arm busy exactly where handle_message reads it; the base treats a
+        # guard with no recorded owner task as NOT stale ("as tests do").
+        adapter._active_sessions.setdefault(key, asyncio.Event())
+        return key
+
+    monkeypatch.setattr(adapter, "_event_session_key", key_and_arm)
+
+    factory.transport._inbound_cb(PEER_A, text)
+    assert await _wait_for(lambda: any(
+        dest == PEER_A and sent == "Inline ack."
+        for dest, sent in adapter._transport.sent
+    )), "the real inline dispatcher must send the handler's reply itself"
+    await _settle()
+    assert adapter._transport.sent == [(PEER_A, "Inline ack.")], (
+        "no rejection may follow the inline ack (A12 false alarm)"
+    )
+    assert not any(
+        "gateway desync" in record.getMessage().lower() for record in caplog.records
+    ), "a send was attempted, so the flag-False return is not a deny"
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a12_07_send_to_other_peer_does_not_mask_a_deny(monkeypatch, caplog):
+    """Review PR #40 (round 1), marker peer-blindness: attempts are matched
+    against the event's OWN peer. A send routed to a different destination
+    during the await is not evidence this event was handled — the desync
+    line and the canned reply must still fire for the denied peer."""
+    caplog.set_level(logging.WARNING)
+    adapter, factory, _ = _make_a12_adapter(monkeypatch, "other_peer")
+    assert await adapter.connect() is True
+
+    factory.transport._inbound_cb(PEER_A, "/stop")
+    assert await _wait_for(lambda: any(
+        dest == PEER_A and sent == adapter.REJECTION_TEXT
+        for dest, sent in adapter._transport.sent
+    )), "a deny must not be silenced by a send to another peer"
+    assert any(
+        "gateway desync" in record.getMessage().lower() for record in caplog.records
+    ), "a genuine deny must still log the desync line"
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a12_08_concurrent_turn_send_does_not_mask_a_deny(monkeypatch, caplog):
+    """Review PR #40 (round 1): the attempts marker is CONTEXT-scoped, not
+    instance-wide. A send from a task created BEFORE this event's delivery
+    (an unrelated turn already in flight — cron delivery, delivery of
+    another session's reply) shares no context with the marker and must not
+    suppress a genuine deny. This is what pins the ContextVar: swap it for
+    a plain instance attribute and this test goes red while the rest of the
+    A12 suite rides along green."""
+    caplog.set_level(logging.WARNING)
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_A)
+    factory = CountingFactory()
+    adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
+
+    class SlowGateDenier:
+        """Genuine gateway deny — flag False, no send — with a real await
+        window an unrelated in-flight turn can step into."""
+
+        async def __call__(self, event):
+            event._gateway_accepted = False
+            await asyncio.sleep(0.05)
+            return None
+
+    adapter.set_message_handler(lambda event: None)
+    monkeypatch.setattr(adapter, "handle_message", SlowGateDenier())
+    assert await adapter.connect() is True
+
+    async def _background_sender():
+        await asyncio.sleep(0.01)
+        await adapter.send(PEER_A, "background notice for another turn")
+
+    bg = asyncio.create_task(_background_sender())
+    factory.transport._inbound_cb(PEER_A, "/stop")
+    assert await _wait_for(lambda: any(
+        dest == PEER_A and sent == adapter.REJECTION_TEXT
+        for dest, sent in adapter._transport.sent
+    )), "a concurrent unrelated send must not tick this event's attempt list"
+    assert any(
+        "gateway desync" in record.getMessage().lower() for record in caplog.records
+    ), "a genuine deny must still log the desync line"
+    await bg
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_a12_09_marker_installed_for_await_and_reset_after(monkeypatch):
+    """Review PR #40 (round 1): pin the marker lifecycle the discriminator
+    rests on — a FRESH list is installed for the duration of the
+    ``handle_message`` await and reset to absent after, and the inner
+    install never leaks into or mutates an outer marker of the caller."""
+    factory = CountingFactory()
+    adapter = ReticulumPlatformAdapter(PlatformConfig(), transport_factory=factory)
+
+    seen: list = []
+
+    class MarkerProbe:
+        async def __call__(self, event):
+            seen.append(_SEND_ATTEMPTS.get())
+            return None
+
+    monkeypatch.setattr(adapter, "handle_message", MarkerProbe())
+
+    def _event():
+        return SimpleNamespace(source=SimpleNamespace(user_id=PEER_A))
+
+    # No outer marker: installed fresh during the await, absent after.
+    assert _SEND_ATTEMPTS.get() is None
+    await adapter.deliver_inbound(_event())
+    assert seen and isinstance(seen[0], list) and seen[0] == [], (
+        "deliver_inbound must install a fresh attempts list for the await"
+    )
+    assert _SEND_ATTEMPTS.get() is None, (
+        "the finally-reset must clear the marker once the call returns"
+    )
+
+    # With an outer marker (an unrelated pipeline context): the install is
+    # still FRESH and the outer list is untouched and restored.
+    outer = ["not-this-event"]
+    seen.clear()
+    token = _SEND_ATTEMPTS.set(outer)
+    try:
+        await adapter.deliver_inbound(_event())
+    finally:
+        _SEND_ATTEMPTS.reset(token)
+    assert seen and seen[0] == [] and seen[0] is not outer
+    assert outer == ["not-this-event"], "the inner marker must not leak outward"
 
 
 # ── Part A (P1-1, P2-4) + Part B (single reader) + Part C (bounded worker) ─

@@ -201,13 +201,28 @@ else:
             return _SessionSource(**kwargs)
 
         async def handle_message(self, event):
-            # Faithful to the real base's inbound pipeline: claim the event
-            # (a gate drop leaves _gateway_accepted False; a claim flips it
-            # True) and run the installed handler. A no-op here made admitted
+            # Faithful to the real base's inbound pipeline: the event enters
+            # ``handle_message`` unclaimed (``_gateway_accepted`` False); a
+            # fresh inbound is claimed before the handler runs. A busy
+            # session instead dispatches the event INLINE and returns without
+            # claiming it — the inline path sends its own ack through the
+            # platform adapter's ``send()`` and leaves the flag False
+            # (card A12 / findings 2026-11-01). A no-op here made admitted
             # messages vanish in CI, where this stub replaces the gateway —
             # green locally against the real base, red in CI.
-            event._gateway_accepted = True
+            event._gateway_accepted = False
             handler = getattr(self, "_message_handler", None)
+            if getattr(self, "_stub_busy_session", False):
+                # A12: the busy-session inline dispatch — no claim, the flag
+                # is never set, the handler (the gateway's inline reply) does
+                # its own send. Set only by the A12 stub tests.
+                if handler is None:
+                    return None
+                result = handler(event)
+                if inspect.isawaitable(result):
+                    result = await result
+                return result
+            event._gateway_accepted = True
             if handler is None:
                 return None
             result = handler(event)

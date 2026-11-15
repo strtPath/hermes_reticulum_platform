@@ -95,7 +95,7 @@ D4's 300 s per-destination cooldown is why the false rejection does not appear a
 command — repeated commands inside the window are suppressed, so the symptom looks
 intermittent.
 
-## Fix options (needs a ruling)
+## Fix options (ruled 2026-11-11: option 1)
 
 1. **Adapter-side, evidence-based (preferred).** Only treat `_gateway_accepted is False` as a
    deny when no send was *attempted* for this event during the `handle_message` await. The base's
@@ -129,6 +129,8 @@ intermittent.
 
 - Live log sequence above, matching the phone transcript in order and timing.
 - Source read at the cited lines in both the installed gateway and this repo's adapter.
-- No test yet reproduces the false alarm. A regression test needs the base's busy-session path
-  in the CI stub (the stub currently only covers the fresh-inbound path, per the 2026-10-28
-  findings doc), so the card's acceptance includes extending that stub.
+- A regression test now reproduces the false alarm (added with card A12 on
+  `step/A12-false-desync`, 2026-11-11): five cases fail on `dev` (ack followed by the canned
+  rejection and the desync line) and pass after the discriminator, in both the real-base and
+  CI-stub runs; the conftest stub gained the busy-session claim/no-claim shape the note above
+  said it lacked.
