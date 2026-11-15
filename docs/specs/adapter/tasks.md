@@ -33,7 +33,7 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A9 | P-13 command audit — **dropped 2026-11-04 (peer)**; P-5/P-6 already superseded by gateway commands | A4 | none; no build | dropped |
 | A10 | P-8 `/clarify` verification (source read done; live run outstanding) | A4 | `/clarify` resolves on the mesh or a findings doc proves the gateway gap | open (amended 2026-11-04) |
 | A11 | Per-profile mesh identity + ACL profile-scoping: one shared parser; ACL + identity read profile-scoped via `platform_gate_env` | A3 | two profiles on one box carry different identities + trust lists; no raw `os.getenv` in the A3 read path | closed (guard PR #21; isolation proven live 2026-10-28: `build_profile_secret_scope` on both homes returns distinct trust lists, both fail-closed — see `docs/mesh-bridge-findings-2026-10-28-a11-profile-isolation.md`) |
-| A12 | Stop false `⛔ Access not authorized.` after a busy-session inline command: the base leaves `_gateway_accepted` False on the inline-dispatch paths, so the adapter's D7 deny signal fires for an allowlisted peer | A3 | `/stop`, `/new` and a clarify answer mid-turn get their own ack and no rejection; a genuine gateway deny still logs a desync line and sends the canned reply | under-review 2026-11-11 — `step/A12-false-desync` |
+| A12 | Stop false `⛔ Access not authorized.` after a busy-session inline command: the base leaves `_gateway_accepted` False on the inline-dispatch paths, so the adapter's D7 deny signal fires for an allowlisted peer | A3 | `/stop`, `/new` and a clarify answer mid-turn get their own ack and no rejection; a genuine gateway deny still logs a desync line and sends the canned reply | merged 2026-11-15 (PR #40, senior review 5/5 round 3); live `/stop` mesh confirmation still open |
 | A13 | Retire the `platform_hint` line forbidding markdown, for a mesh that renders markdown and code blocks | - | the hint no longer forbids markdown; the bandwidth caveat survives | in-review 2026-11-04 — `step/A13-platform-hint` | 
 | A14 | A12 residue: inline paths that handle an event but send nothing (handler yields no text; the base swallows the inline-dispatch exception; queue-mode busy-text debounce parks the follow-up) still read as a D7 deny under A12's evidence rule | A12 | the upstream flag fix lands and the evidence rule retires, or an upstream-safe signal separates handled-but-silent from dropped; until then the documented silent-inline paths are known false-alarm surfaces | open, proposed 2026-11-14 |
 | A15 | Real-base harness double-loads `gateway.platforms.event`, so `MessageType` comparisons inside `base.py` are dead in tests — a green-suite blind spot | - | one event module loaded, conftest identity assert, and the silently-untested base branches re-audited | open, proposed 2026-11-14 |
@@ -620,7 +620,7 @@ without the flag (`base.py:4081-4085`; the runner defers to that path at `run_bu
 over here. Queue mode is a deliberate config choice (`busy_input_mode: queue`, legacy
 `busy_text_mode: queue` — `run_config_loaders.py:296-306`, wired at `run_adapters.py:1381`),
 the obvious one on a slow link, so this clause is reachable by intent, not only by accident.
-**Status:** under-review 2026-11-11 — branch `step/A12-false-desync`. Red-before recorded in
+**Status:** merged 2026-11-15 — PR #40 (merge commit into `dev`). Red-before recorded in
 `verification.md` (five cases fail on `dev`: the rejection fires after the inline ack); green
 after in both gateway modes (real base and CI stub). Senior cold review round 1 (2026-11-14,
 3/5, nine findings): round-1 commits close findings 1-7 and 9 (peer-scoped deny read, marker
@@ -628,8 +628,18 @@ context-scoping pinned by new tests, stub self-guard, parametrization honesty,
 comment/docstring/verification corrections, upstream-report citations); A13's status paperwork
 moved to its own docs branch (finding 8). Senior re-review round 2 (2026-11-14, 4/5, one
 finding): all nine round-1 closures verified by repro and mutation; the residue enumeration
-was short the queue-mode busy-text debounce path — completed here and in A14. Round-3
-re-review pending. Live mesh confirmation is still open.
+was short the queue-mode busy-text debounce path — completed here and in A14. Round 3
+(2026-11-15): zero findings, 5/5 — merge bar met; all anchors verified against the installed
+gateway, mutations re-run independently, suites green in both modes and on the merge with
+dev. Of the reviewer's three non-blocking notes, the two A15-relevant ones (A15 blast
+radius beyond MessageType; the count-check clause of A15 acceptance row 1 already passing
+on the broken state) are recorded on the A15 card itself; the third — a3-spec 4.5 and
+verification.md cite only the primary `base.py:4081-4085` anchor while the full config
+chain lives in the A12 card and A14 — was judged in scope for those docs' purpose and left
+as is. Full verdict text lives on the dev machine under
+`~/.hermes/reviews/pr40-seniordev-round3-verdict.txt`. Live mesh confirmation is still
+open: one `/stop` mid-turn over a real RNode session remains the outstanding acceptance
+criterion.
 
 ## Card A14: Handled-but-silent inline paths still read as a D7 deny
 
@@ -689,6 +699,21 @@ adapter card's verification leans on.
 **Status:** open, proposed 2026-11-14. Test-honesty only; no shipping-code change. A12's
 real-base runs did not depend on the dead comparisons (round-2 review confirmed), but the
 re-audit must land before their evidence rows are quoted as complete.
+**Round-3 review notes (2026-11-15), for the builder:** the blast radius is wider than
+MessageType — the same double-load also kills `ProcessingOutcome` identity at
+`base.py:3434-3435` (the `{...SUCCESS: ...}.get(outcome)` lookup). Foreign members are
+minted by modules that import `ProcessingOutcome` straight from `gateway.platforms.event` —
+`gateway/session_ingress.py:8` and `gateway/session_producer_lifecycle.py:20` — and
+`session_producer_lifecycle.py:59` walks them into
+`_run_processing_hook('on_processing_complete', ...)`; `gateway/run_turn.py:25` imports it
+from base, so that path is safe. Another symptom of the same split. The
+parenthetical site list above also misses two `message_type == MessageType.*` comparisons —
+`base.py:4090` (`merge_text=`) and `base.py:4132` (`MessageType.VOICE`) — add them to the
+re-audit list. And row 1 of the acceptance above hides a trap: the "exactly one module
+object" count clause already passes on the broken state — only one object is live at count
+time, the first being collected once its classes keep the namespace alive — so a count-only
+fix is green on the defect; the identity assert is the load-bearing half. Full verdict:
+`~/.hermes/reviews/pr40-seniordev-round3-verdict.txt` on the dev machine.
 
 ## Card A13: `platform_hint` no longer forbids markdown
 
