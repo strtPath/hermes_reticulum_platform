@@ -700,12 +700,19 @@ not an error. Make a nonexistent path argument exit nonzero naming the path, and
 a git-range-looking positional (`a..b`) as `--commits a..b` or reject it with usage.
 **Spec basis:** AGENTS.md asks for verification evidence a second party can re-run; a scanner
 that exits 0 while scanning nothing manufactures false evidence. The sweeps recorded in this
-repo all used `--commits`, so recorded results stand.
+repo used `--commits` for commit-range sweeps, and the path/`--untracked` modes are
+unaffected by this bug, so recorded results stand.
 **Acceptance:**
 - Given a nonexistent path argument, When the sweep runs, Then it exits nonzero naming the
   path and prints no "clean" line.
 - Given a positional matching `a..b`, When the sweep runs, Then it is treated as a commit
   range or rejected with usage text — never scanned as a literal path.
+- Given an empty positional argument, When the sweep runs, Then it exits nonzero (or
+  ignores it loudly) rather than reporting clean — the loop documented at
+  `docs/PII-RULES.md:65` passes "$f", which is empty whenever a diff line is blank.
+Adjacent, same pass: the script docstring claims coverage of `~/...` paths, but the
+HOMEPATH rule (`scripts/security-sweep.py:47`) only matches absolute `/home/<user>` /
+`/Users/<user>` — correct the docstring or the rule.
 **Status:** open, proposed 2026-11-15 (from senior review of PR #43). Tooling only; no
 shipping-code change.
 
