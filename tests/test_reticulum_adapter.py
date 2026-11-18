@@ -25,6 +25,7 @@ import pytest
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 from hermes_reticulum.core.acl import AccessControl
+from hermes_reticulum.plugin import delivery
 from hermes_reticulum.plugin.adapter import (
     _SEND_ATTEMPTS,
     REJECT_QUEUE_MAX,
@@ -2010,3 +2011,64 @@ class TestChunkTags:
         parts = adapter._chunk_content("short", dest)
         assert parts == ["short"]  # fits: sent unchanged, no prefix
         assert adapter._chunk_tags[dest.lower()] == 1
+
+
+# ── A4: send truth — a lost delivery must log at WARNING ──────────────────
+# Acceptance: "Given a send whose LXMF delivery fails, When the failure
+# callback runs, Then the send is reported failed and a WARNING names the
+# lost delivery." Two loss surfaces reach the tracker: the transport's
+# failed callback (_handle_outbound_failure) and a FAILED state receipt
+# (_handle_outbound_outcome). Both must WARN; DELIVERED must not.
+
+
+def _seed_sent(adapter, chat_id, payload):
+    """Park a propagated send in the tracker, as a real send would."""
+    adapter._record_receipt(chat_id, payload, delivery.STATE_SENT)
+    adapter._outbound_by_payload[payload] = chat_id
+
+
+def test_a4_01_failed_callback_warns_naming_the_lost_delivery(caplog):
+    caplog.set_level(logging.WARNING)
+    adapter = make_adapter()
+    payload = "the reply that never arrives"
+    _seed_sent(adapter, "d" * 32, payload)
+
+    adapter._handle_outbound_failure(payload, "No path to destination")
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("No path to destination" in m for m in warnings), warnings
+    assert any(payload in m for m in warnings), (
+        "the WARNING must name the lost delivery (the payload), not just the reason"
+    )
+    stats = adapter.delivery_stats
+    assert stats["failed"] == 1
+    assert stats["unconfirmed"] == 0
+
+
+def test_a4_02_failed_state_receipt_warns_naming_the_lost_delivery(caplog):
+    caplog.set_level(logging.WARNING)
+    adapter = make_adapter()
+    payload = "propagated send doomed at the node"
+    _seed_sent(adapter, "e" * 32, payload)
+
+    adapter._handle_outbound_outcome(payload, delivery.STATE_FAILED)
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(payload in m for m in warnings), warnings
+    stats = adapter.delivery_stats
+    assert stats["failed"] == 1
+    assert stats["unconfirmed"] == 0
+
+
+def test_a4_03_delivered_receipt_stays_below_warning(caplog):
+    """Escalation must be loss-only: a confirmed delivery stays INFO."""
+    caplog.set_level(logging.WARNING)
+    adapter = make_adapter()
+    payload = "arrived fine"
+    _seed_sent(adapter, "f" * 32, payload)
+
+    adapter._handle_outbound_outcome(payload, delivery.STATE_DELIVERED)
+
+    assert not caplog.records  # nothing at WARNING or above
+    assert adapter.delivery_stats["unconfirmed"] == 0
+

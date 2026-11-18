@@ -71,7 +71,7 @@ exercise, not adapter code. Row 4 is the only code change.
 | 1 | `/status` answered on the phone (reply packet observed peer-side) | gateway handler `gateway/slash_commands_status.py:242`; dispatch path common to every command | NOT-TESTED | no live mesh exercise yet |
 | 2 | `/resume` answered on the phone; named session becomes current | gateway handler `gateway/slash_commands_session.py:1054` | NOT-TESTED | no live mesh exercise yet |
 | 3 | `/new` + `yes` reply runs the reset | `_hm_slash_confirm_reply` wired at `gateway/run_inbound.py:1150`; `yes` in `approval.inputs.confirm_once` (`locales/en.yaml:23`) | NOT-TESTED | no live mesh exercise yet |
-| 4 | Failed LXMF delivery reported failed and logged at WARNING naming the lost delivery |  | NOT-TESTED | code change not made yet: `src/hermes_reticulum/plugin/adapter.py` logs this at INFO |
+| 4 | Failed LXMF delivery reported failed and logged at WARNING naming the lost delivery | `test_a4_01_failed_callback_warns_naming_the_lost_delivery` (failed callback), `test_a4_02_failed_state_receipt_warns_naming_the_lost_delivery` (FAILED state receipt), `test_a4_03_delivered_receipt_stays_below_warning` (loss-only guard: DELIVERED stays below WARNING) | PASS | - |
 
 Dropped from the card 2026-11-04: `mesh_terse()` for the confirm body. The adapter receives the
 gateway's finished locale string and cannot re-render it without parsing a translated block;
@@ -83,6 +83,16 @@ Row 3's `yes` reply is the one to watch in the live run: if the peer sends `/new
 running, that is the busy-session inline-dispatch path where the base can leave
 `_gateway_accepted` `False` — the false-rejection bug carded as A12 (2026-11-11; merged
 2026-11-15, PR #40).
+
+Red-before, recorded at the branch base (`dev` @ b321a24): row 4 fails — the failure callback
+logged INFO, so a `caplog` filtered at WARNING saw nothing (a4_01/a4_02 red, a4_03 green).
+The card named one surface; the tracker carries **two**: the transport's failed callback
+(`_handle_outbound_failure`) and a FAILED *state receipt* (`_handle_outbound_outcome`), which
+also logged at INFO like a success receipt. The acceptance is delivery truth, not callback
+plumbing, so both surfaces now log WARNING naming the lost delivery (destination + payload
+snippet); the DELIVERED path stays below WARNING, pinned by `test_a4_03`.
+Green after in both modes (adapter + delivery files): real base 152 passed / 1 skipped,
+CI-stub 150 passed / 3 skipped.
 
 ## Card A5: `/new` ack with session id + title — dropped 2026-11-04
 
