@@ -456,6 +456,80 @@ def test_note_failed_entry_clears_exactly_that_entry() -> None:
     assert pending.stats()["failed"] == before
 
 
+def test_receipt_resolves_by_entry_identity_not_content() -> None:
+    """Two sends of the same text to one peer: a receipt handed the OLDER
+    entry resolves that entry, not whichever one matches the text last."""
+    pending = delivery.PropagationPendingSet()
+    older = pending.record_propagated("0" * 32, "same text")
+    newer = pending.record_propagated("0" * 32, "same text")
+    delivery.map_receipt(
+        pending, DELIVERED, "0" * 32, "same text", entry=older
+    )
+    remaining = pending.all_pending()
+    assert [e.sequence for e in remaining] == [newer.sequence]
+    assert pending.stats()["delivered"] == 1
+
+
+def test_sent_for_a_recorded_entry_does_not_record_a_second_one() -> None:
+    """The adapter records the entry before sending. The node's SENT state
+    confirms that record; recording again would leave a permanent ghost."""
+    pending = delivery.PropagationPendingSet()
+    entry = pending.record_propagated("0" * 32, "text")
+    delivery.map_receipt(pending, SENT, "0" * 32, "text", entry=entry)
+    assert len(pending) == 1
+    assert pending.stats()["propagated"] == 1
+
+
+def test_retract_entry_after_delivery_retracts_the_delivery() -> None:
+    """A superseded body that DELIVERED retracts its delivery and its
+    propagated tally, never a failure. This is the ordering that used to
+    print ``failed: -1``."""
+    pending = delivery.PropagationPendingSet()
+    entry = pending.record_propagated("0" * 32, "text")
+    assert pending.note_delivered_entry(entry) is True
+    assert pending.stats()["delivered"] == 1
+
+    assert pending.retract_entry(entry) is True
+    assert pending.stats() == {
+        "delivered": 0,
+        "propagated": 0,
+        "failed": 0,
+        "unconfirmed": 0,
+    }
+
+
+def test_retract_entry_after_failure_retracts_the_failure() -> None:
+    """A superseded body whose failure was already counted retracts exactly
+    that pair, leaving the books where they started."""
+    pending = delivery.PropagationPendingSet()
+    entry = pending.record_propagated("0" * 32, "text")
+    assert pending.note_failed_entry(entry) is True
+    assert pending.stats()["failed"] == 1
+
+    assert pending.retract_entry(entry) is True
+    assert pending.stats() == {
+        "delivered": 0,
+        "propagated": 0,
+        "failed": 0,
+        "unconfirmed": 0,
+    }
+
+
+def test_retract_entry_with_unknown_fate_touches_no_counter() -> None:
+    """An entry the set cannot account for is left alone. Guessing is what
+    produced negative counters; one count too high is the smaller lie."""
+    pending = delivery.PropagationPendingSet()
+    live = pending.record_propagated("0" * 32, "text")
+    before = pending.stats()
+
+    assert pending.retract_entry(live) is True, "a pending entry is retractable"
+    assert pending.retract_entry(live) is False, "a second retraction cannot pay twice"
+    after = pending.stats()
+    assert after["failed"] == before["failed"]
+    assert after["delivered"] == before["delivered"]
+    assert after["propagated"] == before["propagated"] - 1
+
+
 # ── Content-aware chunking ─────────────────────────────────────────────────
 
 
@@ -899,3 +973,54 @@ class TestContentAwareChunks:
         text = "x" * 40 + "\u3000" * 400 + "y" * 40
         parts = delivery._content_aware_chunks(text, 2)
         assert "".join(parts) == text
+
+
+# ── Link mode knob ─────────────────────────────────────────────────────────
+
+
+def test_link_mode_default_on(monkeypatch):
+    """Whole-message link delivery is the default over-budget path."""
+    monkeypatch.delenv("HERMES_RNS_LINK_MODE", raising=False)
+    assert delivery.link_mode_enabled() is True
+
+
+@pytest.mark.parametrize("flag", ["0", "false", "No", " off "])
+def test_link_mode_disable_words(monkeypatch, flag):
+    monkeypatch.setenv("HERMES_RNS_LINK_MODE", flag)
+    assert delivery.link_mode_enabled() is False
+
+
+def test_link_mode_explicit_on_word(monkeypatch):
+    monkeypatch.setenv("HERMES_RNS_LINK_MODE", "1")
+    assert delivery.link_mode_enabled() is True
+
+
+def test_link_mode_unknown_word_warns_once_and_stays_on(monkeypatch, caplog):
+    """#6: a typo (``of`` for ``off``) must not silently opt the gateway
+    into the new wire behaviour — it stays ON and says so, exactly once."""
+    monkeypatch.setenv("HERMES_RNS_LINK_MODE", "of")
+    monkeypatch.setattr(delivery, "_knob_warned", False)
+    assert delivery.link_mode_enabled() is True
+    assert delivery.link_mode_enabled() is True
+    warns = [r for r in caplog.records if "HERMES_RNS_LINK_MODE" in r.getMessage()]
+    assert len(warns) == 1, "unrecognised knob value: loud, once"
+
+
+def test_link_mode_empty_value_stays_on_quietly(monkeypatch, caplog):
+    """Empty is indistinguishable from unset, so it means the default (ON)
+    and must NOT warn; only non-empty unknown words are typos."""
+    monkeypatch.setenv("HERMES_RNS_LINK_MODE", "")
+    monkeypatch.setattr(delivery, "_knob_warned", False)
+    assert delivery.link_mode_enabled() is True
+    warns = [r for r in caplog.records if "HERMES_RNS_LINK_MODE" in r.getMessage()]
+    assert warns == []
+
+
+def test_needs_link_delivery_is_the_single_predicate(monkeypatch):
+    """Size + knob decided in ONE place: over the 368-byte budget with the
+    knob on. Both sides of the boundary, and the knob off."""
+    monkeypatch.delenv("HERMES_RNS_LINK_MODE", raising=False)
+    assert delivery.needs_link_delivery("x" * 368) is False
+    assert delivery.needs_link_delivery("x" * 369) is True
+    monkeypatch.setenv("HERMES_RNS_LINK_MODE", "off")
+    assert delivery.needs_link_delivery("x" * 400) is False

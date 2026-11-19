@@ -239,6 +239,10 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
     INTER_CHUNK_DIRECT_SECONDS = 0.0
     INTER_CHUNK_PROPAGATED_SECONDS = 2.0
 
+    # Cap on supersede marks. A mark names one payload of one chat; FIFO
+    # eviction bounds the map when a callback never arrives.
+    SUPERSEDED_KEEP_MAX = 512
+
     def __init__(self, config, transport_factory=None, **kwargs):
         # Plugin platforms have no static Platform enum member: Platform._missing_
         # accepts names registered in platform_registry, which the gateway fills
@@ -290,6 +294,22 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         # single "last chat" slot misattributes receipts when two peers are sent
         # to before either receipt arrives; this map does not.
         self._outbound_by_payload: dict[str, str] = {}
+        # The pending entry recorded for each payload, when the adapter knows
+        # it. Receipts carry the payload, not the entry, so this is what lets
+        # a receipt resolve by IDENTITY: two peers sent the same text, the
+        # older entry is not the one a receipt resolves. Keyed on text, so a
+        # SECOND send of the same text to the SAME chat overwrites the mapping
+        # and leaves the older entry with no identity path — the "full-content
+        # payload keys" card covers that case.
+        self._pending_by_payload: dict[str, object] = {}
+        # Payloads of sends that were superseded by a different send (a
+        # link-mode whole body re-sent as chunk parts), mapped to the chat the
+        # replaced attempt was addressed to. Their late delivery/failure
+        # callbacks must not count against the replacement's record, and a mark
+        # for one chat must never swallow another chat's receipt for the same
+        # text (the handler compares the chat). FIFO-capped so a callback that
+        # never arrives cannot leak.
+        self._superseded_payloads: dict[str, str] = {}
         # Fallback only, for a payload the map does not know (e.g. a transport
         # that reports a transformed payload). New sends use the map.
         self._last_outbound_chat: str | None = None
@@ -765,7 +785,23 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         # long reply arrives as several parts instead of being refused or
         # silently truncated (spec section 14). A reply that fits comes back as
         # a single part and is sent unchanged.
-        parts = self._chunk_content(content, chat_id)
+        #
+        # Link mode (default on, HERMES_RNS_LINK_MODE=off to disable):
+        # over-budget replies skip chunking and travel as one
+        # link-delivered message; LXMF sequences it as an RNS resource — over
+        # a link when a path exists, via the propagation node otherwise — and
+        # the peer's router reassembles it whole, delivering a single
+        # RENDERER_MARKDOWN body (docs/mesh-bridge-findings-2026-11-19). The
+        # size+knob decision is made ONCE, here; the transport only picks the
+        # method (path-aware DIRECT vs PROPAGATED). If that single send fails
+        # outright (no path after the probe, interface gone), we re-chunk and
+        # send the labeled parts instead — the bot does not go dark over a
+        # delivery preference.
+        link_single = delivery.needs_link_delivery(content)
+        if link_single:
+            parts = [content]
+        else:
+            parts = self._chunk_content(content, chat_id)
         if parts is None:
             return delivery.map_chunk_overflow(len(content.encode("utf-8")))
         if not parts:
@@ -776,23 +812,44 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         # Remember which peer each payload went to, so an asynchronous delivery
         # receipt (which carries the message, not the chat id) is matched to the
         # right destination. Register every part: receipts can name any of them.
+        #
+        # Loop-affine: this map, ``_pending_by_payload`` and
+        # ``_superseded_payloads`` are written from send() and from the drain
+        # task's handlers, both on the event loop. The transport's own
+        # callbacks hop threads through call_soon_threadsafe before reaching
+        # them (connect(), spec section 5), so no lock is needed here — and
+        # adding one around a send would deadlock the loop it protects.
         self._last_outbound_chat = chat_id
         for part in parts:
             self._outbound_by_payload[part] = chat_id
+            # A fresh send of a payload we once superseded: this attempt IS
+            # the record now — a stale supersede mark must not swallow the
+            # new delivery's receipts. Scoped to THIS chat: another peer's
+            # mark for the same text is not ours to clear.
+            if self._superseded_payloads.get(part) == chat_id:
+                self._superseded_payloads.pop(part, None)
 
         # Record the pending entry BEFORE sending, so a delivery callback that
         # fires while send_to() is still in flight (a direct send confirms fast)
         # finds the entry and clears it. Recording it after the await left an
         # already-delivered reply marked unconfirmed forever.
         entry = self._pending.record_propagated(chat_id, content)
+        if parts[0] == content:
+            # Link mode sends the full content as its own payload; receipts for
+            # it name this entry and resolve it by identity.
+            self._pending_by_payload[content] = entry
         # Track this send so disconnect() can wait for it instead of tearing the
         # transport down underneath it.
         transport = self._transport
         with self._send_lock:
             self._sends_in_flight += 1
         cancel_requested = False
+        fallback_entries: dict[int, object] = {}
         try:
-            for index, part in enumerate(parts):
+            index = 0
+            fell_back = False
+            while index < len(parts):
+                part = parts[index]
                 # send_to() can block: with no cached path it polls for up to 15s
                 # waiting for an announce (transport._probe_path). Run it off the
                 # event loop so a cold send cannot stall the gateway's other work,
@@ -847,13 +904,65 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
                         # not tear us away either: loop again.
                         continue
                 if not sent:
+                    if link_single and not fell_back:
+                        if cancel_requested:
+                            # A new /new cancelled this send: the fallback
+                            # must not start a fresh chunked crawl after it.
+                            # Nothing left on the failed attempt — retire the
+                            # body's record and surface the cancellation.
+                            self._retire_superseded_send(entry, content, chat_id)
+                            entry = None
+                            raise asyncio.CancelledError()
+                        # The one-body send could not leave at all (no path
+                        # after the probe, interface gone): fall back to the
+                        # labeled chunk parts rather than failing the reply.
+                        # send_to returning False can also follow a resource
+                        # transfer that failed mid-way, so the rare partial
+                        # can duplicate: a visible overlap beats silence.
+                        fallback = self._chunk_content(content, chat_id)
+                        if fallback:
+                            logger.warning(
+                                "Reticulum: link-mode send failed for %s; "
+                                "retrying as %d chunked parts",
+                                chat_id[:8],
+                                len(fallback),
+                            )
+                            # Retire the whole-body record honestly (whatever
+                            # fate its callbacks reported), then let the
+                            # chunks' own receipts do the counting from here.
+                            self._retire_superseded_send(entry, content, chat_id)
+                            entry = None
+                            for chunk in fallback:
+                                self._outbound_by_payload[chunk] = chat_id
+                            # One pending entry per part actually attempted —
+                            # the record holds exactly the payloads on the wire.
+                            fallback_entries = {}
+                            for i, chunk in enumerate(fallback):
+                                fe = self._pending.record_propagated(chat_id, chunk)
+                                fallback_entries[i] = fe
+                                self._pending_by_payload[chunk] = fe
+                            parts = fallback
+                            fell_back = True
+                            index = 0
+                            continue
                     # No path / no interface: transient, let the base-class retry
                     # logic and the ledger sweep behave (spec section 6). With
                     # propagation configured, a pathless send still leaves the
                     # message on the node, so reaching here means it did not leave
                     # at all -- abort the rest rather than spray the mesh.
-                    self._pending.note_failed_entry(entry)
+                    target = fallback_entries.get(index, entry)
+                    if target is not None:
+                        self._pending.note_failed_entry(target)
                     entry = None
+                    # Parts after this one will never be attempted: retire
+                    # their records too, so nothing unattempted waits forever.
+                    for j in range(index + 1, len(parts)):
+                        self._pending.abandon_entry(fallback_entries.get(j))
+                    # No receipt will ever key these payloads again (the run
+                    # aborted): pop them now instead of for the process life.
+                    for part in parts[index:]:
+                        self._outbound_by_payload.pop(part, None)
+                        self._pending_by_payload.pop(part, None)
                     if cancel_requested:
                         raise asyncio.CancelledError()
                     return SendResult(
@@ -870,6 +979,7 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
                     pause = self._inter_chunk_delay()
                     if pause > 0:
                         await asyncio.sleep(pause)
+                index += 1
         finally:
             with self._send_lock:
                 self._sends_in_flight -= 1
@@ -890,9 +1000,11 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         # path. The real transport fires the state through _record_receipt,
         # which calls delivery.map_receipt against the pending set.
         #
-        # The pending entry is recorded against the FINAL part under the full
-        # original content, so a propagated multi-part send stays inspectable as
-        # one unconfirmed message rather than N fragments.
+        # What the record holds depends on the path taken: a send that fit one
+        # part, or went whole in link mode, is one entry under its own payload;
+        # a fallback holds one entry per chunk actually attempted, each mapped
+        # in _pending_by_payload. Nothing here invents an entry for a part that
+        # never went out.
         return SendResult(success=True)
 
     def _inter_chunk_delay(self) -> float:
@@ -957,6 +1069,91 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         """A destination is 32 hex characters (LXMF hash). Kept for compat."""
         return is_valid_destination(destination_hash)
 
+    def _retire_superseded_send(self, entry, content: str, chat_id: str) -> None:
+        """Take a superseded send's record out of the books, counter-neutral.
+
+        Called when a link-mode body is replaced by the chunked retry, or the
+        send is cancelled. The replacement owns the record from here, so the
+        body's counters must end exactly where they started.
+
+        The counters are NOT inferred. The pending set remembers the fate of
+        every entry a receipt resolved: a body that delivered retracts
+        ``delivered``, one that failed retracts ``failed``, one still pending
+        retracts only ``propagated``. An entry with no known fate leaves the
+        counters alone — one count too high is a far smaller lie than a ledger
+        reading ``failed: -1``.
+
+        In practice the FAILED event usually lands first: LXMF fires it the
+        moment it sets the terminal state, the adapter re-queues it with
+        ``call_soon_threadsafe``, and the send coroutine only resumes once its
+        poll notices that state. If the event is still queued when we get here,
+        the mark below drops it instead. Either way the record nets zero.
+
+        The mark is ``payload -> chat`` and is NOT popped on use: LXMF can
+        report failed and later delivered for one message, and BOTH belong to
+        the replaced attempt. Keying the chat (rather than dropping the mark on
+        its first callback) is what stops a second callback from being counted
+        against whichever chat spoke last. Another peer sending the same text
+        keeps its own record because the handler compares the chat. FIFO
+        eviction bounds the map.
+        """
+        self._pending.retract_entry(entry)
+        if self._pending_by_payload.get(content) is entry:
+            self._pending_by_payload.pop(content, None)
+        if self._outbound_by_payload.get(content) == chat_id:
+            # The receipt's chat now comes from the mark. Popping the routing
+            # key keeps the "no payload key for the process life" property; a
+            # newer send of this text to another peer owns the key by then.
+            self._outbound_by_payload.pop(content, None)
+        self._superseded_payloads[content] = chat_id
+        while len(self._superseded_payloads) > self.SUPERSEDED_KEEP_MAX:
+            self._superseded_payloads.pop(next(iter(self._superseded_payloads)))
+
+    def _is_superseded(self, chat_id: str | None, payload: str) -> bool:
+        """True when this payload belongs to a send that was replaced.
+
+        The mark names the chat the replaced attempt went to, so a receipt is
+        dropped only when it is that attempt's: the same text sent to another
+        peer is a different send with a record of its own.
+        """
+        return (
+            chat_id is not None
+            and self._superseded_payloads.get(payload) == chat_id
+        )
+
+    def _attribute_payload(self, payload: str) -> tuple[str, bool]:
+        """Best attribution of a receipt to a chat: ``(chat_id, confident)``.
+
+        The routing map is authoritative while it holds the payload. It can be
+        gone (a superseded send removes its own key) or overwritten (another
+        peer sent the same text later), and the receipt itself carries only the
+        text.
+
+        A surviving supersede mark outranks the pending set. The mark names the
+        chat whose attempt was replaced, and the retire path leaves it behind
+        precisely so late callbacks for that payload can be recognised. Guessing
+        a chat from a pending entry that merely shares the text would let a
+        dead attempt's receipt land on a live peer's record.
+
+        Only with no routing key and no mark does the pending set speak: an
+        entry with exactly this content and one destination names the chat.
+        Two destinations means the text is genuinely ambiguous, and the caller
+        warns instead of inventing an answer.
+        """
+        chat_id = self._outbound_by_payload.get(payload)
+        if chat_id is not None:
+            return chat_id, True
+        marked = self._superseded_payloads.get(payload)
+        if marked is not None:
+            # Known owner of a replaced send; the handlers drop its receipts.
+            return marked, True
+        destinations = {
+            e.destination for e in self._pending.all_pending() if e.content == payload
+        }
+        if len(destinations) == 1:
+            return destinations.pop(), True
+        return "", False
+
     def _handle_outbound_outcome(self, payload: str, state: int) -> None:
         """Record the terminal state of a message WE sent.
 
@@ -971,13 +1168,24 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         """
         try:
             state_int = state if isinstance(state, int) else delivery.state_from_name(state)
-            # Match the receipt to the peer that payload was addressed to. Fall
-            # back to the last chat only when the payload is unknown (a transport
-            # that reports transformed text); never guess from the most recent
-            # send, which is what misattributes receipts under concurrency.
-            chat_id = self._outbound_by_payload.get(payload)
-            if chat_id is None:
+            chat_id, confident = self._attribute_payload(payload)
+            if not confident:
+                # Fall back to the last chat only when the payload cannot be
+                # attributed at all (a transport that reports transformed
+                # text). The mark is checked against whichever chat we land
+                # on, so a replaced send's callback is still dropped.
                 chat_id = self._last_outbound_chat or ""
+            if self._is_superseded(chat_id, payload):
+                # This send was replaced (link-mode body retried as chunks);
+                # its late receipt must not count against the retry's record.
+                # The mark stays: a second callback for the same message is
+                # still the replaced attempt's.
+                logger.info(
+                    "Reticulum: receipt for a superseded send dropped; the "
+                    "chunked retry owns the record"
+                )
+                return
+            if not confident:
                 logger.warning(
                     "Reticulum: outcome for unknown payload; attributing to the "
                     "last send (%s); receipt may be misattributed",
@@ -1004,9 +1212,14 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         failed send left no record anywhere.
         """
         try:
-            chat_id = self._outbound_by_payload.get(payload)
-            if chat_id is None:
+            chat_id, confident = self._attribute_payload(payload)
+            if not confident:
                 chat_id = self._last_outbound_chat or ""
+            if self._is_superseded(chat_id, payload):
+                # Replaced send (see the outcome handler): the retry owns the
+                # record; a late failure of the superseded attempt is noise.
+                # The mark stays for the same reason it does there.
+                return
             self._record_receipt(chat_id, payload, delivery.STATE_FAILED, reason)
             if chat_id:
                 self._outbound_by_payload.pop(payload, None)
@@ -1029,10 +1242,19 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         state value; ``reason`` carries the failure string for ``FAILED``.
         The mapping is owned by :func:`hermes_reticulum.plugin.delivery.map_receipt`
         and runs against the adapter's own pending set.
+
+        When the payload is one this adapter recorded, its entry goes along so
+        the receipt resolves by identity. Two peers sent the same text, or one
+        peer sent it twice, must never resolve each other's record.
         """
-        return delivery.map_receipt(
-            self._pending, state, chat_id, content, reason
+        entry = self._pending_by_payload.get(content)
+        result = delivery.map_receipt(
+            self._pending, state, chat_id, content, reason, entry=entry
         )
+        if entry is not None and self._pending.was_resolved(entry):
+            if self._pending_by_payload.get(content) is entry:
+                self._pending_by_payload.pop(content, None)
+        return result
 
     @property
     def delivery_stats(self) -> dict[str, int]:

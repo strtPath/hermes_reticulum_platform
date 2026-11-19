@@ -25,6 +25,7 @@ import pytest
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 from hermes_reticulum.core.acl import AccessControl
+from hermes_reticulum.plugin import delivery
 from hermes_reticulum.plugin.adapter import (
     _SEND_ATTEMPTS,
     REJECT_QUEUE_MAX,
@@ -297,8 +298,13 @@ def test_path_state_error_is_treated_as_direct():
 
 
 @pytest.mark.asyncio
-async def test_multi_part_send_paces_between_chunks():
-    """The gap is applied between parts, and not after the last one."""
+async def test_multi_part_send_paces_between_chunks(monkeypatch):
+    """The gap is applied between parts, and not after the last one.
+
+    Pacing belongs to the chunker path; link mode (default on) sends an
+    over-budget reply as one body, so this test pins the knob off.
+    """
+    monkeypatch.setenv("HERMES_RNS_LINK_MODE", "off")
     sleeps = []
 
     async def fake_sleep(seconds):
@@ -322,6 +328,537 @@ async def test_multi_part_send_paces_between_chunks():
         f"expected a pause between {expected} gaps, got {len(sleeps)}"
     )
     assert all(s == adapter.INTER_CHUNK_PROPAGATED_SECONDS for s in sleeps)
+
+
+# ── Link mode: one body instead of chunk parts ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_link_mode_sends_over_budget_reply_as_one_part(monkeypatch):
+    """Link mode (default): an over-budget reply goes out as ONE body, not
+    labeled parts, so the RENDERER_MARKDOWN stamp survives whole."""
+    monkeypatch.delenv("HERMES_RNS_LINK_MODE", raising=False)
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+    _freeze_cleanup_loop(adapter)
+    adapter._transport = _TransportReportingPath(direct=True)
+    long_text = "x" * 400  # the block budget is 368 bytes
+
+    result = await adapter.send("ab" * 16, long_text)
+
+    assert result.success is True
+    assert [p for _, p in adapter._transport.sent] == [long_text]
+
+
+@pytest.mark.asyncio
+async def test_link_mode_falls_back_to_chunks_when_one_body_send_fails(monkeypatch):
+    """If the one-body send cannot leave at all (no path after the probe),
+    the reply still reaches the peer as labeled chunk parts rather than
+    failing: link mode is a delivery preference, not a point of failure."""
+    monkeypatch.delenv("HERMES_RNS_LINK_MODE", raising=False)
+
+    class _RejectFirst(_TransportReportingPath):
+        def __init__(self):
+            super().__init__(direct=False)
+            self._attempts = 0
+
+        def send_to(self, destination_hash, payload):
+            self._attempts += 1
+            self.sent.append((destination_hash, payload))
+            return self._attempts > 1  # refuse only the one-body attempt
+
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+    _freeze_cleanup_loop(adapter)
+    fake = _RejectFirst()
+    adapter._transport = fake
+    long_text = "x" * 400
+
+    result = await adapter.send("ab" * 16, long_text)
+
+    assert result.success is True
+    payloads = [p for _, p in fake.sent]
+    assert payloads[0] == long_text  # the refused one-body attempt
+    assert len(payloads) > 2, "fallback must produce several labeled parts"
+    assert all(p != long_text for p in payloads[1:])
+    assert any(delivery.PART_LABEL_RE.match(p) for p in payloads[1:])
+
+
+@pytest.mark.asyncio
+async def test_link_mode_fallback_record_holds_only_attempted_payloads(monkeypatch):
+    """After a fallback the books hold EXACTLY the payloads attempted: the
+    superseded body is retired (no ghost pending entry, no payload key kept
+    for the life of the process) and each chunk carries its own record, so
+    delivering the chunks confirms the reply with failed == 0.
+    """
+    monkeypatch.delenv("HERMES_RNS_LINK_MODE", raising=False)
+
+    class _RejectFirst(_TransportReportingPath):
+        def __init__(self):
+            super().__init__(direct=True)
+            self._attempts = 0
+
+        def send_to(self, destination_hash, payload):
+            self._attempts += 1
+            self.sent.append((destination_hash, payload))
+            return self._attempts > 1
+
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+    _freeze_cleanup_loop(adapter)
+    fake = _RejectFirst()
+    adapter._transport = fake
+    long_text = "x" * 400
+
+    result = await adapter.send("ab" * 16, long_text)
+
+    assert result.success is True
+    chunks = [p for _, p in fake.sent][1:]
+    assert len(chunks) > 1
+    assert set(adapter._pending_by_payload) == set(chunks)
+    assert long_text not in adapter._pending_by_payload, (
+        "the superseded body must hold no pending record"
+    )
+    assert adapter._superseded_payloads.get(long_text) == "ab" * 16
+    assert len(adapter.unconfirmed_for("ab" * 16)) == len(chunks)
+    for chunk in chunks:
+        adapter._handle_outbound_outcome(chunk, delivery.STATE_DELIVERED)
+    assert adapter.unconfirmed_for("ab" * 16) == []
+    stats = adapter.delivery_stats
+    assert stats["failed"] == 0, "chunk-delivered reply must not count as failed"
+    assert stats["delivered"] == len(chunks)
+
+
+@pytest.mark.asyncio
+async def test_link_mode_same_body_resent_after_fallback_is_not_dropped(
+    monkeypatch,
+):
+    """A supersede mark belongs to the REPLACED attempt. If the exact same
+    over-budget reply is legitimately sent again later, its own receipt must
+    count — re-registering the payload clears the stale mark."""
+    monkeypatch.delenv("HERMES_RNS_LINK_MODE", raising=False)
+
+    class _RejectOnce(_TransportReportingPath):
+        def __init__(self):
+            super().__init__(direct=True)
+            self._refusals = 1
+
+        def send_to(self, destination_hash, payload):
+            self.sent.append((destination_hash, payload))
+            if self._refusals:
+                self._refusals -= 1
+                return False
+            return True
+
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+    _freeze_cleanup_loop(adapter)
+    fake = _RejectOnce()
+    adapter._transport = fake
+    long_text = "x" * 400
+
+    first = await adapter.send("ab" * 16, long_text)
+    assert first.success is True
+    chunks = [p for _, p in fake.sent][1:]
+    for chunk in chunks:
+        adapter._handle_outbound_outcome(chunk, delivery.STATE_DELIVERED)
+    assert adapter._superseded_payloads.get(long_text) == "ab" * 16
+
+    second = await adapter.send("ab" * 16, long_text)
+    assert second.success is True
+    assert long_text not in adapter._superseded_payloads
+    adapter._handle_outbound_outcome(long_text, delivery.STATE_DELIVERED)
+    assert adapter.unconfirmed_for("ab" * 16) == []
+    stats = adapter.delivery_stats
+    assert stats["failed"] == 0
+    assert stats["delivered"] == len(chunks) + 1
+
+
+@pytest.mark.asyncio
+async def test_link_mode_body_delivered_then_false_never_counts_a_failure(
+    monkeypatch,
+):
+    """Delivered-then-False: the body's DELIVERED callback resolves its entry,
+    and send_to still returns False. The fallback must retract the DELIVERY it
+    actually made, not invent a failure from the entry's absence: a record
+    reading failed: -1 tells the user the opposite of what happened.
+    """
+    monkeypatch.delenv("HERMES_RNS_LINK_MODE", raising=False)
+
+    class _DeliverThenRefuse(_TransportReportingPath):
+        def __init__(self):
+            super().__init__(direct=True)
+            self._attempts = 0
+
+        def send_to(self, destination_hash, payload):
+            self._attempts += 1
+            self.sent.append((destination_hash, payload))
+            if self._attempts == 1:
+                adapter._handle_outbound_outcome(payload, delivery.STATE_DELIVERED)
+                return False
+            return True
+
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+    _freeze_cleanup_loop(adapter)
+    fake = _DeliverThenRefuse()
+    adapter._transport = fake
+    long_text = "x" * 400
+
+    result = await adapter.send("ab" * 16, long_text)
+
+    assert result.success is True
+    after_fallback = adapter.delivery_stats
+    assert after_fallback["failed"] == 0, "a delivered body is not a failure"
+    assert after_fallback["delivered"] == 0, "the superseded delivery is retired"
+    assert all(v >= 0 for v in after_fallback.values()), after_fallback
+
+    chunks = [p for _, p in fake.sent][1:]
+    for chunk in chunks:
+        adapter._handle_outbound_outcome(chunk, delivery.STATE_DELIVERED)
+    stats = adapter.delivery_stats
+    assert stats["failed"] == 0
+    assert stats["delivered"] == len(chunks)
+    assert adapter.unconfirmed_for("ab" * 16) == []
+
+
+@pytest.mark.asyncio
+async def test_link_mode_supersede_mark_never_swallows_another_chats_receipt(
+    monkeypatch,
+):
+    """Two peers, one answer text, and the mark names the OTHER chat. Chat B
+    sends the text after A's body was superseded, so B owns the payload: its
+    genuine DELIVERED must be counted and its record cleared. A text-only mark
+    used to drop this receipt, the ghost this PR exists to remove relocated to
+    another chat.
+    """
+    monkeypatch.delenv("HERMES_RNS_LINK_MODE", raising=False)
+
+    class _RefuseFirstForAnyChat(_TransportReportingPath):
+        def __init__(self):
+            super().__init__(direct=True)
+            self.refusing = False
+
+        def send_to(self, destination_hash, payload):
+            self.sent.append((destination_hash, payload))
+            if self.refusing:
+                self.refusing = False
+                return False
+            return True
+
+    a, b = "ab" * 16, "cd" * 16
+    long_text = "x" * 400
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+    _freeze_cleanup_loop(adapter)
+    fake = _RefuseFirstForAnyChat()
+    adapter._transport = fake
+
+    # A's body is refused and superseded first; the mark names A.
+    fake.refusing = True
+    assert (await adapter.send(a, long_text)).success is True
+    assert adapter._superseded_payloads.get(long_text) == a
+
+    # B sends the same text afterwards and owns the payload now. Registering
+    # it must not clear A's mark (A's chunks still hold their own receipts).
+    assert (await adapter.send(b, long_text)).success is True
+    assert adapter._superseded_payloads.get(long_text) == a, (
+        "another chat's send must not erase the mark"
+    )
+    assert len(adapter.unconfirmed_for(a)) > 0, "A's chunks are on the wire"
+    assert len(adapter.unconfirmed_for(b)) == 1, "B's send is pending"
+
+    adapter._handle_outbound_outcome(long_text, delivery.STATE_DELIVERED)
+
+    assert adapter.unconfirmed_for(b) == [], "B's own receipt must clear B"
+    assert adapter.delivery_stats["delivered"] == 1
+    assert len(adapter.unconfirmed_for(a)) > 0, "A's chunks are untouched"
+
+    for entry in list(adapter.unconfirmed_for(a)):
+        adapter._handle_outbound_outcome(entry.content, delivery.STATE_DELIVERED)
+    assert adapter.unconfirmed_for(a) == []
+    assert adapter.delivery_stats["failed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_link_mode_replaced_receipt_never_lands_on_a_live_chat(monkeypatch):
+    """The reversed ordering of the cross-chat test: the replaced body reports
+    AFTER the retire path removed its routing key, while another chat's send of
+    the same text is still pending. Attribution must ask the supersede mark
+    first; guessing a chat from the pending set hands a dead attempt's receipt
+    to a live peer, clearing its record and bumping the wrong counter.
+    """
+    monkeypatch.delenv("HERMES_RNS_LINK_MODE", raising=False)
+
+    class _RefuseFirstForAnyChat(_TransportReportingPath):
+        def __init__(self):
+            super().__init__(direct=True)
+            self.refusing = False
+
+        def send_to(self, destination_hash, payload):
+            self.sent.append((destination_hash, payload))
+            if self.refusing:
+                self.refusing = False
+                return False
+            return True
+
+    a, b = "ab" * 16, "cd" * 16
+    long_text = "x" * 400
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+    _freeze_cleanup_loop(adapter)
+    fake = _RefuseFirstForAnyChat()
+    adapter._transport = fake
+
+    assert (await adapter.send(b, long_text)).success is True
+    fake.refusing = True
+    assert (await adapter.send(a, long_text)).success is True
+    assert long_text not in adapter._outbound_by_payload, (
+        "the retire path removed the routing key"
+    )
+    assert len(adapter.unconfirmed_for(b)) == 1
+
+    adapter._handle_outbound_outcome(long_text, delivery.STATE_DELIVERED)
+    adapter._handle_outbound_failure(long_text, "router cancel")
+
+    assert len(adapter.unconfirmed_for(b)) == 1, (
+        "another chat's live entry must survive the replaced attempt's receipts"
+    )
+    assert adapter.delivery_stats["delivered"] == 0
+    assert adapter.delivery_stats["failed"] == 0
+    assert adapter._superseded_payloads.get(long_text) == a
+
+
+@pytest.mark.asyncio
+async def test_link_mode_receipts_arrive_through_the_loop_hop(monkeypatch):
+    """The production threading model: the transport's callback thread hands
+    the event to the loop with call_soon_threadsafe and the loop applies it.
+    The deterministic tests call the handler directly to pin a specific
+    ordering; this one pins that the same accounting holds when the hop is
+    real, so the loop-affinity comment is not just a promise in a docstring.
+    """
+    monkeypatch.delenv("HERMES_RNS_LINK_MODE", raising=False)
+    loop = asyncio.get_running_loop()
+
+    class _DeliverOnThread(_TransportReportingPath):
+        def send_to(self, destination_hash, payload):
+            self.sent.append((destination_hash, payload))
+            loop.call_soon_threadsafe(
+                adapter._handle_outbound_outcome, payload, delivery.STATE_DELIVERED
+            )
+            return True
+
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+    _freeze_cleanup_loop(adapter)
+    fake = _DeliverOnThread()
+    adapter._transport = fake
+    long_text = "x" * 400
+
+    assert (await adapter.send("ab" * 16, long_text)).success is True
+    await asyncio.sleep(0.05)
+
+    assert adapter.delivery_stats["delivered"] == 1
+    assert adapter.unconfirmed_for("ab" * 16) == []
+    assert long_text not in adapter._pending_by_payload
+
+
+@pytest.mark.asyncio
+async def test_link_mode_superseded_body_failed_then_delivered_counts_once(
+    monkeypatch,
+):
+    """A failed callback and a later delivered callback for the SAME replaced
+    message: the mark must outlive the first one. Popping it on use sent the
+    second callback down the 'last chat' guess, which counts a replaced send
+    against a live one.
+    """
+    monkeypatch.delenv("HERMES_RNS_LINK_MODE", raising=False)
+
+    class _FailThenDeliver(_TransportReportingPath):
+        def __init__(self):
+            super().__init__(direct=True)
+            self._attempts = 0
+
+        def send_to(self, destination_hash, payload):
+            self._attempts += 1
+            self.sent.append((destination_hash, payload))
+            if self._attempts == 1:
+                adapter._handle_outbound_failure(payload, "router cancel")
+                return False
+            return True
+
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+    _freeze_cleanup_loop(adapter)
+    fake = _FailThenDeliver()
+    adapter._transport = fake
+    long_text = "x" * 400
+
+    result = await adapter.send("ab" * 16, long_text)
+    assert result.success is True
+    chunks = [p for _, p in fake.sent][1:]
+    assert adapter._superseded_payloads.get(long_text) == "ab" * 16
+
+    # The router retried and the replaced body now reports delivered. It was
+    # replaced; the chunks own the record.
+    adapter._handle_outbound_outcome(long_text, delivery.STATE_DELIVERED)
+    assert adapter._superseded_payloads.get(long_text) == "ab" * 16, (
+        "the first callback must not consume the mark"
+    )
+    assert adapter.delivery_stats["delivered"] == 0
+
+    for chunk in chunks:
+        adapter._handle_outbound_outcome(chunk, delivery.STATE_DELIVERED)
+    stats = adapter.delivery_stats
+    assert stats["delivered"] == len(chunks)
+    assert stats["failed"] == 0
+    assert adapter.unconfirmed_for("ab" * 16) == []
+
+
+@pytest.mark.asyncio
+async def test_link_mode_body_failure_counted_during_send_is_retracted(
+    monkeypatch,
+):
+    """The common ordering: the transport's FAILED callback fires while
+    send_to unwinds, so the failure is already counted when the fallback
+    decides. The fallback retracts that pair so the chunks' record is clean
+    even before their receipts arrive.
+    """
+    monkeypatch.delenv("HERMES_RNS_LINK_MODE", raising=False)
+
+    class _RejectFirstWithCallback(_TransportReportingPath):
+        def __init__(self):
+            super().__init__(direct=True)
+            self._attempts = 0
+
+        def send_to(self, destination_hash, payload):
+            self._attempts += 1
+            self.sent.append((destination_hash, payload))
+            if self._attempts == 1:
+                # The router cancel the real transport reports before it
+                # releases its outcome await — same thread ordering for the
+                # bookkeeping, which is what the record must survive.
+                adapter._handle_outbound_failure(payload, "router cancel")
+            return self._attempts > 1
+
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+    _freeze_cleanup_loop(adapter)
+    fake = _RejectFirstWithCallback()
+    adapter._transport = fake
+    long_text = "x" * 400
+
+    result = await adapter.send("ab" * 16, long_text)
+
+    assert result.success is True
+    chunks = [p for _, p in fake.sent][1:]
+    for chunk in chunks:
+        adapter._handle_outbound_outcome(chunk, delivery.STATE_DELIVERED)
+    stats = adapter.delivery_stats
+    assert stats["failed"] == 0, "superseded body's counted failure must retract"
+    assert stats["delivered"] == len(chunks)
+    assert adapter.unconfirmed_for("ab" * 16) == []
+
+
+@pytest.mark.asyncio
+async def test_link_mode_fallback_that_also_fails_stops_after_one_attempt(
+    monkeypatch, caplog
+):
+    """A transport that refuses everything must not spin: exactly one
+    body attempt, one chunk attempt, one failure counted, one warning.
+    fell_back is the only thing between the loop and an infinite crawl —
+    this pins it.
+    """
+    monkeypatch.delenv("HERMES_RNS_LINK_MODE", raising=False)
+
+    class _RejectAll(_TransportReportingPath):
+        def send_to(self, destination_hash, payload):
+            self.sent.append((destination_hash, payload))
+            return False
+
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+    _freeze_cleanup_loop(adapter)
+    fake = _RejectAll()
+    adapter._transport = fake
+    long_text = "x" * 400
+
+    result = await adapter.send("ab" * 16, long_text)
+
+    assert result.success is False
+    payloads = [p for _, p in fake.sent]
+    assert len(payloads) == 2, "one body + one chunk attempt, then stop"
+    assert payloads[0] == long_text
+    assert delivery.PART_LABEL_RE.match(payloads[1])
+    assert adapter.delivery_stats["failed"] == 1
+    assert not adapter._outbound_by_payload, "aborted payloads must not linger"
+    warnings = [
+        r for r in caplog.records if "link-mode send failed" in r.getMessage()
+    ]
+    assert len(warnings) == 1
+
+
+@pytest.mark.asyncio
+async def test_link_mode_cancellation_during_send_skips_chunk_fallback(
+    monkeypatch,
+):
+    """A /new cancellation landing while the one-body send fails must not
+    kick off a fresh chunked crawl afterwards — the cancel costs zero
+    airtime and the crawl costs minutes. The cancellation surfaces as-is.
+    """
+    monkeypatch.delenv("HERMES_RNS_LINK_MODE", raising=False)
+    started = threading.Event()
+    release = threading.Event()
+
+    class _SlowReject(_TransportReportingPath):
+        def send_to(self, destination_hash, payload):
+            self.sent.append((destination_hash, payload))
+            started.set()
+            release.wait(5)
+            return False
+
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+    _freeze_cleanup_loop(adapter)
+    fake = _SlowReject()
+    adapter._transport = fake
+
+    task = asyncio.create_task(adapter.send("ab" * 16, "x" * 400))
+    await asyncio.to_thread(started.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0)  # let the cancellation reach the shield
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert len(fake.sent) == 1, "no chunk crawl may start after a cancel"
+    assert adapter.delivery_stats["failed"] == 0
+    assert adapter.unconfirmed_for("ab" * 16) == []
+    assert not adapter._outbound_by_payload
+
+
+@pytest.mark.asyncio
+async def test_link_mode_budget_boundary_sends_one_unlabeled_part_both_ways(
+    monkeypatch,
+):
+    """The boundary is shared: 368 bytes is not over budget (chunker path,
+    one part, no label), 369 bytes takes the link path (one whole body).
+    Neither pays a second send or a [pN] label — the '>' and the chunker's
+    budget meet exactly at 368.
+    """
+    monkeypatch.delenv("HERMES_RNS_LINK_MODE", raising=False)
+    for size in (368, 369):
+        adapter = make_adapter()
+        assert await adapter.connect() is True
+        _freeze_cleanup_loop(adapter)
+        adapter._transport = _TransportReportingPath(direct=True)
+        text = "x" * size
+
+        result = await adapter.send("ab" * 16, text)
+
+        assert result.success is True, f"size {size}"
+        payloads = [p for _, p in adapter._transport.sent]
+        assert payloads == [text], f"size {size}: one unlabeled payload expected"
 
 
 # ── Inbound thread bridge (spec section 10) ────────────────────────────────

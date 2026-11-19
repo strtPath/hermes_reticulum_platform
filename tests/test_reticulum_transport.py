@@ -501,6 +501,20 @@ class TestPathAwareSend:
         # A warm path must not pay the path-request wait.
         fake_rns.Transport.request_path.assert_not_called()
 
+    def test_over_budget_body_stays_whole_and_marked(self, fake_rns, tmp_path):
+        """One over-budget body, one outbound message, RENDERER_MARKDOWN
+        stamp intact and no part label: LXMF sequences it as a link resource
+        and the peer's router reassembles it whole. The stamp is the product
+        claim; desired_method is LXMF's business (LXMessage rewrites it)."""
+        fake_rns.Identity.recall.return_value = mock.Mock()
+        fake_rns.Transport.has_path.return_value = True
+        fake_rns.Transport.hops_to.return_value = 2
+        t = self._started_transport(fake_rns, tmp_path)
+        assert t.send_to(FAKE_HASH, "x" * 400) is True  # budget is 368 bytes
+        msg = t.router.outbound[0]
+        assert msg.fields.get(0x0F) == 0x02  # FIELD_RENDERER: MARKDOWN
+        assert msg.content == "x" * 400  # one whole body, no part label
+
     def test_cold_path_is_requested_before_giving_up(self, fake_rns, tmp_path):
         """DIRECT does not request paths; we must, or it cancels instantly."""
         fake_rns.Identity.recall.return_value = mock.Mock()

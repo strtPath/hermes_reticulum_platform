@@ -22,6 +22,7 @@ initiative (spec section 16 invariant).
 """
 
 import logging
+import os
 import re
 import threading
 from dataclasses import dataclass
@@ -52,13 +53,65 @@ _ERR_TRANSIENT = "transient"
 _ERR_TOO_LONG = "too_long"
 _ERR_UNKNOWN = "unknown"
 
+# Fates a pending entry can take once a receipt resolves it. Recorded so a
+# superseded send can be retracted counter-neutrally WITHOUT inferring which
+# counter the receipt bumped.
+_FATE_DELIVERED = "delivered"
+_FATE_FAILED = "failed"
+# Bounded history of resolved fates; the adapter's supersede path is the only
+# reader, and an entry that resolved long ago is no longer retractable.
+_FATE_KEEP_MAX = 512
+
 
 # ── Chunking (ported from core/downlink.py) ────────────────────────────────
 
 
-# Block content budget (LXMF 1.1.1): 368 bytes max content per link block.
-# Carried over verbatim from core/downlink.py:43 — do not re-derive.
+# Block content budget: 368 bytes per part. This is LXMF's own
+# PLAIN_PACKET_MAX_CONTENT (LXMF 1.3.1, LXMessage.py:91-96), carried over
+# verbatim from bridge/downlink.py:43 — do not re-derive. It is a packing
+# policy, not a guarantee that a part fits one encrypted packet: an encrypted
+# DM gets 287 B in a plain packet and 319 B over a link, and anything above
+# that rides an RNS resource either way.
 _BLOCK_CONTENT_BUDGET = 368
+
+
+_knob_warned = False
+
+
+def link_mode_enabled() -> bool:
+    """Over-budget replies ride ONE link-delivered LXMF message instead of
+    ``[pN i/N]`` plain-renderer parts.
+
+    A large body sent to a peer with a known path travels as an RNS
+    resource over a link; LXMF reassembles it on the receiving router, so
+    the body arrives whole with its RENDERER_MARKDOWN stamp intact — one
+    rendered markdown bubble instead of N raw parts
+    (docs/mesh-bridge-findings-2026-11-19). Default ON; set
+    ``HERMES_RNS_LINK_MODE=off`` (also ``0``/``false``/``no``) to force the
+    chunker. Any other value means ON, and an unrecognised one is logged
+    once so a typo cannot silently opt into the new wire behaviour.
+    """
+    global _knob_warned
+    flag = os.environ.get("HERMES_RNS_LINK_MODE", "").strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        return False
+    if flag and flag not in ("1", "true", "yes", "on") and not _knob_warned:
+        _knob_warned = True
+        logger.warning(
+            "Reticulum: HERMES_RNS_LINK_MODE=%r is not recognised; link "
+            "mode stays ON. Use off/0/false/no to force the chunker.",
+            flag,
+        )
+    return True
+
+
+def needs_link_delivery(content: str) -> bool:
+    """One decision, one site: does this reply go out as a single
+    link-delivered body instead of chunked parts?"""
+    return (
+        link_mode_enabled()
+        and len(content.encode("utf-8")) > _BLOCK_CONTENT_BUDGET
+    )
 
 # A part label added by sequence_chunks: ``[pN i/N] `` at the start of a
 # multi-part chunk. Single source of truth so the transport can tell a labeled
@@ -600,6 +653,13 @@ class PropagationPendingSet:
         }
         # Per-destination monotonic sequence.
         self._seq: dict = {}
+        # Fate of entries a receipt has already resolved, oldest first. The
+        # supersede path asks what ACTUALLY happened to an entry instead of
+        # inferring it from the entry's absence: a delivered send must not be
+        # retracted as a failure, and an entry that vanished for any other
+        # reason must leave the counters alone. Bounded so a peer that never
+        # sends a receipt cannot grow it for the process life.
+        self._fates: dict = {}
 
     # ── Record ────────────────────────────────────────────────────────
 
@@ -618,15 +678,37 @@ class PropagationPendingSet:
         """Record a confirmed (``DELIVERED``) send and clear any matching pending entry."""
         with self._lock:
             self._counters["delivered"] += 1
-            self._resolve(destination, content)
+            self._resolve(destination, content, _FATE_DELIVERED)
 
     def note_failed(self, destination: str, content: str) -> None:
         """Record a failed send and clear any matching pending entry."""
         with self._lock:
             self._counters["failed"] += 1
-            self._resolve(destination, content)
+            self._resolve(destination, content, _FATE_FAILED)
 
-    def _resolve(self, destination: str, content: str) -> None:
+    def note_delivered_entry(self, entry) -> bool:
+        """Count a delivery for this EXACT entry. True if it was still pending.
+
+        Keyed on identity for the same reason ``note_failed_entry`` is: the
+        receipt carries the payload, and the adapter knows which entry that
+        payload recorded. A delivery for a send that already resolved is not
+        counted a second time.
+
+        The counter is incremented only when the entry was present, so the
+        tally matches the sends that were actually pending.
+        """
+        if entry is None:
+            return False
+        with self._lock:
+            try:
+                self._entries.remove(entry)
+            except ValueError:
+                return False
+            self._counters["delivered"] += 1
+            self._remember_fate(entry, _FATE_DELIVERED)
+            return True
+
+    def _resolve(self, destination: str, content: str, fate: str) -> None:
         """Drop the newest pending entry matching this destination and content.
 
         A pending entry only exists for a propagated send, but a later
@@ -646,7 +728,63 @@ class PropagationPendingSet:
             e = self._entries[i]
             if e.destination == destination and e.content == content:
                 del self._entries[i]
+                self._remember_fate(e, fate)
                 return
+
+    def _remember_fate(self, entry, fate: str) -> None:
+        """Remember how an entry resolved, bounded FIFO. Caller holds the lock."""
+        self._fates[entry] = fate
+        while len(self._fates) > _FATE_KEEP_MAX:
+            self._fates.pop(next(iter(self._fates)))
+
+    def abandon_entry(self, entry) -> bool:
+        """Remove this EXACT entry and retract its ``propagated`` tally.
+
+        For a send that was superseded by another send (a link-mode body
+        re-sent as chunk parts): the superseded send has no fate of its
+        own, and its late failure callback must not count against the
+        send that replaced it. Counter-neutral removal keeps the record
+        honest; the replacement's receipts do the counting.
+        """
+        if entry is None:
+            # The abort path indexes a map of fallback entries; a send that
+            # never fell back has nothing there. Absence is not an error.
+            return False
+        with self._lock:
+            try:
+                self._entries.remove(entry)
+            except ValueError:
+                return False
+            self._counters["propagated"] -= 1
+            return True
+
+    def retract_entry(self, entry) -> bool:
+        """Take a superseded send out of the books, counter-neutral.
+
+        Whatever fate the entry took, the counters end where they started:
+
+        - still pending: only ``propagated`` was counted, drop it;
+        - resolved by a receipt: retract that receipt's counter too, because
+          the replacement send owns the record from here;
+        - unknown: change NOTHING and return False. Guessing is what produced
+          negative failure counts; an untouched counter that may be one high
+          is a far smaller lie than a ledger reading ``failed: -1``.
+        """
+        if entry is None:
+            return False
+        with self._lock:
+            try:
+                self._entries.remove(entry)
+            except ValueError:
+                fate = self._fates.pop(entry, None)
+                if fate is None:
+                    return False
+                if fate == _FATE_FAILED:
+                    self._counters["failed"] -= 1
+                else:
+                    self._counters["delivered"] -= 1
+            self._counters["propagated"] -= 1
+            return True
 
     def note_failed_entry(self, entry) -> bool:
         """Count a failure and remove this EXACT entry. True if it was pending.
@@ -665,6 +803,7 @@ class PropagationPendingSet:
             except ValueError:
                 return False
             self._counters["failed"] += 1
+            self._remember_fate(entry, _FATE_FAILED)
             return True
 
     def was_resolved(self, entry) -> bool:
@@ -767,6 +906,7 @@ def map_receipt(
     destination: str,
     content: str,
     reason: str | None = None,
+    entry=None,
 ) -> SendResult:
     """Translate an LXMF delivery-state callback into a gateway ``SendResult``.
 
@@ -780,6 +920,13 @@ def map_receipt(
       ``CANCELLED``/unrecognised) → ``success=False`` with
       ``error_kind="unknown"``. Never a benign default.
 
+    ``entry`` is the pending entry the adapter recorded for this exact
+    payload, when it knows it. Passing it resolves the receipt by identity
+    instead of by "newest entry with this destination and text", which is the
+    only safe key when the same text is in flight to two peers (or twice to
+    one). ``SENT`` for an already-recorded payload does not record a second
+    entry.
+
     ``error_kind`` is always set explicitly — the gateway's
     ``classify_send_error`` substring table is built for API-server wording and
     would misclassify LXMF strings.
@@ -787,10 +934,18 @@ def map_receipt(
     outcome = _state_outcome(state)
 
     if outcome == _OUTCOME_DELIVERED:
-        pending.note_delivered(destination, content)
+        if entry is not None:
+            pending.note_delivered_entry(entry)
+        else:
+            pending.note_delivered(destination, content)
         return SendResult(success=True)
 
     if outcome == _OUTCOME_PROPAGATED:
+        if entry is not None:
+            # Recorded before the send so a fast receipt could resolve it;
+            # the node's SENT state confirms that record, it does not add one.
+            logger.debug("Reticulum: propagated state for an already-recorded send")
+            return SendResult(success=True)
         entry = pending.record_propagated(destination, content)
         logger.info(
             "Reticulum: propagated send recorded (seq=%d); no further "
@@ -800,7 +955,10 @@ def map_receipt(
         return SendResult(success=True)
 
     if outcome == _OUTCOME_FAILED:
-        pending.note_failed(destination, content)
+        if entry is not None:
+            pending.note_failed_entry(entry)
+        else:
+            pending.note_failed(destination, content)
         err = reason if reason else "delivery failed after retries"
         return SendResult(
             success=False,
