@@ -22,6 +22,7 @@ initiative (spec section 16 invariant).
 """
 
 import logging
+import os
 import re
 import threading
 from dataclasses import dataclass
@@ -59,6 +60,22 @@ _ERR_UNKNOWN = "unknown"
 # Block content budget (LXMF 1.1.1): 368 bytes max content per link block.
 # Carried over verbatim from core/downlink.py:43 — do not re-derive.
 _BLOCK_CONTENT_BUDGET = 368
+
+
+def link_mode_enabled() -> bool:
+    """Test knob (branch test/opportunistic-link-delivery only).
+
+    ``HERMES_RNS_LINK_MODE=1`` makes over-budget replies travel as ONE
+    opportunistic link-delivered LXMF message instead of ``[pN i/N]``
+    plain-renderer parts. LXMF reassembles large link deliveries on the
+    receiving router, so the body arrives whole with its RENDERER_MARKDOWN
+    stamp intact — one rendered markdown bubble instead of N raw parts.
+    Reads the env at send time so a restart toggles it; default off keeps
+    today's chunked behavior everywhere.
+    """
+    return os.environ.get("HERMES_RNS_LINK_MODE", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
 
 # A part label added by sequence_chunks: ``[pN i/N] `` at the start of a
 # multi-part chunk. Single source of truth so the transport can tell a labeled

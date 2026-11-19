@@ -681,6 +681,20 @@ class ReticulumTransport:
                 LXMF.APP_NAME, "delivery",
             )
             method = self._select_method(dest_hash, has_path)
+            # Test knob (HERMES_RNS_LINK_MODE=1, test/opportunistic-link-delivery):
+            # an over-budget payload travels as ONE opportunistic link message.
+            # The LXMF router opens a delivery link, sequences the body (as RNS
+            # resources beyond the link MDU), and the peer's router reassembles
+            # it before its UI layer sees a message — so RENDERER_MARKDOWN
+            # applies to the whole reply. Requires a path for the link request;
+            # without one we stay on _select_method's answer and the oversized
+            # send fails loudly (the knob's chunk bypass makes that visible).
+            if (
+                delivery.link_mode_enabled()
+                and has_path
+                and len(payload.encode("utf-8")) > delivery._BLOCK_CONTENT_BUDGET
+            ):
+                method = LXMF.LXMessage.OPPORTUNISTIC
             self._last_send_direct = method == LXMF.LXMessage.DIRECT
             # Build the message the way the standalone bridge does. There is no
             # LXMRouter.message_for_destination in LXMF — it is LXMessage's

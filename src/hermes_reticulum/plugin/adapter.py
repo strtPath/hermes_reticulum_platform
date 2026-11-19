@@ -765,7 +765,20 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         # long reply arrives as several parts instead of being refused or
         # silently truncated (spec section 14). A reply that fits comes back as
         # a single part and is sent unchanged.
-        parts = self._chunk_content(content, chat_id)
+        #
+        # Test knob (HERMES_RNS_LINK_MODE=1, test/opportunistic-link-delivery):
+        # over-budget replies skip chunking entirely and travel as one
+        # opportunistic link-delivered message; LXMF sequences and reassembles
+        # it on the receiving router, delivering a single RENDERER_MARKDOWN
+        # body. No fallback re-chunking on this branch: if the link cannot be
+        # established the send fails and logs — that IS the test signal.
+        if (
+            delivery.link_mode_enabled()
+            and len(content.encode("utf-8")) > delivery._BLOCK_CONTENT_BUDGET
+        ):
+            parts = [content]
+        else:
+            parts = self._chunk_content(content, chat_id)
         if parts is None:
             return delivery.map_chunk_overflow(len(content.encode("utf-8")))
         if not parts:
