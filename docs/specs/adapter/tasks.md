@@ -38,6 +38,7 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A14 | A12 residue: inline paths that handle an event but send nothing (handler yields no text; the base swallows the inline-dispatch exception; queue-mode busy-text debounce parks the follow-up) still read as a D7 deny under A12's evidence rule | A12 | the upstream flag fix lands and the evidence rule retires, or an upstream-safe signal separates handled-but-silent from dropped; until then the documented silent-inline paths are known false-alarm surfaces | open, proposed 2026-11-14 |
 | A15 | Real-base harness double-loads `gateway.platforms.event`, so `MessageType` comparisons inside `base.py` are dead in tests — a green-suite blind spot | - | one event module loaded, conftest identity assert, and the silently-untested base branches re-audited | open, proposed 2026-11-14 |
 | A16 | `scripts/security-sweep.py` silently passes a nonexistent path argument, so `security-sweep.py origin/dev..HEAD` is a false green | - | nonexistent paths exit nonzero and a git-range-looking argument is honored or rejected loudly | open, proposed 2026-11-15 |
+| A17 | One mesh identity per profile: per-profile default storage path and an identity collision refused once with a named error; `rnsd` and interfaces stay shared | two-profile test harness (A11 handoff) | two profiles on one box connect with distinct identities; the default profile's address does not change | open, proposed 2026-11-19 (D1, D2 ruled; harness first) |
 
 ## Cross-cutting constraint: no interactive UI over LXMF
 
@@ -776,6 +777,69 @@ should not suppress formatting the peer can read.
 2026-11-11: `reticulum-mobile-app` (github.com/thatSFguy/reticulum-mobile-app) renders no
 markdown — native message bubbles, no renderer field — recorded in
 `docs/mesh-bridge-findings-2026-11-11-nonrendering-client-reticulum-mobile.md`.
+
+## Card A17: One mesh identity per profile
+
+**Build:** Give every Hermes profile its own Reticulum identity by default. The
+storage path resolves from the profile's `HERMES_HOME`
+(`$HERMES_HOME/.reticulum-gateway/storage`) instead of the hardcoded
+`~/.hermes/...`, so the default profile keeps today's path and every other
+profile gets its own `gateway_identity`. A second adapter that resolves a path
+already held in this process fails once with a named `IdentityInUse` error
+naming both profiles and the remedies, instead of retrying for the life of the
+process. Propagation policy stays per adapter: outbound node choice is
+per-router state and each profile keeps its own, and propagation downloads are
+not implemented today (spec §5), so nothing here fetches mail for either
+identity. Only the RNS instance and its interfaces are shared, by peer ruling.
+**Spec basis:** `docs/specs/adapter/a17-spec.md`. Card A11's amendment promised
+co-resident profiles could each carry their own identity, and made the ACL and
+display name profile-scoped, but the identity directory stayed global; the
+observed failure is `Attempt to register an already registered destination` on a
+30s→300s backoff that never ends (`transport.py:168-171` path default,
+`transport.py:303-315` identity registration against the process singleton).
+**Blocked by:** a two-profile test harness. A11's handoff (this file,
+"Card A11", Handoff bullet 3) records that no multiplex fixture exists, that
+A11's isolation evidence was a manual live check, and that every criterion
+needing two profiles had to be proven on a box. Rows 1, 3, 4, 6 and 7 here need
+two adapters in one process, and AGENTS.md wants re-runnable evidence, so the
+harness is the first task in this card (or a card of its own, listed here).
+Both rulings landed 2026-11-19: D1 keeps the `RETICULUM_DISPLAY_NAME` gate, D2
+refuses a conflicting RNS instance setting.
+**Acceptance:** (the same nine rows as the spec, in order)
+1. Given two profiles on one box, neither setting a storage path, When both
+   Reticulum adapters start, Then each has a distinct `gateway_identity` and
+   destination hash, and both connect.
+2. Given the default profile with nothing configured, When the adapter resolves
+   its storage path, Then `Path(storage_path)` equals `Path.home() / ".hermes" /
+   ".reticulum-gateway" / "storage"` and the pre-existing identity file is used,
+   so the address does not change.
+3. Given two adapters resolving the same storage path in one process, When the
+   second starts, Then it raises `IdentityInUse` naming both profiles and the
+   path, and the recovery layer schedules no retry.
+4. Given `gateway status` after a conflict, When it is read, Then the profile is
+   listed as a configuration conflict with the remedies, not a transport error.
+5. Given a profile with an explicit `RETICULUM_STORAGE_PATH`, When it starts,
+   Then the explicit path wins over the per-profile default.
+6. Given two adapters in one process, When both start, Then each keeps its own
+   propagation setting from its own profile and neither disables the other's.
+7. Given a second adapter whose `rns_config_path` or `require_shared_instance`
+   differs from the running instance, When it starts, Then it raises
+   `RnsInstanceConflict` naming the owning profile and both settings, no retry is
+   scheduled, and `gateway status` reports a configuration conflict.
+8. Given any start, When the Reticulum adapter comes up, Then one INFO line
+   states the instance owner and settings (`config`, `shared`, `owner`).
+9. Given a non-default profile whose previous storage path was the shared
+   default, When its gateway starts after the upgrade, Then one WARNING names
+   the old path and the new storage directory, states the copy-the-directory and
+   restart steps (ratchets included), and nothing is moved or deleted for it.
+
+**Status:** open, proposed 2026-11-19, rulings landed same day. D1: keep the
+`RETICULUM_DISPLAY_NAME` enablement gate (a new mesh profile opts in with one
+line). D2: refuse a conflicting RNS instance setting with `RnsInstanceConflict`
+and an INFO line naming the owner; a profile that needs its own RNS instance
+runs its own gateway process. Peer also ruled that sharing `rnsd` and the
+interfaces is fine, so the card only has to make the identities distinct.
+Ready to build once the two-profile harness exists.
 
 ## Branch and PR workflow
 
