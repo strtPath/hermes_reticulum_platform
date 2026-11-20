@@ -8,7 +8,7 @@ status: resolved-after-restart
 
 ## Symptom
 
-After the announce fix landed (phone hears "<redacted-identity>"), a phone → agent
+After the announce fix landed (phone hears "<new-identity>"), a phone → agent
 message arrives, the GPU generates a reply, the gateway prints
 `response ready: platform=reticulum ... response=32 chars`, but the reply
 never arrives on the phone. The phone's client shows its outbound ("hello") as
@@ -21,7 +21,7 @@ delivered — the inbound leg works.
 - **Transport `send_to` works.** Unit-tested (49 passed) and the outbound path
   logic is exercised; a path exists.
 - **Adapter connected & announced.** gateway.log: `✓ reticulum connected`
-  (19:05); agent.log: `Announced delivery identity <redacted-identity>`, periodic
+  (19:05); agent.log: `Announced delivery identity <new-identity>`, periodic
   re-announce armed. Running new code (gateway restarted 19:04 after the fix).
 - **Streaming is OFF** (not the eat-the-reply bug). `reticulum.streaming`
   resolves `False` today; NO `Suppressing normal final send` line in the log

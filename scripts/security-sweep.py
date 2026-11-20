@@ -51,6 +51,8 @@ SYNTHETIC = {
     "abcdef0123456789abcdef0123456789", "00000000000000000000000000000000",
     "1122334411223344aabbccdd11223344", "127.0.0.1:8471", "127.0.0.1:8765",
     "127.0.0.1:0", "0.0.0.0:0",
+    "aabbccddeeff00112233445566778899", "aabbccdd11223344aabbccdd11223344",
+    "bbbbbbbb", "bbbbbbbbbbbbbbbb", "127.0.0.1:7656",
 }
 
 # Short hex tokens are allowed when they are built ONLY from these fixture blocks

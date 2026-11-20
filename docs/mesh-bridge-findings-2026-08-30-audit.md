@@ -1,6 +1,6 @@
 # Bridge Audit — 2026-08-30
 
-**Ran by:** agent, deepseek-v4-pro via OpenRouter
+**Ran by:** agent (deepseek-v4-pro via OpenRouter)
 **Git HEAD:** `1d71cf3` — Revert "bridge: downlink acks + RSSI/SNR profiler + SIGTERM clean exit + 900s approval"
 **Branch:** `feat/slash-commands-and-model-pin`
 **Running bridge:** PID 599, started 2026-08-30 16:42:09 EDT, `HERMES_LIVENESS_TIMEOUT=600`, `HERMES_MESH_APPROVAL_TIMEOUT=900`, model `qwen3.8-27b@iq3_xxs`

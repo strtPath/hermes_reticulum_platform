@@ -8,7 +8,7 @@ status: fix-applied
 
 ## Symptom
 
-After the identity swap (adapter delivery identity, seen as "<redacted-identity>"), the gateway's Reticulum
+After the identity swap (adapter delivery identity, seen as "<new-identity>"), the gateway's Reticulum
 adapter connected fine (`✓ reticulum connected` in gateway.log) and had a full
 path table (18k+ entries), but the peer's phone never saw the announce and no
 inbound message could ever be delivered.
@@ -26,7 +26,7 @@ bridge (`src/hermes_reticulum/core/bridge.py`) did this correctly —
 `_start_announce_timer()` re-announces every `announce_interval_min` minutes.
 The plugin adapter inherited the identity-registration machinery but **dropped
 the announce call** when the transport was split out. Result: the peer could
-never hear "<redacted-identity>".
+never hear "<new-identity>".
 
 Red herrings ruled out along the way:
 - **RNS version mismatch** (gateway 1.5.2 vs repo/daemons 1.5.4): real drift,
@@ -65,4 +65,4 @@ Full transport suite: 49 passed. (One unrelated pre-existing failure in
   so the fixed transport is live.
 - Adapter connected 17:53:15; `outbound_stamp_costs` growing; ratchet for the
   phone (mesh peer) touched 17:53 — live ratchet exchange.
-- Pending: confirm the phone sees "<redacted-identity>" and can complete a round trip.
+- Pending: confirm the phone sees "<new-identity>" and can complete a round trip.

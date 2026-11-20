@@ -59,8 +59,8 @@ Off-grid mesh nodes can move data. They usually cannot reach a capable AI withou
 ## Quick start
 
 ```bash
-git clone https://github.com/strtPath/rns_hermes_endpoint.git
-cd rns_hermes_endpoint
+git clone https://github.com/strtPath/hermes_reticulum_platform.git
+cd hermes_reticulum_platform
 bash install.sh          # venv + both Hermes plugins + plugins.enabled entries
 ```
 

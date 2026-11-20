@@ -34,8 +34,8 @@ hermes chat -q "reply with OK only"
 ## 1. Clone and install
 
 ```bash
-git clone https://github.com/strtPath/rns_hermes_endpoint.git
-cd rns_hermes_endpoint
+git clone https://github.com/strtPath/hermes_reticulum_platform.git
+cd hermes_reticulum_platform
 bash install.sh
 ```
 

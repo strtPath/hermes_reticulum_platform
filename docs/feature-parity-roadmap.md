@@ -12,7 +12,7 @@ parity with the Hermes **Telegram** gateway, so the mesh endpoint is a first-cla
 way to talk to the agent, not a degraded one. This is a living doc — update the
 Status column as we land items._
 
-_The doc was synced on 2026-09-19 and has since been updated: CI (4.6) landed on main via PR #11, merged 2026-09-22 (merge commit `bc67f09`). Owner: agent + user._
+_The doc was synced on 2026-09-19 and has since been updated: CI (4.6) landed on main via PR #11, merged 2026-09-22 (merge commit `bc67f09`). Owner: user (agent-assisted)._
 
 ---
 
