@@ -40,6 +40,7 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A16 | `scripts/security-sweep.py` silently passes a nonexistent path argument, so `security-sweep.py origin/dev..HEAD` is a false green | - | nonexistent paths exit nonzero and a git-range-looking argument is honored or rejected loudly | code merged into dev 2026-11-21 (PR #2; same-day follow-up teaches the sweep to allow GitHub noreply author addresses) |
 | A17 | One mesh identity per profile: per-profile default storage path and an identity collision refused once with a named error; `rnsd` and interfaces stay shared | two-profile test harness (A11 handoff) | two profiles on one box connect with distinct identities; the default profile's address does not change | open, proposed 2026-11-19 (D1, D2 ruled; harness first) |
 | A18 | `docs/skills/repo-navigation.md` is stale: its code map lists five pre-move paths (`src/hermes_reticulum/{cli,core/*}.py`, now under `bridge/`), says "build cards A1-A10" while tasks.md runs to A17, and still calls `adapter` a live branch (deleted 2026-10-24) | - | every path in the navigation table resolves in-tree; card and branch references match the tree | open, proposed 2026-11-21 (PR #3 review, finding F3) |
+| A19 | License close-out per ADR-0002: pyproject still declares ranges (`rns>=1.5.4,<2.0`, `lxmf>=1.1.1,<2.0`) where the ADR decided exact pins, and the Reticulum License's field-of-use terms appear nowhere a user actually meets them — README's License section says only "MIT", install.sh never shows them, and the PyPI wheels omit them from metadata. Vendoring audit 2026-11-21: zero RNS/LXMF source blobs in all 490 public commits; keep it that way. | - | pyproject pins both deps `==` the uv.lock pair; the suite is green in both gateway modes at the pinned pair; README and install.sh both state the Reticulum License terms; the vendoring grep re-run stays empty | open, proposed 2026-11-21 (license posture review) |
 
 ## Cross-cutting constraint: no interactive UI over LXMF
 
@@ -847,6 +848,41 @@ and an INFO line naming the owner; a profile that needs its own RNS instance
 runs its own gateway process. Peer also ruled that sharing `rnsd` and the
 interfaces is fine, so the card only has to make the identities distinct.
 Ready to build once the two-profile harness exists.
+
+## Card A19: License close-out — exact pins, terms where users meet them
+
+**Build:** Finish what ADR-0002 decided. `pyproject.toml` declares `rns` and
+`lxmf` as ranges; the ADR ruled exact pins ("a range can resolve to a version
+whose source nobody here has read, which is the same exposure the vendoring
+argument rejects") and the delta was never applied. Pin both `==` the uv.lock
+resolved pair — at proposal time rns 1.6.1 / lxmf 1.3.1 — run the suite in both
+gateway modes at that pair, and record the pair in the card status line so the
+release note names it. Then put the Reticulum License where a user meets it:
+the README License section currently says only "MIT" and never mentions that
+RNS and LXMF are under the Reticulum License (MIT-shaped, two added field-of-
+use conditions, no text in the wheel metadata per the ADR); add a third-party
+notice quoting both conditions and linking
+https://reticulum.network/manual/license.html. `install.sh` prints the same
+notice before the `pip install` step, so no one installs the stack without
+seeing what they agreed to. The standalone path (`install.sh --venv PATH`,
+shared env like a site-wide `~/reticulum-env`) gets the same print.
+**Spec basis:** `docs/adr/0002-pin-rns-lxmf-not-vendor.md` (Accepted) and spec
+§11's licensing section. The audit that opened this card (2026-11-21): zero
+RNS/LXMF source blobs tracked in the tree or anywhere in the 490-commit public
+history — the no-vendoring ruling holds today; this card keeps it holding by
+making the dependency story explicit instead of implicit. This repo's own code
+stays MIT; the license obligations on the combination (transport use of
+RNS/LXMF, not dataset creation) are upstream's stated permitted use, and the
+disclosure is what keeps downstream users from tripping the terms unknowingly.
+**Blocked by:** nothing. The pin bump to rns 1.6.1 does not force this box's
+standalone bridge env (RNS 1.5.4) — install.sh builds its own venv; upgrading
+the bridge env is a separate live check on the RNode, not part of this card.
+**Acceptance:** (1) `grep '^dependencies' -A6 pyproject.toml` shows `==` for
+both rns and lxmf, matching uv.lock; (2) full suite green in real-base and CI
+stub modes at the pinned pair, failures proven pre-existing at base per house
+rule; (3) README License section and install.sh both contain the two conditions
+verbatim and the license URL; (4) `git ls-files | grep -icE '(^|/)(RNS|LXMF)/'`
+is 0 at the card's merge commit and the security sweep is clean.
 
 ## Branch and PR workflow
 
