@@ -1,5 +1,5 @@
 name: mesh-tool-gate
-version: "1.0.0"
+version: "0.3.0"
 kind: standalone
 description: >
   Pre-execution approve/deny gate for the Reticulum/LXMF mesh bridge.

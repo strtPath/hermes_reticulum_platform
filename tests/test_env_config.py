@@ -13,10 +13,12 @@ import os
 import sys
 import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from hermes_reticulum.cli import _load_dotenv  # noqa: E402
+from hermes_reticulum.bridge.cli import _load_dotenv  # noqa: E402
 from hermes_reticulum.core.acl import AccessControl  # noqa: E402
 
 ALLOWED = "11223344556677889900aabbccddeeff"
@@ -31,14 +33,14 @@ class TestDotenvReachesAcl(unittest.TestCase):
         self._saved = {
             var: os.environ.pop(var, None)
             for var in (
-                "HERMES_RETICUM_ALLOW_ALL",
-                "HERMES_RETICUM_ALLOWED_USERS",
-                "HERMES_RETICUM_BLOCKED_USERS",
+                "HERMES_RETICULUM_ALLOW_ALL",
+                "HERMES_RETICULUM_ALLOWED_USERS",
+                "HERMES_RETICULUM_BLOCKED_USERS",
             )
         }
         with open(".env", "w", encoding="utf-8") as fh:
-            fh.write("HERMES_RETICUM_ALLOW_ALL=false\n")
-            fh.write(f"HERMES_RETICUM_ALLOWED_USERS={ALLOWED}\n")
+            fh.write("HERMES_RETICULUM_ALLOW_ALL=false\n")
+            fh.write(f"HERMES_RETICULUM_ALLOWED_USERS={ALLOWED}\n")
 
     def tearDown(self):
         os.chdir(self._cwd)
@@ -60,7 +62,7 @@ class TestDotenvReachesAcl(unittest.TestCase):
 
     def test_allow_all_in_env_is_honoured_when_opted_in(self):
         with open(".env", "w", encoding="utf-8") as fh:
-            fh.write("HERMES_RETICUM_ALLOW_ALL=true\n")
+            fh.write("HERMES_RETICULUM_ALLOW_ALL=true\n")
         _load_dotenv()
         acl = AccessControl()
         self.assertTrue(acl.allow_all)
@@ -79,6 +81,60 @@ class TestDotenvReachesAcl(unittest.TestCase):
         self.assertFalse(acl.allow_all)
         self.assertEqual(acl.mode, "closed")
         self.assertFalse(acl.is_allowed(ALLOWED))
+
+
+class TestRepoRootDotenvFallback(unittest.TestCase):
+    """A run outside the checkout must still find the repository-root .env.
+
+    The documented install puts `.env` at the repository root. When the bridge
+    is launched from another directory (systemd, a different CWD), the fallback
+    must walk to the repo root, not to `src/`.
+    """
+
+    def setUp(self):
+        self._cwd = os.getcwd()
+        self._tmp = tempfile.TemporaryDirectory()
+        self._outside = tempfile.TemporaryDirectory()
+        repo = Path(self._tmp.name)
+        bridge_dir = repo / "src" / "hermes_reticulum" / "bridge"
+        bridge_dir.mkdir(parents=True)
+        self._anchor = bridge_dir / "cli.py"
+        self._anchor.touch()
+        # Only the repository-root .env exists; src/.env must not.
+        (repo / ".env").write_text(
+            "HERMES_RETICULUM_ALLOW_ALL=false\n"
+            f"HERMES_RETICULUM_ALLOWED_USERS={ALLOWED}\n",
+            encoding="utf-8",
+        )
+        os.chdir(self._outside.name)
+        self._saved = {
+            var: os.environ.pop(var, None)
+            for var in (
+                "HERMES_RETICULUM_ALLOW_ALL",
+                "HERMES_RETICULUM_ALLOWED_USERS",
+                "HERMES_RETICULUM_BLOCKED_USERS",
+            )
+        }
+
+    def tearDown(self):
+        os.chdir(self._cwd)
+        for var, value in self._saved.items():
+            if value is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = value
+        self._tmp.cleanup()
+        self._outside.cleanup()
+
+    def test_repo_root_env_is_loaded_from_outside_the_checkout(self):
+        with mock.patch("hermes_reticulum.bridge.cli.__file__", str(self._anchor)):
+            _load_dotenv()
+        acl = AccessControl()
+        self.assertEqual(acl.mode, "allowlist")
+        self.assertFalse(acl.allow_all)
+        self.assertEqual(acl.allowed_users, {ALLOWED})
+        self.assertTrue(acl.is_allowed(ALLOWED))
+        self.assertFalse(acl.is_allowed(STRANGER))
 
 
 if __name__ == "__main__":

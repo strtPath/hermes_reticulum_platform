@@ -15,7 +15,7 @@ from unittest import mock
 # Ensure project src is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))
 
-from hermes_reticulum.core.control_server import (  # noqa: E402
+from hermes_reticulum.bridge.control_server import (  # noqa: E402
     ControlServer,
     ToolStep,
     classify_tool,
@@ -469,20 +469,49 @@ class TestStatusPayloadInProcess(unittest.TestCase):
         self.assertFalse(self.server.status_payload()["session"]["running"])
 
     def test_acl_mode_reflects_env(self):
-        with mock.patch.dict(os.environ, {"HERMES_RETICUM_ALLOW_ALL": "true"}):
+        with mock.patch.dict(os.environ, {"HERMES_RETICULUM_ALLOW_ALL": "true"}):
             self.assertEqual(self.server.status_payload()["acl"], "open")
         with mock.patch.dict(
             os.environ,
-            {"HERMES_RETICUM_ALLOW_ALL": "false",
-             "HERMES_RETICUM_ALLOWED_USERS": "aa" * 16},
+            {"HERMES_RETICULUM_ALLOW_ALL": "false",
+             "HERMES_RETICULUM_ALLOWED_USERS": "aa" * 16},
         ):
             self.assertEqual(self.server.status_payload()["acl"], "allowlist")
         with mock.patch.dict(
             os.environ,
-            {"HERMES_RETICUM_ALLOW_ALL": "false",
-             "HERMES_RETICUM_ALLOWED_USERS": ""},
+            {"HERMES_RETICULUM_ALLOW_ALL": "false",
+             "HERMES_RETICULUM_ALLOWED_USERS": ""},
         ):
             self.assertEqual(self.server.status_payload()["acl"], "closed")
+
+    def test_acl_mode_default_is_closed_not_open(self):
+        """Unset HERMES_RETICULUM_ALLOW_ALL must report the deny-by-default posture.
+
+        This is the case an operator on a fresh deployment actually hits, and it is
+        the one that regressed: this status field defaulted to "true" while
+        AccessControl defaulted to "false", so a correctly locked-down mesh reported
+        itself as "open". A security report being wrong in that direction is worse
+        than the field being absent.
+        """
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for var in ("HERMES_RETICULUM_ALLOW_ALL", "HERMES_RETICULUM_ALLOWED_USERS"):
+                os.environ.pop(var, None)
+            self.assertEqual(self.server.status_payload()["acl"], "closed")
+
+    def test_acl_mode_default_agrees_with_access_control(self):
+        """Both readers of HERMES_RETICULUM_ALLOW_ALL must default to the same posture.
+
+        Two modules read this var (AccessControl and ControlServer::_acl_mode). They
+        disagreed once; this pins them together so a future edit to either one fails
+        here instead of silently reporting the wrong posture.
+        """
+        from hermes_reticulum.core.acl import AccessControl
+
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for var in ("HERMES_RETICULUM_ALLOW_ALL", "HERMES_RETICULUM_ALLOWED_USERS"):
+                os.environ.pop(var, None)
+            self.assertFalse(AccessControl().allow_all)
+            self.assertNotEqual(self.server.status_payload()["acl"], "open")
 
 
 class TestStatusHttpEndpoint(unittest.TestCase):
@@ -573,8 +602,8 @@ class TestCmdStatusOutput(unittest.TestCase):
 
     def _make_ctx(self, is_running=False, token_stats=(0, 0, None)):
         """Build a CommandContext with a stub HermesClient."""
-        from hermes_reticulum.core.commands import CommandContext
-        from hermes_reticulum.core.model_command import ModelCommandHandler
+        from hermes_reticulum.bridge.commands import CommandContext
+        from hermes_reticulum.bridge.model_command import ModelCommandHandler
 
         h = _FakeHermesClient(
             session_name="test-sesh",
@@ -591,14 +620,14 @@ class TestCmdStatusOutput(unittest.TestCase):
 
     def test_bridge_line_shows_up(self):
         ctx = self._make_ctx()
-        from hermes_reticulum.core.commands import _cmd_status
+        from hermes_reticulum.bridge.commands import _cmd_status
         out = _cmd_status(ctx, "")
         self.assertIn("Bridge:", out)
         self.assertIn("up ", out)  # uptime string present
 
     def test_turn_line_not_running(self):
         ctx = self._make_ctx()
-        from hermes_reticulum.core.commands import _cmd_status
+        from hermes_reticulum.bridge.commands import _cmd_status
         out = _cmd_status(ctx, "")
         self.assertIn("Turn:", out)
         self.assertNotIn("Running:", out)
@@ -606,7 +635,7 @@ class TestCmdStatusOutput(unittest.TestCase):
 
     def test_tools_line_format(self):
         ctx = self._make_ctx()
-        from hermes_reticulum.core.commands import _cmd_status
+        from hermes_reticulum.bridge.commands import _cmd_status
         out = _cmd_status(ctx, "")
         self.assertIn("Tools:", out)
         # Session total = 3, turn = 0 (cleared in setUp)
@@ -614,7 +643,7 @@ class TestCmdStatusOutput(unittest.TestCase):
 
     def test_tokens_not_tracked(self):
         ctx = self._make_ctx(token_stats=(0, 0, None))
-        from hermes_reticulum.core.commands import _cmd_status
+        from hermes_reticulum.bridge.commands import _cmd_status
         out = _cmd_status(ctx, "")
         self.assertIn("not tracked by bridge", out)
         self.assertNotIn("session not persisted", out)
@@ -647,8 +676,8 @@ class TestCommandDispatcherAliases(unittest.TestCase):
     """/a and /d must route to the same handlers as /approve and /deny."""
 
     def _make_ctx(self):
-        from hermes_reticulum.core.commands import CommandContext
-        from hermes_reticulum.core.model_command import ModelCommandHandler
+        from hermes_reticulum.bridge.commands import CommandContext
+        from hermes_reticulum.bridge.model_command import ModelCommandHandler
 
         h = _FakeHermesClient(session_name="test-alias", model="gpt-4o")
         # ModelCommandHandler tries to load a persisted model pin and call
@@ -662,7 +691,7 @@ class TestCommandDispatcherAliases(unittest.TestCase):
         )
 
     def test_a_routes_to_approve(self):
-        from hermes_reticulum.core.commands import CommandDispatcher
+        from hermes_reticulum.bridge.commands import CommandDispatcher
 
         ctx = self._make_ctx()
         d = CommandDispatcher(ctx)
@@ -672,7 +701,7 @@ class TestCommandDispatcherAliases(unittest.TestCase):
         self.assertIn("No pending approval", result)
 
     def test_d_routes_to_deny(self):
-        from hermes_reticulum.core.commands import CommandDispatcher
+        from hermes_reticulum.bridge.commands import CommandDispatcher
 
         ctx = self._make_ctx()
         d = CommandDispatcher(ctx)
@@ -681,7 +710,7 @@ class TestCommandDispatcherAliases(unittest.TestCase):
         self.assertIn("No pending approval", result)
 
     def test_full_words_still_work(self):
-        from hermes_reticulum.core.commands import CommandDispatcher
+        from hermes_reticulum.bridge.commands import CommandDispatcher
 
         ctx = self._make_ctx()
         d = CommandDispatcher(ctx)
@@ -691,3 +720,30 @@ class TestCommandDispatcherAliases(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAclStatusMode(unittest.TestCase):
+    """_acl_mode() must use the shared ALLOW_ALL parser (core/acl.py), so the
+    /status report and the admission gate agree on the truthy set. A local
+    tuple that omitted "on" reported "closed" for a bridge that was actually
+    open — the wrong direction for a security report to be wrong in."""
+
+    def _mode(self, env):
+        s = ControlServer(port=0)  # not started; pure _acl_mode() logic
+        with mock.patch.dict(os.environ, env, clear=True):
+            return s._acl_mode()
+
+    def test_on_is_open(self):
+        self.assertEqual(self._mode({"HERMES_RETICULUM_ALLOW_ALL": "on"}), "open")
+
+    def test_true_is_open(self):
+        self.assertEqual(self._mode({"HERMES_RETICULUM_ALLOW_ALL": "true"}), "open")
+
+    def test_unset_defaults_closed(self):
+        self.assertEqual(self._mode({}), "closed")
+
+    def test_allowlist_mode(self):
+        self.assertEqual(
+            self._mode({"HERMES_RETICULUM_ALLOWED_USERS": "aabbccdd" * 4}),
+            "allowlist",
+        )

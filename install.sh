@@ -214,12 +214,38 @@ if os.path.isfile(path):
 has_plugins_key = any(
     line.lstrip().startswith("plugins:") for line in text.splitlines()
 )
+has_approvals_key = any(
+    line.lstrip().startswith("approvals:") for line in text.splitlines()
+)
+
+if not has_plugins_key and not has_approvals_key:
+    # approvals.timeout: 900 — the gateway's default is 300s, too short for a
+    # multi-hop LoRa path plus an AFK operator; a mesh approval would fail
+    # closed before the answer arrives (spec 17.6). Ship it here so a fresh
+    # mesh install gets it without hand-editing config.
+    block = (
+        "\nplugins:\n  enabled:\n"
+        + "".join(f"    - {t}\n" for t in targets)
+        + "\n# Mesh approvals need 900s: LoRa hop latency plus an away operator.\n"
+        + "# The gateway default of 300s fails closed before the answer arrives.\n"
+        + "approvals:\n  timeout: 900\n"
+    )
+    with open(path, "a") as f:
+        f.write(block)
+    print(f"  ✓ Added plugins.enabled + approvals.timeout=900 to {path}: {', '.join(targets)}")
+    raise SystemExit(0)
 
 if not has_plugins_key:
+    # The user already has an `approvals:` block (and no `plugins:` key). Appending
+    # a second top-level `approvals:` would duplicate the key: YAML forbids that,
+    # and the load either errors or silently replaces the user's setting. Add only
+    # the plugins block here and leave approvals alone. (The merge path below
+    # handles the case where both keys exist.)
     block = "\nplugins:\n  enabled:\n" + "".join(f"    - {t}\n" for t in targets)
     with open(path, "a") as f:
         f.write(block)
     print(f"  ✓ Added plugins.enabled to {path}: {', '.join(targets)}")
+    print("    (existing approvals block left untouched)")
     raise SystemExit(0)
 
 # Slow path: a `plugins:` key exists — round-trip through YAML (comments in
@@ -249,17 +275,36 @@ if not isinstance(enabled, list):
     enabled = []
 
 added = [t for t in targets if t not in enabled]
-if not added:
-    print(f"  ✓ Plugins already enabled in {path}")
+approvals = cfg.get("approvals")
+if not isinstance(approvals, dict):
+    approvals = {}
+needs_timeout = "timeout" not in approvals
+
+if not added and not needs_timeout:
+    print(f"  ✓ Plugins already enabled and approvals.timeout already set in {path}")
     raise SystemExit(0)
 
-enabled.extend(added)
-plugins["enabled"] = enabled
-cfg["plugins"] = plugins
+if added:
+    enabled.extend(added)
+    plugins["enabled"] = enabled
+    cfg["plugins"] = plugins
+
+if needs_timeout:
+    # See the fast path above: 900s covers LoRa hop latency and an away
+    # operator; the gateway's 300s default fails closed too early (spec 17.6).
+    # An existing user value is left alone.
+    approvals["timeout"] = 900
+    cfg["approvals"] = approvals
+
 shutil.copy2(path, f"{path}.bak.{time.strftime('%Y%m%d_%H%M%S')}")
 with open(path, "w") as f:
     yaml.safe_dump(cfg, f, sort_keys=False, default_flow_style=False)
-print(f"  ✓ Enabled plugins in {path}: {', '.join(added)} (backup written)")
+changes = []
+if added:
+    changes.append(f"plugins: {', '.join(added)}")
+if needs_timeout:
+    changes.append("approvals.timeout=900")
+print(f"  ✓ Updated {path}: {'; '.join(changes)} (backup written)")
 PYEOF
 else
     echo "  ⚠ No Python found to update config.yaml."
@@ -389,14 +434,16 @@ echo ""
 echo "═══ Installation complete! ═══"
 echo ""
 echo "Next steps:"
-echo "  1. Review and edit .env for your setup."
-echo "     The bridge is DENY-BY-DEFAULT: set HERMES_RETICUM_ALLOWED_USERS to the"
+echo "  1. Gateway plugin (supported path): put RETICULUM_* and HERMES_RETICULUM_*"
+echo "     in ~/.hermes/.env (the Hermes profile .env), then restart the gateway."
+echo "     The plugin is DENY-BY-DEFAULT: set HERMES_RETICULUM_ALLOWED_USERS to the"
 echo "     LXMF hashes allowed to talk to the agent (or set"
-echo "     HERMES_RETICUM_ALLOW_ALL=true to open it to any mesh peer)."
+echo "     HERMES_RETICULUM_ALLOW_ALL=true to open it to any mesh peer)."
 echo "  2. Restart the Hermes gateway so the newly enabled plugins load."
-echo "  3. Start the bridge:  hermes-reticulum run"
-echo "  4. Note the LXMF address printed on startup"
-echo "  5. Add this address as a contact in Sideband (Android)"
+echo "  3. Archived standalone bridge (legacy): edit this repo's .env, then run:"
+echo "     hermes-reticulum run"
+echo "  4. Note the LXMF address printed on startup."
+echo "  5. Add this address as a contact in Sideband (Android)."
 echo ""
 echo "Note: the pre-execution gate waits MESH_GATE_TIMEOUT seconds (default 900)"
 echo "for your /approve verdict and fails closed on timeout. See README.md."

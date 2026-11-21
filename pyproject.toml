@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-reticulum"
-version = "0.2.0"
+version = "0.3.0"
 description = "Put an AI agent on your Reticulum mesh — reachable from off-grid RNodes, Sideband, and any LXMF client, without a central messaging server"
 readme = "README.md"
 license = {text = "MIT"}
@@ -40,16 +40,19 @@ dev = [
 ]
 
 [project.scripts]
-hermes-reticulum = "hermes_reticulum.cli:main"
+hermes-reticulum = "hermes_reticulum.bridge.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/strtPath/rns_hermes_endpoint"
-Repository = "https://github.com/strtPath/rns_hermes_endpoint"
-Issues = "https://github.com/strtPath/rns_hermes_endpoint/issues"
+Homepage = "https://github.com/strtPath/hermes_reticulum_platform"
+Repository = "https://github.com/strtPath/hermes_reticulum_platform"
+Issues = "https://github.com/strtPath/hermes_reticulum_platform/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["hermes_reticulum*"]
+
+[tool.setuptools.package-data]
+hermes_reticulum = ["mesh-tool-gate/*"]
 
 [tool.ruff]
 target-version = "py311"
@@ -57,6 +60,12 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# tests/vendor/ is a byte-identical pinned copy of the installed hook
+# (enforced by the hash check in test_mesh_tool_events_control_url.py).
+# Style fixes applied to the vendor copy would break byte identity.
+"tests/vendor/*" = ["E501", "F541", "F841"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

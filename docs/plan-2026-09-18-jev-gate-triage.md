@@ -1,6 +1,6 @@
 # Mesh-tool-gate Jev triage layer — implementation plan
 
-**Status:** proposed · **Owner:** agent · **Spec src:** `docs/mesh-bridge-findings-2026-09-17-jev-systemone-integration.md` §4
+**Status:** proposed · **Owner:** user · **Spec src:** `docs/mesh-bridge-findings-2026-09-17-jev-systemone-integration.md` §4
 
 ## Goal
 

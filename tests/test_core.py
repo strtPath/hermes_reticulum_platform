@@ -2,9 +2,9 @@
 Tests for Hermes for Reticulum.
 """
 
-import hermes_reticulum.core.hermes_client as _hc
+import hermes_reticulum.bridge.hermes_client as _hc
+from hermes_reticulum.bridge.hermes_client import HermesClient, find_hermes_bin
 from hermes_reticulum.core.acl import AccessControl
-from hermes_reticulum.core.hermes_client import HermesClient, find_hermes_bin
 
 
 def _mock_popen(monkeypatch, returncode, stdout, stderr):
@@ -36,18 +36,18 @@ class TestACL:
     """Test the access control module."""
 
     def test_open_mode(self, monkeypatch):
-        monkeypatch.setenv("HERMES_RETICUM_ALLOW_ALL", "true")
-        monkeypatch.delenv("HERMES_RETICUM_ALLOWED_USERS", raising=False)
-        monkeypatch.delenv("HERMES_RETICUM_BLOCKED_USERS", raising=False)
+        monkeypatch.setenv("HERMES_RETICULUM_ALLOW_ALL", "true")
+        monkeypatch.delenv("HERMES_RETICULUM_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("HERMES_RETICULUM_BLOCKED_USERS", raising=False)
 
         acl = AccessControl()
         assert acl.mode == "open"
         assert acl.is_allowed("aabbccdd" * 4) is True
 
     def test_allowlist_mode(self, monkeypatch):
-        monkeypatch.setenv("HERMES_RETICUM_ALLOW_ALL", "false")
-        monkeypatch.setenv("HERMES_RETICUM_ALLOWED_USERS", "aabbccdd" * 4)
-        monkeypatch.delenv("HERMES_RETICUM_BLOCKED_USERS", raising=False)
+        monkeypatch.setenv("HERMES_RETICULUM_ALLOW_ALL", "false")
+        monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", "aabbccdd" * 4)
+        monkeypatch.delenv("HERMES_RETICULUM_BLOCKED_USERS", raising=False)
 
         acl = AccessControl()
         assert acl.mode == "allowlist"
@@ -55,20 +55,20 @@ class TestACL:
         assert acl.is_allowed("11223344" * 4) is False
 
     def test_blocklist(self, monkeypatch):
-        monkeypatch.setenv("HERMES_RETICUM_ALLOW_ALL", "true")
-        monkeypatch.setenv("HERMES_RETICUM_BLOCKED_USERS", "deadbeef" * 4)
-        monkeypatch.delenv("HERMES_RETICUM_ALLOWED_USERS", raising=False)
+        monkeypatch.setenv("HERMES_RETICULUM_ALLOW_ALL", "true")
+        monkeypatch.setenv("HERMES_RETICULUM_BLOCKED_USERS", "deadbeef" * 4)
+        monkeypatch.delenv("HERMES_RETICULUM_ALLOWED_USERS", raising=False)
 
         acl = AccessControl()
         assert acl.is_allowed("deadbeef" * 4) is False
         assert acl.is_allowed("aabbccdd" * 4) is True
 
     def test_invalid_hash_ignored(self, monkeypatch):
-        monkeypatch.setenv("HERMES_RETICUM_ALLOW_ALL", "false")
+        monkeypatch.setenv("HERMES_RETICULUM_ALLOW_ALL", "false")
         # short=bad, toolong=bad, valid=good
         valid = "1122334411223344aabbccdd11223344"
-        monkeypatch.setenv("HERMES_RETICUM_ALLOWED_USERS", f"short,toolonghashvalue,{valid}")
-        monkeypatch.delenv("HERMES_RETICUM_BLOCKED_USERS", raising=False)
+        monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", f"short,toolonghashvalue,{valid}")
+        monkeypatch.delenv("HERMES_RETICULUM_BLOCKED_USERS", raising=False)
 
         acl = AccessControl()
         # Only the valid 32-char hash should be in the set
@@ -90,7 +90,7 @@ class TestFindHermesBin:
         fake.chmod(0o755)
 
         # Patch the candidates list
-        import hermes_reticulum.core.hermes_client as hc
+        import hermes_reticulum.bridge.hermes_client as hc
         original = hc._HERMES_CANDIDATES
         hc._HERMES_CANDIDATES = [str(fake)]
         try:
@@ -100,7 +100,7 @@ class TestFindHermesBin:
 
     def test_not_found(self, monkeypatch):
         monkeypatch.setattr("shutil.which", lambda x: None)
-        import hermes_reticulum.core.hermes_client as hc
+        import hermes_reticulum.bridge.hermes_client as hc
         original = hc._HERMES_CANDIDATES
         hc._HERMES_CANDIDATES = []
         try:
@@ -114,7 +114,7 @@ class TestHermesClient:
 
     def test_chat_returns_reply(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_reticulum.core.hermes_client.find_hermes_bin",
+            "hermes_reticulum.bridge.hermes_client.find_hermes_bin",
             lambda: "/usr/bin/hermes",
         )
         # Isolate from the real ~/.hermes/state.db: with no DB the session
@@ -127,7 +127,7 @@ class TestHermesClient:
 
     def test_chat_handles_timeout(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_reticulum.core.hermes_client.find_hermes_bin",
+            "hermes_reticulum.bridge.hermes_client.find_hermes_bin",
             lambda: "/usr/bin/hermes",
         )
         client = HermesClient(timeout=300)
@@ -147,7 +147,7 @@ class TestHermesClient:
 
         monkeypatch.setattr("subprocess.run", mock_run)
         monkeypatch.setattr(
-            "hermes_reticulum.core.hermes_client.find_hermes_bin",
+            "hermes_reticulum.bridge.hermes_client.find_hermes_bin",
             lambda: "/nonexistent/hermes",
         )
 
@@ -157,7 +157,7 @@ class TestHermesClient:
 
     def test_chat_handles_nonzero_exit(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_reticulum.core.hermes_client.find_hermes_bin",
+            "hermes_reticulum.bridge.hermes_client.find_hermes_bin",
             lambda: "/usr/bin/hermes",
         )
         _mock_popen(monkeypatch, 1, "", "Error: something broke")
@@ -171,14 +171,42 @@ class TestVersion:
 
     def test_version_importable(self):
         from hermes_reticulum import __version__
-        assert __version__ == "0.2.0"
+        assert __version__ == "0.3.0"
+
+    def test_plugin_manifests_match_package_version(self):
+        """Both plugin.yaml manifests must track __version__ (review D-note:
+        five version sites hand-edited once is one too many)."""
+        import re
+        from pathlib import Path
+
+        from hermes_reticulum import __version__
+
+        manifest_paths = [
+            Path(__file__).resolve().parent.parent
+            / "plugins" / "reticulum" / "plugin.yaml",
+            Path(__file__).resolve().parent.parent
+            / "src" / "hermes_reticulum" / "mesh-tool-gate" / "plugin.yaml",
+        ]
+        checked = 0
+        for path in manifest_paths:
+            if not path.exists():
+                continue  # e.g. running against an installed wheel without plugins/
+            match = re.search(
+                r'^version:\s*"?([^"\n]+)"?', path.read_text(), re.MULTILINE
+            )
+            assert match, f"no version field in {path}"
+            assert match.group(1).strip() == __version__, (
+                f"{path}: version {match.group(1)!r} != __version__ {__version__!r}"
+            )
+            checked += 1
+        assert checked >= 1, "no plugin manifests found to check"
 
 
 class TestBridgeLiveness:
     """Test the Tier 4.5 bridge liveness proxy (Option 3b)."""
 
     def _lv(self, tmp_path, healthy=True, interval=60.0):
-        from hermes_reticulum.core import bridge_liveness as bl
+        from hermes_reticulum.bridge import bridge_liveness as bl
 
         sent = []
         lv = bl.BridgeLiveness(
@@ -199,8 +227,8 @@ class TestBridgeLiveness:
         lv.stop()
 
     def test_tick_healthy_writes_marker_and_pings(self, tmp_path):
-        import os
         import json
+        import os
         lv, sent = self._lv(tmp_path, healthy=True)
         lv.start()
         sent.clear()
@@ -235,7 +263,7 @@ class TestBridgeLiveness:
 
     def test_sd_notify_no_socket_returns_false(self, monkeypatch):
         monkeypatch.delenv("NOTIFY_SOCKET", raising=False)
-        from hermes_reticulum.core.bridge_liveness import sd_notify
+        from hermes_reticulum.bridge.bridge_liveness import sd_notify
         assert sd_notify("WATCHDOG=1") is False
 
     def test_sd_notify_sends_to_socket(self, tmp_path, monkeypatch):
@@ -244,7 +272,7 @@ class TestBridgeLiveness:
         recv = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         recv.bind(str(tmp_path / "notify.sock"))
         try:
-            from hermes_reticulum.core.bridge_liveness import sd_notify
+            from hermes_reticulum.bridge.bridge_liveness import sd_notify
             assert sd_notify("WATCHDOG=1") is True
             data, _ = recv.recvfrom(64)
             assert data == b"WATCHDOG=1"
@@ -252,23 +280,25 @@ class TestBridgeLiveness:
             recv.close()
 
     def test_default_probe_fresh(self, monkeypatch):
-        import RNS
         import time
+
+        import RNS
         monkeypatch.setattr(RNS.Transport, "interface_last_jobs", time.time())
-        from hermes_reticulum.core.bridge_liveness import default_rns_probe
+        from hermes_reticulum.bridge.bridge_liveness import default_rns_probe
         assert default_rns_probe() is True
 
     def test_default_probe_stale(self, monkeypatch):
-        import RNS
         import time
+
+        import RNS
         monkeypatch.setattr(RNS.Transport, "interface_last_jobs", time.time() - 9999)
-        from hermes_reticulum.core.bridge_liveness import default_rns_probe
+        from hermes_reticulum.bridge.bridge_liveness import default_rns_probe
         assert default_rns_probe() is False
 
     def test_default_probe_never_set(self, monkeypatch):
         import RNS
         monkeypatch.setattr(RNS.Transport, "interface_last_jobs", 0.0)
-        from hermes_reticulum.core.bridge_liveness import default_rns_probe
+        from hermes_reticulum.bridge.bridge_liveness import default_rns_probe
         assert default_rns_probe() is False
 
     def test_stop_is_idempotent(self, tmp_path):
@@ -282,7 +312,7 @@ class TestPreflight:
     """Test the preflight check module."""
 
     def test_ok_when_binary_exists(self, monkeypatch, tmp_path):
-        from hermes_reticulum.core.preflight import run_preflight
+        from hermes_reticulum.bridge.preflight import run_preflight
 
         fake_bin = tmp_path / "hermes"
         fake_bin.write_text("#!/bin/sh\necho hermes version 0.1.0")
@@ -304,7 +334,7 @@ class TestPreflight:
             assert "binary" not in e.lower()
 
     def test_error_when_binary_missing(self, monkeypatch, tmp_path):
-        from hermes_reticulum.core.preflight import run_preflight
+        from hermes_reticulum.bridge.preflight import run_preflight
 
         result = run_preflight(
             hermes_bin=str(tmp_path / "nonexistent"),
@@ -316,7 +346,7 @@ class TestPreflight:
         assert any("does not exist" in e for e in result.errors)
 
     def test_render_includes_errors(self, monkeypatch, tmp_path):
-        from hermes_reticulum.core.preflight import PreflightResult
+        from hermes_reticulum.bridge.preflight import PreflightResult
 
         result = PreflightResult(ok=False)
         result.errors.append("Test error one")
@@ -327,7 +357,7 @@ class TestPreflight:
         assert "cannot start" in rendered
 
     def test_render_ok_only_checks(self):
-        from hermes_reticulum.core.preflight import PreflightResult
+        from hermes_reticulum.bridge.preflight import PreflightResult
 
         result = PreflightResult(ok=True)
         result.checks.append("Hermes binary: /usr/bin/hermes")
@@ -336,7 +366,7 @@ class TestPreflight:
         assert "cannot start" not in rendered
 
     def test_storage_warning_when_missing(self, monkeypatch, tmp_path):
-        from hermes_reticulum.core.preflight import run_preflight
+        from hermes_reticulum.bridge.preflight import run_preflight
 
         result = run_preflight(
             hermes_bin="/usr/bin/hermes",
@@ -347,7 +377,7 @@ class TestPreflight:
         assert any("does_not_exist" in w for w in result.warnings)
 
     def test_config_warning_when_missing(self, monkeypatch, tmp_path):
-        from hermes_reticulum.core.preflight import run_preflight
+        from hermes_reticulum.bridge.preflight import run_preflight
 
         result = run_preflight(
             hermes_bin="/usr/bin/hermes",
@@ -358,7 +388,7 @@ class TestPreflight:
         assert any("config not found" in w for w in result.warnings)
 
     def test_plugin_warning_when_missing(self, monkeypatch, tmp_path):
-        from hermes_reticulum.core.preflight import run_preflight
+        from hermes_reticulum.bridge.preflight import run_preflight
 
         # Point HOME at tmp_path so ~/.hermes/plugins doesn't exist
         monkeypatch.setenv("HOME", str(tmp_path))

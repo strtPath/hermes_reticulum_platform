@@ -87,7 +87,6 @@ class TestOperatorOverrides(unittest.TestCase):
             self.assertEqual(tool_emoji("read_file"), "📖")  # unoverridden tools untouched
 
     def test_unreadable_override_file_is_ignored(self):
-        import json
         import tempfile
 
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
@@ -116,7 +115,7 @@ class TestTableShape(unittest.TestCase):
         # rather than the generic fallback. Assert PRESENCE first — a name
         # absent from the table silently passed the old version of this test
         # while rendering ⚙️ in the field.
-        from hermes_reticulum.core.control_server import RISKY_TOOLS, SAFE_TOOLS
+        from hermes_reticulum.bridge.control_server import RISKY_TOOLS, SAFE_TOOLS
 
         for name in sorted(set(SAFE_TOOLS) | set(RISKY_TOOLS)):
             self.assertIn(
@@ -199,8 +198,14 @@ class TestParityWithInstalledGateway(unittest.TestCase):
     # live names), `page_info` is a browser_exec helper function, and the
     # holographic-memory plugin registers fact_store/fact_feedback with no emoji
     # at all. These are deliberate local entries, not drift, so the parity check
-    # does not require upstream to know them.
-    _ALIASES = {"todo", "cronjob", "page_info", "fact_store", "fact_feedback"}
+    # does not require upstream to know them. `browser_vault_*` were folded into
+    # the single `browser_vault` tool; `setup_mcp` was renamed to
+    # manage_connections (upstream replays cached prompts under the old name).
+    _ALIASES = {
+        "todo", "cronjob", "page_info", "fact_store", "fact_feedback",
+        "browser_vault_enter_code", "browser_vault_fill", "browser_vault_list",
+        "browser_vault_save_login", "browser_vault_unlock", "setup_mcp",
+    }
 
     def test_probe_sees_the_real_registry(self):
         """Guard against a vacuous pass over a partially-loaded registry."""

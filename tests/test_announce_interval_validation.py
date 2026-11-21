@@ -19,7 +19,7 @@ class TestAnnounceGuard(unittest.TestCase):
     """The announce() method guard rejects non-finite cadences up front."""
 
     def _bare_bridge(self):
-        from hermes_reticulum.core.bridge import LXMFBridge
+        from hermes_reticulum.bridge.bridge import LXMFBridge
 
         b = LXMFBridge.__new__(LXMFBridge)
         b._announce_lock = mock.MagicMock()
@@ -76,7 +76,7 @@ class TestAnnounceEnvParse(unittest.TestCase):
     """
 
     def _construct(self):
-        from hermes_reticulum.core.bridge import LXMFBridge
+        from hermes_reticulum.bridge.bridge import LXMFBridge
 
         return LXMFBridge(display_name="test")
 

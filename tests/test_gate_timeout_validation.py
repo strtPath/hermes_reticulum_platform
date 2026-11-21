@@ -13,7 +13,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from hermes_reticulum.cli import _validate_gate_timeouts  # noqa: E402
+from hermes_reticulum.bridge.cli import _validate_gate_timeouts  # noqa: E402
 
 
 class TestGateTimeoutValidation(unittest.TestCase):
