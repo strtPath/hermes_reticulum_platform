@@ -40,7 +40,7 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A16 | `scripts/security-sweep.py` silently passes a nonexistent path argument, so `security-sweep.py origin/dev..HEAD` is a false green | - | nonexistent paths exit nonzero and a git-range-looking argument is honored or rejected loudly | code merged into dev 2026-11-21 (PR #2; same-day follow-up teaches the sweep to allow GitHub noreply author addresses) |
 | A17 | One mesh identity per profile: per-profile default storage path and an identity collision refused once with a named error; `rnsd` and interfaces stay shared | two-profile test harness (A11 handoff) | two profiles on one box connect with distinct identities; the default profile's address does not change | open, proposed 2026-11-19 (D1, D2 ruled; harness first) |
 | A18 | `docs/skills/repo-navigation.md` is stale: its code map lists five pre-move paths (`src/hermes_reticulum/{cli,core/*}.py`, now under `bridge/`), says "build cards A1-A10" while tasks.md runs to A17, and still calls `adapter` a live branch (deleted 2026-10-24) | - | every path in the navigation table resolves in-tree; card and branch references match the tree | open, proposed 2026-11-21 (PR #3 review, finding F3) |
-| A19 | License close-out per ADR-0002: pyproject still declares ranges (`rns>=1.5.4,<2.0`, `lxmf>=1.1.1,<2.0`) where the ADR decided exact pins, and the Reticulum License's field-of-use terms appear nowhere a user actually meets them — README's License section says only "MIT", install.sh never shows them, and the PyPI wheels omit them from metadata. Vendoring audit 2026-11-21: zero RNS/LXMF source blobs in all 490 public commits; keep it that way. | - | pyproject pins both deps `==` the uv.lock pair; the suite is green in both gateway modes at the pinned pair; README and install.sh both state the Reticulum License terms; the vendoring grep re-run stays empty | open, proposed 2026-11-21 (license posture review) |
+| A19 | License close-out per ADR-0002: pyproject still declares ranges (`rns>=1.5.4,<2.0`, `lxmf>=1.1.1,<2.0`) where the ADR decided exact pins, and the Reticulum License's field-of-use terms appear nowhere a user actually meets them — README's License section says only "MIT", install.sh never shows them, and the PyPI wheels carry no terms text. Vendoring audit 2026-11-21: zero RNS/LXMF source blobs in the 251-commit public history (`git rev-list --objects --remotes`) and in every local ref; keep it that way. | - | pins match uv.lock under `uv lock --check` plus a test; suite at the pinned pair with only the two named known reds; README and install.sh state the terms verbatim, test-grepped; the vendoring content-check stays empty | open, proposed 2026-11-21 (PR #4; senior A1-A11 folded) |
 
 ## Cross-cutting constraint: no interactive UI over LXMF
 
@@ -68,7 +68,9 @@ See the A5 card record.
 
 Parked, not forgotten: cron-over-RNS delivery vehicle (community LXMF bot note, §21.3 item 8
 in `plan.md`), `standalone_sender_fn` design question, P-2 map,
-P-3 media, P-4 NomadNet channel, P-9 gateway watchdog, RNS version pin (§14).
+P-3 media, P-4 NomadNet channel, P-9 gateway watchdog. (The RNS version pin,
+long parked here as "§14", is carded now — A19; the §14 pointer was a
+misreference, the licensing section is §11.)
 
 **Owner request 2026-10-28 — spec pass next:** inbound image support (P-14 media,
 image-in half): a client attaches an image to a mesh DM; the adapter carries it
@@ -852,37 +854,68 @@ Ready to build once the two-profile harness exists.
 ## Card A19: License close-out — exact pins, terms where users meet them
 
 **Build:** Finish what ADR-0002 decided. `pyproject.toml` declares `rns` and
-`lxmf` as ranges; the ADR ruled exact pins ("a range can resolve to a version
-whose source nobody here has read, which is the same exposure the vendoring
-argument rejects") and the delta was never applied. Pin both `==` the uv.lock
-resolved pair — at proposal time rns 1.6.1 / lxmf 1.3.1 — run the suite in both
-gateway modes at that pair, and record the pair in the card status line so the
-release note names it. Then put the Reticulum License where a user meets it:
-the README License section currently says only "MIT" and never mentions that
-RNS and LXMF are under the Reticulum License (MIT-shaped, two added field-of-
-use conditions, no text in the wheel metadata per the ADR); add a third-party
-notice quoting both conditions and linking
-https://reticulum.network/manual/license.html. `install.sh` prints the same
-notice before the `pip install` step, so no one installs the stack without
-seeing what they agreed to. The standalone path (`install.sh --venv PATH`,
-shared env like a site-wide `~/reticulum-env`) gets the same print.
-**Spec basis:** `docs/adr/0002-pin-rns-lxmf-not-vendor.md` (Accepted) and spec
-§11's licensing section. The audit that opened this card (2026-11-21): zero
-RNS/LXMF source blobs tracked in the tree or anywhere in the 490-commit public
-history — the no-vendoring ruling holds today; this card keeps it holding by
-making the dependency story explicit instead of implicit. This repo's own code
-stays MIT; the license obligations on the combination (transport use of
-RNS/LXMF, not dataset creation) are upstream's stated permitted use, and the
-disclosure is what keeps downstream users from tripping the terms unknowingly.
-**Blocked by:** nothing. The pin bump to rns 1.6.1 does not force this box's
-standalone bridge env (RNS 1.5.4) — install.sh builds its own venv; upgrading
-the bridge env is a separate live check on the RNode, not part of this card.
-**Acceptance:** (1) `grep '^dependencies' -A6 pyproject.toml` shows `==` for
-both rns and lxmf, matching uv.lock; (2) full suite green in real-base and CI
-stub modes at the pinned pair, failures proven pre-existing at base per house
-rule; (3) README License section and install.sh both contain the two conditions
-verbatim and the license URL; (4) `git ls-files | grep -icE '(^|/)(RNS|LXMF)/'`
-is 0 at the card's merge commit and the security sweep is clean.
+`lxmf` as ranges; the ADR ruled exact pins — "a range can resolve to a version
+whose source nobody here has read" — and spec §11 completes the thought: "the
+same exposure the vendoring argument rejects." The delta was never applied.
+Pin both `==` the uv.lock resolved pair — at proposal time rns 1.6.1 /
+lxmf 1.3.1 — run the suite in both gateway modes at that pair, and record the
+pair in the card status line so the release note names it. Then put the
+Reticulum License where a user meets it. The README License section says only
+"MIT"; the wheels carry `License: Reticulum License` in metadata with no terms
+text; the terms themselves live in three places upstream (the license page,
+the RNS `__init__.py` header, each source file) and nowhere downstream. The
+license is MIT-shaped with three obligations: the copyright/permission notice
+travels with any copy, no use in systems purposefully designed to cause harm
+to human beings, and no use in creating AI/ML training datasets. Canonical
+source: https://reticulum.network/manual/license.html. Add a third-party
+notice to the README quoting them, and make `install.sh` print the same notice
+before its `pip install` step — on both the default-venv path and
+`--venv PATH` (which installs this package, and with it rns/lxmf, into a
+chosen existing venv rather than creating one).
+**Spec basis:** `docs/adr/0002-pin-rns-lxmf-not-vendor.md` (Accepted) and the
+licensing half of spec §11; the instance-sharing half of §11 covers why one
+rnsd serves several adapters. The ADR's own "spec §14" implementation-delta
+pointer is a misreference — §14 is error taxonomy — and the un-carded list in
+this file kept the pin parked under the same wrong pointer until this card;
+both corrected above.
+**License posture, honestly stated:** the Reticulum License grants use subject
+to its conditions; no clause names "dependency" or "transport" use as a
+permitted category. Our reading — ours, not an upstream blessing — is that
+installing rns/lxmf from PyPI at setup time and running them as the mesh
+transport sits inside the grant, while vendoring their source into a
+crawler-visible public repository is the exposure the dataset clause aims at.
+Upstream's PyPI pages for rns/lxmf carry an explicit warning about downstream
+liability for LLM-derived projects; this project is adjacent to exactly that
+warning, which is why install-time disclosure is part of this card and not
+optional polish.
+**State on this box (checked 2026-11-21):** the supported gateway path
+imports RNS from the venv named in `~/.hermes/plugins/reticulum/venv_path.txt`
+(Projects/rns_hermes_endpoint_private/venv), which already runs rns 1.6.1 and
+lxmf 1.3.1 — the pin codifies the live state rather than changing it, and no
+rns 1.5.4 exists on this box. The same fact cuts the other way: that venv is
+the live adapter's import root, so an `install.sh` re-run here touches the
+running gateway. Do not re-run install.sh on this box until the pinned pair
+has had its live check on the RNode.
+**Blocked by:** nothing.
+**Acceptance:**
+1. `uv lock --check` passes and a test asserts pyproject's pinned rns and
+   lxmf versions equal the uv.lock resolved pair; no range specifiers left.
+2. Suite run in real-base and CI-stub modes at the pinned pair. Name the two
+   known reds so review does not chase them:
+   `test_core.py::TestBridgeLiveness::test_sd_notify_sends_to_socket` and
+   `test_tool_emoji.py::TestParityWithInstalledGateway::test_table_has_no_undeclared_extras`
+   — both reproduce at dev in the same environment (measured 2026-11-21,
+   2 failed / 647 passed / 4 skipped); any other failure must be proven
+   pre-existing at base per the house rule.
+3. README License section and install.sh both contain the dataset-clause
+   sentence verbatim ("shall not be used, directly or indirectly, in the
+   creation of an artificial intelligence…") and the license URL — asserted
+   by a test that greps both files, not by review prose.
+4. Still no vendored RNS/LXMF at the merge commit: `git grep -l -E 'This file
+   is part of RNS|^# Reticulum License' -- ':!docs'` returns nothing; no
+   tracked path names an rns/lxmf wheel or sdist; and
+   `git ls-files | { grep -icE '(^|/)(RNS|LXMF)/' || true; }` stays 0 (the
+   `|| true` keeps a zero count from reading as command failure).
 
 ## Branch and PR workflow
 
