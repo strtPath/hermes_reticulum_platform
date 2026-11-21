@@ -818,7 +818,7 @@ class TestAnnounceOnStart:
     def test_start_announces_destination_immediately(self, fake_rns, tmp_path):
         t = transport_module.ReticulumTransport(
             storage_path=str(tmp_path / "storage"),
-            display_name="<redacted-identity>",
+            display_name="mesh-test",
         )
         t.start()
         # The destination is the _FakeDestination from register_delivery_identity;

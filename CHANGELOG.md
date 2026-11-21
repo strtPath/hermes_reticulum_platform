@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.3.0] — 2026-11-21
+## [0.3.0] — 2026-11-20
 
 ### Added
 - **Gateway adapter as the primary mesh path**: the Reticulum/LXMF delivery
@@ -20,7 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Word-boundary-aware chunking**: long outbound replies split at word
   boundaries rather than mid-word (PR #41).
 - **False-desync detection fixed** (card A12, PR #40) and per-profile secret
-  isolation documented and enforced (card A11).
+  isolation documented and verified on a live two-profile broker
+  (enforcement lives in Hermes' secret scope; card A11).
 - **PII sweep gate**: `scripts/security-sweep.py` runs in CI over the pushed
   tree *and* the commit range of every push/PR, with a matching pre-push hook
   (PR #32) and a written policy in `docs/PII-RULES.md`.
@@ -31,8 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Control server binds loopback-only and requires a token.
 - Version metadata aligned across package and plugin manifests.
 
-### Removed
-- The standalone bridge service as a supported install path (archived).
+### Deprecated
+- The standalone bridge service as a supported install path: archived, no
+  longer the documented way to run the mesh path (still ships, bug fixes only).
 
 ## [0.2.0] — 2026-09-19
 
@@ -71,4 +73,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   semantically meaningless (e.g. negative or non-finite gate timeouts).
 
 [0.3.0]: https://github.com/strtPath/hermes_reticulum_platform/releases/tag/v0.3.0
-[0.2.0]: https://github.com/strtPath/hermes_reticulum_platform/releases/tag/v0.2.0

@@ -346,7 +346,7 @@ class ReticulumTransport:
         # Announce the delivery identity NOW and schedule periodic
         # re-announces. RNS/LXMF do NOT auto-announce a delivery destination
         # on registration — without this explicit announce the peer never
-        # hears "<redacted-identity>", even though the stack is fully connected (the
+        # hears the display name, even though the stack is fully connected (the
         # source of the "hasn't announced in 20 hours" symptom). Mirror the
         # bridge's core/bridge.py announce path exactly: an immediate
         # destination.announce(), then a daemon-thread timer at

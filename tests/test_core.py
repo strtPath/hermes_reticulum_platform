@@ -173,6 +173,34 @@ class TestVersion:
         from hermes_reticulum import __version__
         assert __version__ == "0.3.0"
 
+    def test_plugin_manifests_match_package_version(self):
+        """Both plugin.yaml manifests must track __version__ (review D-note:
+        five version sites hand-edited once is one too many)."""
+        import re
+        from pathlib import Path
+
+        from hermes_reticulum import __version__
+
+        manifest_paths = [
+            Path(__file__).resolve().parent.parent
+            / "plugins" / "reticulum" / "plugin.yaml",
+            Path(__file__).resolve().parent.parent
+            / "src" / "hermes_reticulum" / "mesh-tool-gate" / "plugin.yaml",
+        ]
+        checked = 0
+        for path in manifest_paths:
+            if not path.exists():
+                continue  # e.g. running against an installed wheel without plugins/
+            match = re.search(
+                r'^version:\s*"?([^"\n]+)"?', path.read_text(), re.MULTILINE
+            )
+            assert match, f"no version field in {path}"
+            assert match.group(1).strip() == __version__, (
+                f"{path}: version {match.group(1)!r} != __version__ {__version__!r}"
+            )
+            checked += 1
+        assert checked >= 1, "no plugin manifests found to check"
+
 
 class TestBridgeLiveness:
     """Test the Tier 4.5 bridge liveness proxy (Option 3b)."""
