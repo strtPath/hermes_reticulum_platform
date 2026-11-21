@@ -151,3 +151,110 @@ def test_clean_history_passes(repo: Path) -> None:
     commit(repo, "base")
 
     assert sweep(repo, "--commits", "HEAD", "--not", "--remotes").returncode == 0
+
+
+# --- A16: argument validation (card A16, docs/specs/adapter/tasks.md) -------
+# A nonexistent positional used to print the clean line and exit 0, so
+# `security-sweep.py origin/dev..HEAD` was a green light that scanned nothing.
+
+
+def test_a16_01_nonexistent_path_is_an_error_not_a_pass(repo: Path) -> None:
+    (repo / "a.md").write_text("safe\n")
+    commit(repo, "base")
+
+    result = sweep(repo, "docs/nope.md")
+
+    assert result.returncode == 2, result.stderr
+    assert "error: no such file: docs/nope.md" in result.stderr
+    assert "clean" not in result.stdout
+
+
+def test_a16_02_dot_range_positional_is_honored_as_commits(repo: Path) -> None:
+    (repo / "a.md").write_text("safe\n")
+    commit(repo, "base")
+    (repo / "doc.md").write_text(f"peer: {LEAK}\n")
+    commit(repo, "add doc")
+    (repo / "doc.md").write_text("peer: <peer-A>\n")
+    commit(repo, "redact")
+
+    # The naive positional form must behave like --commits HEAD~2..HEAD:
+    # scan the range, find the value the later commit redacted. (The range must
+    # actually span the leak commit - HEAD~1..HEAD would correctly select only
+    # the clean redact commit.)
+    result = sweep(repo, "HEAD~2..HEAD")
+
+    assert result.returncode == 1, result.stdout
+    assert "doc.md" in result.stdout
+
+
+def test_a16_03_empty_positional_is_not_reported_clean(repo: Path) -> None:
+    (repo / "a.md").write_text("safe\n")
+    commit(repo, "base")
+
+    result = sweep(repo, "")
+
+    assert result.returncode == 2, result.stderr
+    assert "refusing to report clean" in result.stderr
+    assert "clean" not in result.stdout
+
+
+def test_a16_04_staged_mode_missing_index_path_is_an_error(repo: Path) -> None:
+    (repo / "a.md").write_text("safe\n")
+    commit(repo, "base")
+
+    result = sweep(repo, "--staged", "never-added.md")
+
+    assert result.returncode == 2, result.stderr
+    assert "not in git index: never-added.md" in result.stderr
+    assert "clean" not in result.stdout
+
+
+def test_a16_05_existing_paths_still_scan_normally(repo: Path) -> None:
+    (repo / "safe.md").write_text("fine\n")
+    (repo / "bad.md").write_text(f"peer: {LEAK}\n")
+
+    assert sweep(repo, "safe.md").returncode == 0
+    leaky = sweep(repo, "bad.md")
+    assert leaky.returncode == 1
+    assert "bad.md" in leaky.stdout
+
+
+def test_a16_06_directory_argument_is_loudly_not_a_file(repo: Path) -> None:
+    (repo / "scripts").mkdir()
+    (repo / "a.md").write_text("safe\n")
+    commit(repo, "base")
+
+    result = sweep(repo, "scripts")
+
+    assert result.returncode == 2, result.stderr
+    assert "not a file: scripts" in result.stderr
+    assert "clean" not in result.stdout
+
+
+def test_a16_07_range_and_path_together_scan_both(repo: Path) -> None:
+    (repo / "a.md").write_text("safe\n")
+    commit(repo, "base")
+    (repo / "doc.md").write_text(f"peer: {LEAK}\n")
+    commit(repo, "add doc")
+    (repo / "doc.md").write_text("peer: <peer-A>\n")
+    commit(repo, "redact")
+    # Uncommitted leak: only a PATH scan can see it. The range scan must not
+    # absorb the mode and silently drop the named path.
+    (repo / "leaky.md").write_text(f"peer: {LEAK}\n")
+
+    result = sweep(repo, "HEAD~2..HEAD", "leaky.md")
+
+    assert result.returncode == 1, result.stdout
+    assert "doc.md" in result.stdout  # from the range scan
+    assert "leaky.md" in result.stdout  # from the path scan
+
+
+def test_a16_08_bare_dotdot_is_a_path_error_not_a_range(repo: Path) -> None:
+    (repo / "a.md").write_text("safe\n")
+    commit(repo, "base")
+
+    result = sweep(repo, "..")
+
+    assert result.returncode == 2, result.stderr
+    assert "not a file: .." in result.stderr
+    assert "clean" not in result.stdout

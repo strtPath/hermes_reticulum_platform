@@ -750,8 +750,9 @@ simply absent) in the same commit.
 Adjacent, same pass: the script docstring claims coverage of `~/...` paths, but the
 HOMEPATH rule (`scripts/security-sweep.py:46`) only matches absolute `/home/<user>` /
 `/Users/<user>` — correct the docstring or the rule.
-**Status:** open, proposed 2026-11-15 (from senior review of PR #43). Tooling only; no
-shipping-code change.
+**Status:** code in-review (branch `step/A16-sweep-arg-validation`, PR #2, evidence in the A16
+section of `verification.md`), proposed 2026-11-15 (from senior review of PR #43). Tooling only;
+no shipping-code change.
 
 ## Card A13: `platform_hint` no longer forbids markdown
 

@@ -209,3 +209,33 @@ from a deny — known residue, card A14.
 
 Red-before, recorded: the previous string ("Messages are plain text only — no markdown
 formatting") fails rows 1 and 2 of the assertion set; only the bandwidth check passes.
+
+## Card A16: security-sweep blesses nonexistent paths
+
+| # | Acceptance criterion | Evidence | Result | Gap |
+|---|---|---|---|---|
+| 1 | Nonexistent path argument exits nonzero naming the path, no "clean" line | `test_a16_01_nonexistent_path_is_an_error_not_a_pass` (exit 2, `error: no such file: <path>` on stderr, clean line absent) | PASS | - |
+| 2 | Positional matching `a..b` is honored as a commit range, never scanned as a literal path | `test_a16_02_dot_range_positional_is_honored_as_commits` (bare `HEAD~2..HEAD` finds the value a later commit redacted, as `--commits` would); `RANGEISH.fullmatch` + not-exists guard keeps real dotted paths in path mode | PASS | - |
+| 3 | Empty positional exits nonzero rather than reporting clean | `test_a16_03_empty_positional_is_not_reported_clean` (exit 2, "refusing to clean" on stderr) | PASS | - |
+| 4 | Commit-time loop does not cry PII on staged deletions | `docs/PII-RULES.md` loop now `git diff --cached --name-only --diff-filter=d` with the rationale note | PASS | - |
+| 5 | Docstring no longer claims `~/...` coverage the rule lacks | docstring homepath bullet states `~/...` is NOT scanned; rule (`HOMEPATH`) unchanged | PASS | - |
+
+Same-class hardening beyond the card's bullets: `--staged` with a path absent from
+the index exits 2 naming it (`test_a16_04_staged_mode_missing_index_path_is_an_error`);
+a failing `git rev-list` for a routed range exits 2 with the git error instead of a
+traceback, and a routed positional that resolves neither way says so in those words.
+A directory argument fails as `not a file`; a bare `..` is a path error, not a range
+(`test_a16_08_bare_dotdot_is_a_path_error_not_a_range`); a range and named paths
+together scan both instead of silently dropping the paths
+(`test_a16_07_range_and_path_together_scan_both`). The error contract the docs
+advertise is pinned in the tests: exit 2, message on stderr. Path mode still scans
+normally (`test_a16_05_existing_paths_still_scan_normally`). No caller depended on
+the silent skip: every call site (`.githooks/pre-push`, `.github/workflows/ci.yml`)
+uses no-args or explicit `--commits` form. The commit-deletion fix also reaches the
+second copy of the loop, in `docs/skills/pii-check-before-commit-and-pr.md`.
+
+Red-before, recorded at branch base dev@b321a24: `test_a16_01`-`test_a16_04` fail
+(the sweep prints clean and exits 0 for each), `test_a16_05` green. Green after,
+both modes: `tests/test_security_sweep.py` 15 passed; full suite at the final rebased
+tree 646 passed / 4 skipped / 1 failed (`test_tool_emoji` parity - pre-existing on
+dev, verified in the A4 pass, unrelated).

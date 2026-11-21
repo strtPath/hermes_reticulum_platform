@@ -61,10 +61,14 @@ when neither is fetched.
 Sweep the staged diff as well, so a leak is caught at commit time and not only at push time:
 
 ```bash
-git diff --cached --name-only | while read f; do
+git diff --cached --name-only --diff-filter=d | while read f; do
   python3 scripts/security-sweep.py "$f" || echo "PII in: $f"
 done
 ```
+
+`--diff-filter=d` drops staged **deletions**: a removed file has no content to
+sweep, and since the sweep now exits nonzero naming a path it cannot read
+(card A16), a plain `git rm` would otherwise cry "PII in: <file>".
 
 ## Why this keeps happening
 

@@ -4,7 +4,8 @@
 Scans visible files and fails on:
   - 32-hex Reticulum destination hashes (any case)
   - other hash-shaped runs, 8-32 hex chars (any case, e.g. session-id suffixes)
-  - absolute home paths (/home/<user>, /Users/<user>, ~/...)
+  - absolute home paths (matches /home/<user> and /Users/<user>; tilde-relative
+    ~/... forms are NOT scanned by this rule)
   - host:port endpoints and Tailscale MagicDNS hostnames
   - -----BEGIN key/credential headers
   - 9-11 digit numeric ids (chat ids, epoch timestamps used as session names)
@@ -25,7 +26,11 @@ Modes:
                    Example ranges:
                      --commits HEAD --not --remotes        (unpushed commits)
                      --commits origin/dev..HEAD            (a PR's commits)
-  PATH...          scan only the named files (combine with --staged to read the index)
+  PATH...          scan only the named files (combine with --staged to read the
+                   index). A nonexistent path, an empty argument, or a path absent
+                   from the index with --staged exits 2 naming it — a sweep that
+                   would scan nothing never prints the clean line. A positional
+                   shaped like a git range (a..b) is honored as --commits a..b.
 
 Synthetic fixtures are allowlisted: the patterns below and any token composed only of
 repeats of them. Exit code 0 = clean, 1 = findings (blocking), 2 = bad usage.
@@ -44,6 +49,11 @@ PATTERNS = (
 )
 
 HOMEPATH = re.compile(r"(?:/home/[A-Za-z0-9._-]+|/Users/[A-Za-z0-9._-]+)")
+
+# Positionals shaped like a git revision range (origin/dev..HEAD, HEAD~2...HEAD).
+# Both sides of the dots must be non-empty, so a bare ".." stays a path
+# argument (reported as not-a-file) instead of routing into rev-list.
+RANGEISH = re.compile(r"[A-Za-z0-9_./@~^:+-]+\.\.\.?[A-Za-z0-9_./@~^:+-]+")
 
 SYNTHETIC = {
     "11223344556677889900aabbccddeeff", "ffeeddccbbaa00998877665544332211",
@@ -200,6 +210,20 @@ def scan_text(rel: str, text: str) -> int:
     return findings
 
 
+def scan_paths(rels: list[str], root: Path) -> int:
+    findings = 0
+    for rel in rels:
+        p = root / rel
+        if not p.is_file() or p.suffix not in VISIBLE_SUFFIXES:
+            continue
+        try:
+            text = p.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        findings += scan_text(rel, text)
+    return findings
+
+
 def main() -> int:
     argv = sys.argv[1:]
     commits = False
@@ -215,16 +239,61 @@ def main() -> int:
     untracked = "--untracked" in argv
     staged = "--staged" in argv
 
+    # A16: a positional that scans nothing must never read as clean. An empty
+    # argument (a blank diff line reaching "$f" in the docs loop) and a path
+    # that does not exist are usage errors, not skips.
+    if "" in args:
+        print("error: empty path argument (a blank line reached the sweep); "
+              "refusing to report clean", file=sys.stderr)
+        return 2
+    root = Path.cwd()
+    # A bare positional shaped like a git range (origin/dev..HEAD) is honored as
+    # --commits would have honored it — it can never be a real file path here.
+    inferred: list[str] = []
+    for a in list(args):
+        if RANGEISH.fullmatch(a) and not (root / a).exists():
+            args.remove(a)
+            rev_args.append(a)
+            inferred.append(a)
+            commits = True
+    # Any positional left over is claimed as a path, in every mode: if it is
+    # not readable, say so loudly rather than dropping it from the scan.
+    for a in args:
+        if staged:
+            if staged_content(a) is None:
+                print(f"error: not in git index: {a}", file=sys.stderr)
+                return 2
+        elif (root / a).is_dir():
+            print(f"error: not a file: {a}", file=sys.stderr)
+            return 2
+        elif not (root / a).is_file():
+            print(f"error: no such file: {a}", file=sys.stderr)
+            return 2
+
     if commits:
         if not rev_args:
             print("usage: --commits <git rev-list args...>", file=sys.stderr)
             return 2
         findings = 0
-        for label, text in commit_entries(rev_args):
+        try:
+            entries = commit_entries(rev_args)
+        except subprocess.CalledProcessError as exc:
+            gerr = (exc.stderr or "").strip()
+            if inferred:
+                print(f"error: {inferred[0]} is neither a readable file nor a "
+                      f"resolvable git range: {gerr}", file=sys.stderr)
+            else:
+                print(f"error: git failed for range {rev_args}: {gerr}",
+                      file=sys.stderr)
+            return 2
+        for label, text in entries:
             findings += scan_text(label, text)
+        if args:
+            # A range and named paths together: scan both. Silently dropping
+            # named paths is the false-clean shape this card exists to kill.
+            findings += scan_paths(args, root)
     elif staged:
         targets = args or git_files(untracked)
-        root = Path.cwd()
         findings = 0
         for rel in targets:
             text = staged_content(rel)
@@ -234,18 +303,7 @@ def main() -> int:
                 continue
             findings += scan_text(rel, text)
     else:
-        targets = args or git_files(untracked)
-        root = Path.cwd()
-        findings = 0
-        for rel in targets:
-            p = root / rel
-            if not p.is_file() or p.suffix not in VISIBLE_SUFFIXES:
-                continue
-            try:
-                text = p.read_text(encoding="utf-8", errors="ignore")
-            except OSError:
-                continue
-            findings += scan_text(rel, text)
+        findings = scan_paths(args or git_files(untracked), root)
 
     if findings:
         print(f"\n{findings} finding(s). Redact before pushing (see "
