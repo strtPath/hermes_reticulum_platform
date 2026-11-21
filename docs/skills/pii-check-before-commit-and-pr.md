@@ -8,7 +8,7 @@ The rule is in `docs/PII-RULES.md`. This is the procedure that applies it.
 
 ```bash
 python3 scripts/security-sweep.py --untracked
-git diff --cached --name-only | while read f; do
+git diff --cached --name-only --diff-filter=d | while read f; do
   python3 scripts/security-sweep.py "$f" || echo "PII in: $f"
 done
 ```
