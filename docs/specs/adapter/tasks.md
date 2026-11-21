@@ -269,7 +269,9 @@ and the FAILED *state receipt* path (`_handle_outbound_outcome`) logged the same
 as a success receipt would; both now log WARNING naming the lost delivery (destination + payload
 snippet), with the DELIVERED path pinned below WARNING. Shipped on branch
 `step/A4-send-warning` (tests `test_a4_01`-`test_a4_03`, red-before recorded in
-`verification.md`); rows 1-3 remain a phone exercise, no adapter code.
+`verification.md`); rows 1-3 remain a phone exercise, no adapter code. The 2026-11-18 phone
+attempt is parked with its evidence in the A4 live-run note in `verification.md` (suspected
+client-side slash-command interception masking the gateway dispatch; peer deferred the follow-up).
 
 ## Card A5: `/new` ack with session id + title — DROPPED 2026-11-04
 
