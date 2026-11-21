@@ -571,10 +571,9 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
     async def _dispatch_inbound(self, event) -> None:
         """Turn one transport callback event into a gateway MessageEvent.
 
-        Foundation-stage parsing: ``event`` is a ``(source_hash, text)``
-        tuple (or a dict with ``source``/``text``) produced by the callback
-        registration in ``connect()``. The real transport will deliver
-        LXMF receipt objects; this seam keeps the drain shape testable now.
+        The real transport fires this from ``_on_router_delivery`` with a
+        ``(source_hash, payload)`` tuple; the drain accepts a tuple or a dict
+        with ``source``/``text``.
         """
         source_hash, text = self._normalize_inbound(event)
         if source_hash is None:
@@ -1280,7 +1279,7 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Map one LXMF delivery-state callback into a ``SendResult``.
 
-        This is the seam the real transport will drive. ``state`` is an LXMF
+        This is the seam the real transport drives. ``state`` is an LXMF
         state value; ``reason`` carries the failure string for ``FAILED``.
         The mapping is owned by :func:`hermes_reticulum.plugin.delivery.map_receipt`
         and runs against the adapter's own pending set.

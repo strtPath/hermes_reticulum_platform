@@ -11,7 +11,7 @@ ships Reticulum as a native Hermes gateway platform. The adapter design is in
 
 ## What stayed in `core/`
 
-`core/` is now shared, not bridge-only:
+`core/` holds the module the adapter shares, plus the bridge's own emoji table:
 
 - `core/acl.py` — the access-control gate. The adapter imports it directly
   (`plugin/adapter.py`), and the bridge's `control_server.py` does too.
