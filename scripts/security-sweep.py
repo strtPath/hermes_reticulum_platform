@@ -73,6 +73,12 @@ FIXTURE_BLOCKS = ("aabbccdd", "11223344", "deadbeef", "0badc0de", "abcd1234",
 # Calendar dates embedded in identifiers (20260915-style) are not identity material.
 DATEISH = re.compile(r"\b20\d{6}\b")
 
+# GitHub's noreply commit address (digits+user@users.noreply.github.com) is the
+# platform's public author identity; this repo standardises every commit on it.
+# Its numeric prefix only reads as a finding because digits are also hex. Blanking
+# the whole address shape keeps standalone digit runs - the actual targets - caught.
+NOREPLY = re.compile(r"\b\d{1,9}\+[A-Za-z0-9._-]+@users\.noreply\.github\.com\b")
+
 # Absolute home paths that are deliberately generic in docs (shell placeholders).
 HOME_ALLOW = ("/home/<user>", "/home/user", "/home/example", "/Users/<user>",
               "/home/<name>", "/home/username")
@@ -200,8 +206,9 @@ def scan_text(rel: str, text: str) -> int:
             findings += 1
             print(f"FINDING {rel}:{lineno} [homepath] absolute home path")
             print(f"    {line.strip()[:120]}")
+        scanned = NOREPLY.sub("[noreply-identity]", line)
         for name, pat in PATTERNS:
-            for token in pat.findall(line):
+            for token in pat.findall(scanned):
                 if DATEISH.fullmatch(token) or _is_synthetic(token):
                     continue
                 findings += 1
