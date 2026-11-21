@@ -17,8 +17,9 @@ Design: ``docs/specs/adapter/spec.md``; build cards and acceptance evidence:
 - Outbound send accounting lives in ``plugin/delivery.py``: chunking, the
   propagation pending set, and the DELIVERED/FAILED/SENT receipt mapping
   (``delivery.map_receipt``) consumed by the outbound callbacks below.
-- Access control is ``core.acl.AccessControl``, seeded from the Hermes
-  profile env by ``plugin/registration.py``.
+- Access control is ``core.acl.AccessControl``, built in this module against
+  the gateway's profile-scoped ``platform_gate_env``; ``plugin/registration.py``
+  declares the env var names (``HERMES_RETICULUM_ALLOWED_USERS`` / ``_ALLOW_ALL``).
 """
 
 import asyncio
@@ -151,7 +152,7 @@ class FakeTransport:
     """In-repo no-op transport used to prove adapter wiring (spec section 10).
 
     Not a dependency of the real adapter: it is injected for tests. The
-    real LXMF transport comes in a later ticket behind this same protocol.
+    real transport is ``ReticulumTransport``, behind this same protocol.
     """
 
     def __init__(self):

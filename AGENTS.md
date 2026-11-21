@@ -106,8 +106,8 @@ failure mode in this project's history.
   `control_server.py` (approval control), `downlink.py` (outbound queue). Kept for existing
   deployments; see `src/hermes_reticulum/bridge/README.md`.
 - `src/hermes_reticulum/core/` — shared modules: `acl.py` (access control, used by both
-  architectures); `tool_emoji.py` (the tool-name → emoji table, currently imported only by
-  bridge code).
+  architectures); `tool_emoji.py` (the tool-name → emoji table, imported only by the
+  bridge's modules and their tests).
 - `src/hermes_reticulum/plugin/` — the adapter (the supported path). `registration.py` (the
   `ctx.register_platform` declaration), `adapter.py` (the adapter), `transport.py` (the real
   LXMF transport), `delivery.py` (chunking, send accounting, receipt mapping), `identity.py`
