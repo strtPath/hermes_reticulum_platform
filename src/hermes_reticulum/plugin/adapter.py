@@ -5,19 +5,20 @@ Implements the gateway ``BasePlatformAdapter`` contract so the mesh becomes
 a first-class platform: inbound LXMF messages are bridged into the asyncio
 event loop and replies go back out over the mesh.
 
-Foundation stage (design: docs/spec-reticulum-platform-adapter.md):
+Design: ``docs/specs/adapter/spec.md``; build cards and acceptance evidence:
+``docs/specs/adapter/tasks.md`` and ``verification.md``.
 
-- The transport sits behind the ``Transport`` protocol (spec section 5/10).
-  A minimal ``FakeTransport`` in this module proves the wiring without a
-  live mesh; the real LXMF implementation is a later ticket and is NOT
-  imported here.
+- The transport sits behind the ``Transport`` protocol. The real LXMF
+  implementation is ``ReticulumTransport`` (``plugin/transport.py``); the
+  minimal ``FakeTransport`` in this module is used by the test suite to
+  exercise the wiring without a live mesh.
 - ``connect()`` is idempotent, re-initialises from scratch when
   ``is_reconnect=True``, and returns True when the local transport is up.
-- ``send()`` returns a well-formed failing ``SendResult`` for every
-  failure class known at this stage; the full DELIVERED/FAILED/SENT receipt
-  mapping (spec section 6/14) lands with the real transport.
-- Deferred by design (later tickets): identity/display-name map beyond a
-  trivial stub, the propagation pending set, chunking, error_kind mapping.
+- Outbound send accounting lives in ``plugin/delivery.py``: chunking, the
+  propagation pending set, and the DELIVERED/FAILED/SENT receipt mapping
+  (``delivery.map_receipt``) consumed by the outbound callbacks below.
+- Access control is ``core.acl.AccessControl``, seeded from the Hermes
+  profile env by ``plugin/registration.py``.
 """
 
 import asyncio

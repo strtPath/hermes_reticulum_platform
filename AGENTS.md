@@ -16,10 +16,13 @@ Every design decision follows from that.
 There are two architectures in the tree at once, and knowing which one you are touching is
 the first thing to settle:
 
-- **The bridge** (`src/hermes_reticulum/`, the long-lived process) drives the Hermes CLI in
-  one-shot mode. This is the deployed, working system.
-- **The platform adapter** (`src/hermes_reticulum/plugin/`) ships Reticulum as a Hermes
-  gateway platform instead of driving the CLI. This is the direction of travel.
+- **The platform adapter** (`src/hermes_reticulum/plugin/`, loaded into the Hermes gateway
+  process through the `plugins/reticulum/` shim) ships Reticulum as a native Hermes gateway
+  platform. This is the supported path — since the v0.3.0 release it is the only path
+  accepting new work.
+- **The bridge** (`src/hermes_reticulum/bridge/`, the long-lived standalone process) drives
+  the Hermes CLI in one-shot mode. It is archived: kept running for existing deployments,
+  not accepting new features. See `src/hermes_reticulum/bridge/README.md`.
 
 `docs/spec-feasibility-reticulum-platform.md` settled *whether* to build the adapter;
 `docs/specs/adapter/spec.md` is the design. Read the adapter design before
@@ -102,11 +105,18 @@ failure mode in this project's history.
   `bridge.py` (LXMF and sending), `hermes_client.py` (turn execution, step watcher, clarify),
   `control_server.py` (approval control), `downlink.py` (outbound queue). Kept for existing
   deployments; see `src/hermes_reticulum/bridge/README.md`.
-- `src/hermes_reticulum/core/` — shared modules both architectures use: `acl.py` (access
-  control) and `tool_emoji.py` (the tool-name → emoji table).
-- `src/hermes_reticulum/plugin/` — the adapter (the direction of travel). `registration.py`
-  (the `ctx.register_platform` declaration), `adapter.py` (the adapter).
-- `src/hermes_reticulum/mesh-tool-gate/` — the pre-execution tool approve/deny gate plugin.
+- `src/hermes_reticulum/core/` — shared modules: `acl.py` (access control, used by both
+  architectures); `tool_emoji.py` (the tool-name → emoji table, currently imported only by
+  bridge code).
+- `src/hermes_reticulum/plugin/` — the adapter (the supported path). `registration.py` (the
+  `ctx.register_platform` declaration), `adapter.py` (the adapter), `transport.py` (the real
+  LXMF transport), `delivery.py` (chunking, send accounting, receipt mapping), `identity.py`
+  (the hash → display-name map).
+- `plugins/reticulum/` — the directory-plugin shim Hermes actually loads; it makes
+  `hermes_reticulum` importable from the install venv and delegates to
+  `plugin/registration.py`. Not the adapter itself.
+- `src/hermes_reticulum/mesh-tool-gate/` — the pre-execution tool approve/deny gate plugin
+  for the archived bridge's sessions; inert on native gateway sessions.
 - `docs/` — specs, findings, notes, procedures.
 - `scripts/` — tooling, including `security-sweep.py` (the PII gate).
 - `tests/` — see `docs/skills/` for how testing works here.
