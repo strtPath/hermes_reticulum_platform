@@ -1194,11 +1194,23 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
             result = self._record_receipt(chat_id, payload, state_int, None)
             if chat_id:
                 self._outbound_by_payload.pop(payload, None)
-            logger.info(
-                "Reticulum: outbound message reached %s (%s)",
-                delivery.state_name(state_int),
-                "delivered" if result.success else "not delivered",
-            )
+            if result.success:
+                logger.info(
+                    "Reticulum: outbound message reached %s (%s)",
+                    delivery.state_name(state_int),
+                    "delivered" if state_int == delivery.STATE_DELIVERED else "sent",
+                )
+            else:
+                # A FAILED (or unrecognised) terminal state IS the lost
+                # delivery the peer never got — card A4's send truth: this
+                # surface used to log INFO like a success receipt.
+                logger.warning(
+                    "Reticulum: lost delivery to %s: outbound message reached "
+                    "%s: %.80r",
+                    chat_id or "unknown peer",
+                    delivery.state_name(state_int),
+                    payload,
+                )
         except Exception as e:
             logger.warning("Reticulum: could not record outbound outcome: %s", e)
 
@@ -1223,7 +1235,15 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
             self._record_receipt(chat_id, payload, delivery.STATE_FAILED, reason)
             if chat_id:
                 self._outbound_by_payload.pop(payload, None)
-            logger.info("Reticulum: outbound message failed (%s)", reason)
+            # Card A4 send truth: a lost send is a WARNING naming the lost
+            # delivery, not the INFO it logged at before.
+            logger.warning(
+                "Reticulum: lost delivery to %s: outbound message failed "
+                "(%s): %.80r",
+                chat_id or "unknown peer",
+                reason,
+                payload,
+            )
         except Exception as e:
             logger.warning("Reticulum: could not record outbound failure: %s", e)
 

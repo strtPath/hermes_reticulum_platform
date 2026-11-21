@@ -25,7 +25,7 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A1 | Docs foundation: spec split, step cards, PII quarantine rule, findings docs, the registration `_bool_conv` fix | - | public sweep is clean; spec + cards reviewable | done |
 | A2 | Automatic per-conversation context discovery; silence the dead step POST | A1 | resolved window == live n_ctx, no pin; log noise stops | closed (PR #14, merged 2026-10-12) |
 | A3 | Automated ACL rejection (code gate, canned reply, zero model involvement) | A1 | unauthorized peer gets `⛔ Access not authorized.` and nothing else | closed (PR #16, merged 2026-10-24) |
-| A4 | Command feedback: verify the gateway-handled commands on the mesh; send-failure truth as a WARNING | A1 | `/status`, `/resume`, `/new`→`yes` answered on the phone with zero adapter command code; failed LXMF delivery logs a WARNING | open (amended 2026-11-04) |
+| A4 | Command feedback: verify the gateway-handled commands on the mesh; send-failure truth as a WARNING | A1 | `/status`, `/resume`, `/new`→`yes` answered on the phone with zero adapter command code; failed LXMF delivery logs a WARNING | code in-review (branch `step/A4-send-warning`); rows 1-3 phone exercise open |
 | A5 | `/new` ack names new session id + auto-title — **dropped 2026-11-04 (peer)**; the ack is gateway-side and already carries the title | A4 | none; verification only | dropped |
 | A6 | Tool-call visibility: declare the platform's display tier/overrides so the gateway's existing progress lane renders (low tier by default; mid-turn commentary kept on; `/verbose` is the gateway's command) | A4 | a 22-tool turn is no longer silent after the peer opts in with `/verbose`; mid-turn commentary reaches the peer; `/verbose off` truncates like the CLI | open (amended 2026-11-04) |
 | A7 | YAML config hook (`apply_yaml_config_fn`), display name + announce interval as config keys | A1 | `config.yaml` keys work without env vars | open |
@@ -265,9 +265,14 @@ are plain text only — no markdown formatting". If clients render markdown, tha
 formatting the peer could actually read (code blocks in particular). Fixing the hint is one string
 but it changes model behaviour on every mesh turn, so it is carded, not slipped into A4.
 
-**Remaining code in this card:** the WARNING level. `_handle_outbound_failure` logs at INFO
-today (`src/hermes_reticulum/plugin/adapter.py:953`); the acceptance above requires WARNING
-naming the lost delivery.
+**Remaining code in this card:** the WARNING level. `_handle_outbound_failure` logged at INFO
+and the FAILED *state receipt* path (`_handle_outbound_outcome`) logged the same event at INFO
+as a success receipt would; both now log WARNING naming the lost delivery (destination + payload
+snippet), with the DELIVERED path pinned below WARNING. Shipped on branch
+`step/A4-send-warning` (tests `test_a4_01`-`test_a4_03`, red-before recorded in
+`verification.md`); rows 1-3 remain a phone exercise, no adapter code. The 2026-11-18 phone
+attempt is parked with its evidence in the A4 live-run note in `verification.md` (suspected
+client-side slash-command interception masking the gateway dispatch; peer deferred the follow-up).
 
 ## Card A5: `/new` ack with session id + title — DROPPED 2026-11-04
 
