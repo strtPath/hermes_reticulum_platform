@@ -2590,7 +2590,9 @@ def test_a4_02_failed_state_receipt_warns_naming_the_lost_delivery(caplog):
     adapter._handle_outbound_outcome(payload, delivery.STATE_FAILED)
 
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert any(payload in m for m in warnings), warnings
+    assert any(
+        payload in m and "lost delivery" in m and "FAILED" in m for m in warnings
+    ), warnings
     stats = adapter.delivery_stats
     assert stats["failed"] == 1
     assert stats["unconfirmed"] == 0
@@ -2607,4 +2609,31 @@ def test_a4_03_delivered_receipt_stays_below_warning(caplog):
 
     assert not caplog.records  # nothing at WARNING or above
     assert adapter.delivery_stats["unconfirmed"] == 0
+
+
+def test_a4_04_unrecognised_state_is_info_not_a_loss(caplog):
+    """LXMF's delivery callback also fires for PAPER (a success); an
+    unrecognised state receipt must not be reported as a lost delivery."""
+    caplog.set_level(logging.INFO)
+    adapter = make_adapter()
+    payload = "a paper-mode success"
+    _seed_sent(adapter, "a" * 32, payload)
+
+    adapter._handle_outbound_outcome(payload, 0x0B)
+
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING], caplog
+    assert any("unrecognised state" in r.getMessage() for r in caplog.records), caplog
+
+
+def test_a4_05_unattributed_failure_admits_the_guess(caplog):
+    """The _last_outbound_chat fallback names a guess; the WARNING must say so."""
+    caplog.set_level(logging.WARNING)
+    adapter = make_adapter()
+    payload = "payload the tracker never saw"
+    adapter._last_outbound_chat = "d" * 32
+
+    adapter._handle_outbound_failure(payload, "No path to destination")
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("(attributed to last send)" in m for m in warnings), warnings
 

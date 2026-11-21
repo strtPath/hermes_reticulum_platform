@@ -86,11 +86,16 @@ running, that is the busy-session inline-dispatch path where the base can leave
 
 Red-before, recorded at the branch base (`dev` @ b321a24): row 4 fails — the failure callback
 logged INFO, so a `caplog` filtered at WARNING saw nothing (a4_01/a4_02 red, a4_03 green).
-The card named one surface; the tracker carries **two**: the transport's failed callback
-(`_handle_outbound_failure`) and a FAILED *state receipt* (`_handle_outbound_outcome`), which
-also logged at INFO like a success receipt. The acceptance is delivery truth, not callback
-plumbing, so both surfaces now log WARNING naming the lost delivery (destination + payload
-snippet); the DELIVERED path stays below WARNING, pinned by `test_a4_03`.
+The live surface is the transport's failed callback (`_handle_outbound_failure`); LXMF's
+delivery callback fires only for DELIVERED/SENT/PAPER (checked against 1.3.0 and 1.3.1), so a
+FAILED *state receipt* (`_handle_outbound_outcome`) is defensive depth, not a second observed
+surface — an earlier draft of this card claimed two live surfaces. Both branches now log a
+WARNING naming the lost delivery (destination + payload snippet); the DELIVERED path stays
+below WARNING, pinned by `test_a4_03`. Post-merge senior review (2026-11-21) narrowed the
+outcome branch: FAILED/REJECTED/CANCELLED get the loss WARNING, an unrecognised state (PAPER,
+future states) logs INFO as what it is — a success must never be called "lost"
+(`test_a4_04_unrecognised_state_is_info_not_a_loss`) — and the payload-attribution fallback in
+the failure WARNING admits it is guessing (`test_a4_05_unattributed_failure_admits_the_guess`).
 Green after in both modes (adapter + delivery files): real base 152 passed / 1 skipped,
 CI-stub 150 passed / 3 skipped.
 

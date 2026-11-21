@@ -1201,16 +1201,32 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
                     "delivered" if state_int == delivery.STATE_DELIVERED else "sent",
                 )
             else:
-                # A FAILED (or unrecognised) terminal state IS the lost
+                # A FAILED/REJECTED/CANCELLED terminal state IS the lost
                 # delivery the peer never got — card A4's send truth: this
-                # surface used to log INFO like a success receipt.
-                logger.warning(
-                    "Reticulum: lost delivery to %s: outbound message reached "
-                    "%s: %.80r",
-                    chat_id or "unknown peer",
-                    delivery.state_name(state_int),
-                    payload,
-                )
+                # surface used to log INFO like a success receipt. An
+                # unrecognised state is NOT known loss: LXMF's delivery
+                # callback also fires for PAPER (a success), so unknown
+                # states get an INFO naming them, not a "lost delivery" cry.
+                if state_int in (
+                    delivery.STATE_FAILED,
+                    delivery.STATE_REJECTED,
+                    delivery.STATE_CANCELLED,
+                ):
+                    logger.warning(
+                        "Reticulum: lost delivery to %s: outbound message "
+                        "reached %s: %.80r",
+                        chat_id or "unknown peer",
+                        delivery.state_name(state_int),
+                        payload,
+                    )
+                else:
+                    logger.info(
+                        "Reticulum: outbound receipt in unrecognised state "
+                        "%s for %s: %.80r",
+                        delivery.state_name(state_int),
+                        chat_id or "unknown peer",
+                        payload,
+                    )
         except Exception as e:
             logger.warning("Reticulum: could not record outbound outcome: %s", e)
 
@@ -1225,8 +1241,10 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
         """
         try:
             chat_id, confident = self._attribute_payload(payload)
+            attributed = ""
             if not confident:
                 chat_id = self._last_outbound_chat or ""
+                attributed = " (attributed to last send)"
             if self._is_superseded(chat_id, payload):
                 # Replaced send (see the outcome handler): the retry owns the
                 # record; a late failure of the superseded attempt is noise.
@@ -1236,11 +1254,13 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
             if chat_id:
                 self._outbound_by_payload.pop(payload, None)
             # Card A4 send truth: a lost send is a WARNING naming the lost
-            # delivery, not the INFO it logged at before.
+            # delivery, not the INFO it logged at before. When the payload
+            # could not be attributed, say so — the name is a guess.
             logger.warning(
-                "Reticulum: lost delivery to %s: outbound message failed "
+                "Reticulum: lost delivery to %s%s: outbound message failed "
                 "(%s): %.80r",
                 chat_id or "unknown peer",
+                attributed,
                 reason,
                 payload,
             )
