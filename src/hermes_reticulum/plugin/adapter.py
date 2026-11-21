@@ -5,19 +5,21 @@ Implements the gateway ``BasePlatformAdapter`` contract so the mesh becomes
 a first-class platform: inbound LXMF messages are bridged into the asyncio
 event loop and replies go back out over the mesh.
 
-Foundation stage (design: docs/spec-reticulum-platform-adapter.md):
+Design: ``docs/specs/adapter/spec.md``; build cards and acceptance evidence:
+``docs/specs/adapter/tasks.md`` and ``verification.md``.
 
-- The transport sits behind the ``Transport`` protocol (spec section 5/10).
-  A minimal ``FakeTransport`` in this module proves the wiring without a
-  live mesh; the real LXMF implementation is a later ticket and is NOT
-  imported here.
+- The transport sits behind the ``Transport`` protocol. The real LXMF
+  implementation is ``ReticulumTransport`` (``plugin/transport.py``); the
+  minimal ``FakeTransport`` in this module is used by the test suite to
+  exercise the wiring without a live mesh.
 - ``connect()`` is idempotent, re-initialises from scratch when
   ``is_reconnect=True``, and returns True when the local transport is up.
-- ``send()`` returns a well-formed failing ``SendResult`` for every
-  failure class known at this stage; the full DELIVERED/FAILED/SENT receipt
-  mapping (spec section 6/14) lands with the real transport.
-- Deferred by design (later tickets): identity/display-name map beyond a
-  trivial stub, the propagation pending set, chunking, error_kind mapping.
+- Outbound send accounting lives in ``plugin/delivery.py``: chunking, the
+  propagation pending set, and the DELIVERED/FAILED/SENT receipt mapping
+  (``delivery.map_receipt``) consumed by the outbound callbacks below.
+- Access control is ``core.acl.AccessControl``, built in this module against
+  the gateway's profile-scoped ``platform_gate_env``; ``plugin/registration.py``
+  declares the env var names (``HERMES_RETICULUM_ALLOWED_USERS`` / ``_ALLOW_ALL``).
 """
 
 import asyncio
@@ -150,7 +152,7 @@ class FakeTransport:
     """In-repo no-op transport used to prove adapter wiring (spec section 10).
 
     Not a dependency of the real adapter: it is injected for tests. The
-    real LXMF transport comes in a later ticket behind this same protocol.
+    real transport is ``ReticulumTransport``, behind this same protocol.
     """
 
     def __init__(self):
@@ -569,10 +571,9 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
     async def _dispatch_inbound(self, event) -> None:
         """Turn one transport callback event into a gateway MessageEvent.
 
-        Foundation-stage parsing: ``event`` is a ``(source_hash, text)``
-        tuple (or a dict with ``source``/``text``) produced by the callback
-        registration in ``connect()``. The real transport will deliver
-        LXMF receipt objects; this seam keeps the drain shape testable now.
+        The real transport fires this from ``_on_router_delivery`` with a
+        ``(source_hash, payload)`` tuple; the drain accepts a tuple or a dict
+        with ``source``/``text``.
         """
         source_hash, text = self._normalize_inbound(event)
         if source_hash is None:
@@ -1278,7 +1279,7 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Map one LXMF delivery-state callback into a ``SendResult``.
 
-        This is the seam the real transport will drive. ``state`` is an LXMF
+        This is the seam the real transport drives. ``state`` is an LXMF
         state value; ``reason`` carries the failure string for ``FAILED``.
         The mapping is owned by :func:`hermes_reticulum.plugin.delivery.map_receipt`
         and runs against the adapter's own pending set.

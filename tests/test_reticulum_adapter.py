@@ -2,9 +2,9 @@
 Structural and lifecycle tests for the Reticulum platform adapter
 (spec section 10 test seams).
 
-The real LXMF transport does not exist yet (later ticket); these tests
-run the adapter against the in-repo ``FakeTransport`` behind the
-``Transport`` protocol, exactly the seam the spec calls for.
+These tests run the adapter against the in-repo ``FakeTransport`` behind the
+``Transport`` protocol, exactly the seam the spec calls for; the live mesh
+path uses ``ReticulumTransport`` instead.
 
 No test here asserts on platform lists or command counts (spec section 10).
 """
