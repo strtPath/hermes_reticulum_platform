@@ -239,3 +239,10 @@ Red-before, recorded at branch base dev@b321a24: `test_a16_01`-`test_a16_04` fai
 both modes: `tests/test_security_sweep.py` 15 passed; full suite at the final rebased
 tree 646 passed / 4 skipped / 1 failed (`test_tool_emoji` parity - pre-existing on
 dev, verified in the A4 pass, unrelated).
+Post-merge follow-up (same day): the first push to main tripped the gate on its own
+author metadata - 14 findings, all the numeric prefix of the repo's standardised
+GitHub noreply address (`<digits>+<user>@users.noreply.github.com`) reading as
+`shorthex`. That address is public author metadata, so the sweep now blanks the
+whole address shape before pattern matching; bare digit runs stay caught
+(`test_noreply_author_identity_is_not_a_finding`,
+`test_same_digits_bare_in_a_message_are_still_caught`).

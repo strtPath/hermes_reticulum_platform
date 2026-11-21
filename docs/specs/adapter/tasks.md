@@ -37,7 +37,7 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A13 | Retire the `platform_hint` line forbidding markdown, for a mesh that renders markdown and code blocks | - | the hint no longer forbids markdown; the bandwidth caveat survives | merged 2026-11-10 (PR #37) |
 | A14 | A12 residue: inline paths that handle an event but send nothing (handler yields no text; the base swallows the inline-dispatch exception; queue-mode busy-text debounce parks the follow-up) still read as a D7 deny under A12's evidence rule | A12 | the upstream flag fix lands and the evidence rule retires, or an upstream-safe signal separates handled-but-silent from dropped; until then the documented silent-inline paths are known false-alarm surfaces | open, proposed 2026-11-14 |
 | A15 | Real-base harness double-loads `gateway.platforms.event`, so `MessageType` comparisons inside `base.py` are dead in tests — a green-suite blind spot | - | one event module loaded, conftest identity assert, and the silently-untested base branches re-audited | open, proposed 2026-11-14 |
-| A16 | `scripts/security-sweep.py` silently passes a nonexistent path argument, so `security-sweep.py origin/dev..HEAD` is a false green | - | nonexistent paths exit nonzero and a git-range-looking argument is honored or rejected loudly | code in-review 2026-11-21 (branch `step/A16-sweep-arg-validation`, PR #2) |
+| A16 | `scripts/security-sweep.py` silently passes a nonexistent path argument, so `security-sweep.py origin/dev..HEAD` is a false green | - | nonexistent paths exit nonzero and a git-range-looking argument is honored or rejected loudly | code merged into dev 2026-11-21 (PR #2; same-day follow-up teaches the sweep to allow GitHub noreply author addresses) |
 | A17 | One mesh identity per profile: per-profile default storage path and an identity collision refused once with a named error; `rnsd` and interfaces stay shared | two-profile test harness (A11 handoff) | two profiles on one box connect with distinct identities; the default profile's address does not change | open, proposed 2026-11-19 (D1, D2 ruled; harness first) |
 
 ## Cross-cutting constraint: no interactive UI over LXMF
@@ -750,8 +750,8 @@ simply absent) in the same commit.
 Adjacent, same pass: the script docstring claims coverage of `~/...` paths, but the
 HOMEPATH rule (`scripts/security-sweep.py:46`) only matches absolute `/home/<user>` /
 `/Users/<user>` — correct the docstring or the rule.
-**Status:** code in-review (branch `step/A16-sweep-arg-validation`, PR #2, evidence in the A16
-section of `verification.md`), proposed 2026-11-15 (from senior review of PR #43). Tooling only;
+**Status:** code merged into dev 2026-11-21 (PR #2; same-day follow-up allows GitHub noreply
+author addresses in the sweep), proposed 2026-11-15 (from senior review of PR #43). Tooling only;
 no shipping-code change.
 
 ## Card A13: `platform_hint` no longer forbids markdown

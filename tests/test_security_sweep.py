@@ -25,6 +25,10 @@ SWEEP = REPO_ROOT / "scripts" / "security-sweep.py"
 # 4 hex chars, below the sweep's 8-char minimum, so the source stays clean.
 LEAK = "cafe" * 8
 
+# Same runtime-construction trick: an 8-digit run written literally would make
+# this file a finding for the repo's own sweep.
+DIGITS = "12" * 4
+
 
 def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -151,6 +155,32 @@ def test_clean_history_passes(repo: Path) -> None:
     commit(repo, "base")
 
     assert sweep(repo, "--commits", "HEAD", "--not", "--remotes").returncode == 0
+
+
+def test_noreply_author_identity_is_not_a_finding(repo: Path) -> None:
+    """The repo standardises every commit on a GitHub noreply address whose
+    numeric prefix reads as hex. That address is public author metadata; only
+    bare digit runs are identity material."""
+    msg = (
+        "add feature\n\n"
+        f"Co-authored-by: someone <{DIGITS}+someone@users.noreply.github.com>"
+    )
+    (repo / "a.md").write_text("safe\n")
+    commit(repo, msg)
+
+    result = sweep(repo, "--commits", "HEAD", "--not", "--remotes")
+
+    assert result.returncode == 0, result.stdout
+
+
+def test_same_digits_bare_in_a_message_are_still_caught(repo: Path) -> None:
+    (repo / "a.md").write_text("safe\n")
+    commit(repo, f"add feature\n\nauthored under id {DIGITS}")
+
+    result = sweep(repo, "--commits", "HEAD", "--not", "--remotes")
+
+    assert result.returncode == 1, result.stdout
+    assert "commit-message" in result.stdout
 
 
 # --- A16: argument validation (card A16, docs/specs/adapter/tasks.md) -------
