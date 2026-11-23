@@ -119,15 +119,15 @@ needs_git = pytest.mark.skipif(
 def test_no_vendored_source_by_content():
     """Content net: an RNS/LXMF source blob would carry the upstream header.
 
-    ``git grep`` exits 1 when nothing matches — that is the passing case, so the
-    call runs unchecked and the empty output is the assertion.
+    The pattern is assembled from parts so this file's own source does not match
+    it — with the literal typed whole, the test found itself as soon as it was
+    committed. ``git grep`` exits 1 when nothing matches, which is the passing
+    case, so the call runs unchecked and the empty output is the assertion.
     """
+    pattern = "This file is part of " + "RNS" + "|^#" + " Reticulum " + "License"
     matching = [
         path
-        for path in _git(
-            "grep", "-l", "-E", "This file is part of RNS|^# Reticulum License",
-            check=False,
-        ).splitlines()
+        for path in _git("grep", "-l", "-E", pattern, check=False).splitlines()
         if not path.startswith("docs/")
     ]
     assert matching == []
