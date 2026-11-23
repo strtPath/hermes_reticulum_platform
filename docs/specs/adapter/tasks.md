@@ -945,9 +945,11 @@ delta is exactly the new tests. Against the card's acceptance 2, the second card
 red (`test_sd_notify_sends_to_socket`) only fails when `TMPDIR` is this profile's
 long scratch dir — an AF_UNIX path-length artifact, not the tree — so the card's
 "2 failed" line describes that environment. The stub recipe needs a writable empty
-`HOME`: with `/nonexistent`, 28 transport tests fail at `plugin/transport.py:266`
-(`os.makedirs` of the storage path) at both base and head. Evidence rows:
-`verification.md` § Card A19.
+`HOME` because the transport tests pass a `storage_path=` kwarg that
+`ReticulumTransport.__init__` drops (`plugin/transport.py:168-172`), so the default
+expands from `HOME`; with `/nonexistent` that is 28 failures in
+`test_reticulum_transport.py` at both base and head — a test defect to card, not an
+effect of the pins. Evidence rows: `verification.md` § Card A19.
 
 ## Branch and PR workflow
 
