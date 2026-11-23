@@ -40,7 +40,7 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A16 | `scripts/security-sweep.py` silently passes a nonexistent path argument, so `security-sweep.py origin/dev..HEAD` is a false green | - | nonexistent paths exit nonzero and a git-range-looking argument is honored or rejected loudly | code merged into dev 2026-11-21 (PR #2; same-day follow-up teaches the sweep to allow GitHub noreply author addresses) |
 | A17 | One mesh identity per profile: per-profile default storage path and an identity collision refused once with a named error; `rnsd` and interfaces stay shared | two-profile test harness (A11 handoff) | two profiles on one box connect with distinct identities; the default profile's address does not change | open, proposed 2026-11-19 (D1, D2 ruled; harness first) |
 | A18 | `docs/skills/repo-navigation.md` is stale: its code map lists five pre-move paths (`src/hermes_reticulum/{cli,core/*}.py`, now under `bridge/`), says "build cards A1-A10" while tasks.md runs to A17, and still calls `adapter` a live branch (deleted 2026-10-24) | - | every path in the navigation table resolves in-tree; card and branch references match the tree | open, proposed 2026-11-21 (PR #3 review, finding F3) |
-| A19 | License close-out per ADR-0002: pyproject still declares ranges (`rns>=1.5.4,<2.0`, `lxmf>=1.1.1,<2.0`) where the ADR decided exact pins, and the Reticulum License's field-of-use terms appear nowhere a user actually meets them — README's License section says only "MIT", install.sh never shows them, and the PyPI wheels carry no terms text. Vendoring audit 2026-11-21: zero RNS/LXMF source blobs across every committed path and object — re-runnable as `git log --remotes --name-only --pretty=format:` (paths only) or `git rev-list --objects --remotes`, each piped to the vendoring names grep spelled out in the acceptance list below → 0 — and across every local ref; keep it that way. | - | pins match uv.lock under `uv lock --check` plus a test; suite at the pinned pair with only the two named known reds; README and install.sh state the terms verbatim, test-grepped; both vendoring nets in the acceptance list below (content grep and names grep) stay empty | open, card landed in tasks.md 2026-11-21 (PR #4 merged; senior GO after 6 passes) — card work not started |
+| A19 | License close-out per ADR-0002: pyproject still declares ranges (`rns>=1.5.4,<2.0`, `lxmf>=1.1.1,<2.0`) where the ADR decided exact pins, and the Reticulum License's field-of-use terms appear nowhere a user actually meets them — README's License section says only "MIT", install.sh never shows them, and the PyPI wheels carry no terms text. Vendoring audit 2026-11-21: zero RNS/LXMF source blobs across every committed path and object — re-runnable as `git log --remotes --name-only --pretty=format:` (paths only) or `git rev-list --objects --remotes`, each piped to the vendoring names grep spelled out in the acceptance list below → 0 — and across every local ref; keep it that way. | - | pins match uv.lock under `uv lock --check` plus a test; suite at the pinned pair with only the two named known reds; README and install.sh state the terms verbatim, test-grepped; both vendoring nets in the acceptance list below (content grep and names grep) stay empty | in review 2026-11-23, PR #5 (`step/A19-license-pins-and-terms`) (card landed 2026-11-21, PR #4, senior GO after 6 passes): pins applied as rns==1.6.1 / lxmf==1.3.1, terms in README + install.sh, both vendoring nets empty |
 
 ## Cross-cutting constraint: no interactive UI over LXMF
 
@@ -932,6 +932,24 @@ has had its live check on the RNode.
    stays 0 — one net for vendored dirs, renamed modules and wheel/sdist
    archives, with the `|| true` keeping a zero count from reading as command
    failure.
+
+**Status 2026-11-23:** built on `step/A19-license-pins-and-terms`. `pyproject.toml`
+pins `rns==1.6.1` / `lxmf==1.3.1` (the uv.lock pair, unchanged by `uv lock`), and
+`tests/test_license_posture.py` holds the mechanical claims — pins equal the lock,
+the three condition sentences plus the manual URL appear in README's License section
+and in `install.sh` ahead of the install branch, the notice orders ahead of both pip
+commands, and both vendoring nets stay empty. Measured at head with `TMPDIR=/tmp`:
+real-base 660 passed / 4 skipped / 1 failed (the carded `test_tool_emoji` parity
+red); CI-stub 656 passed / 9 skipped / 0 failed against base's 644 / 9 / 0, so the
+delta is exactly the new tests. Against the card's acceptance 2, the second carded
+red (`test_sd_notify_sends_to_socket`) only fails when `TMPDIR` is this profile's
+long scratch dir — an AF_UNIX path-length artifact, not the tree — so the card's
+"2 failed" line describes that environment. The stub recipe needs a writable empty
+`HOME` because the transport tests pass a `storage_path=` kwarg that
+`ReticulumTransport.__init__` drops (`plugin/transport.py:168-172`), so the default
+expands from `HOME`; with `/nonexistent` that is 28 failures in
+`test_reticulum_transport.py` at both base and head — a test defect to card, not an
+effect of the pins. Evidence rows: `verification.md` § Card A19.
 
 ## Branch and PR workflow
 
