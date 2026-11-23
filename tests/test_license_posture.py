@@ -124,16 +124,20 @@ def _git(*args: str) -> str:
     ).stdout
 
 
-def _content_net(cwd: Path = REPO_ROOT) -> list[str]:
+def _content_net(cwd: Path = REPO_ROOT, run=subprocess.run) -> list[str]:
     """Tracked files matching the RNS/LXMF source header, excluding our own quotes.
 
     ``git grep`` exits 0 with matches, 1 with none, and anything else means the
     search itself failed (unreadable index, not a repository). Only 0 and 1 are
     allowed to look clean: swallowing a 128 would turn a broken net into a
     passing one, which is the failure mode this whole test exists to prevent.
+
+    ``run`` is injectable so the broken-search guard does not depend on the cwd
+    being outside a repository — a pytest ``tmp_path`` under the checkout is
+    still inside one, where git exits 1 (no matches) rather than failing.
     """
     pattern = "This file is part of " + "RNS" + "|^#" + " Reticulum " + "License"
-    proc = subprocess.run(
+    proc = run(
         ["git", "grep", "-l", "-E", pattern],
         cwd=cwd,
         capture_output=True,
@@ -172,14 +176,23 @@ def test_no_vendored_source_by_content():
     assert _content_net() == []
 
 
-def test_content_net_reports_a_broken_search_instead_of_passing(tmp_path):
+def test_content_net_reports_a_broken_search_instead_of_passing():
     """A search that cannot run must fail, not read as an empty tree.
 
-    Without this, any git failure (unreadable index, a cwd outside the repository)
-    yields empty stdout and the net passes vacuously.
+    Without this, any git failure (unreadable index, cwd outside the repository)
+    yields empty stdout and the net passes vacuously. The failing runner is
+    injected rather than simulated with a cwd: a pytest ``tmp_path`` inside the
+    checkout is still inside a repository, where git exits 1 and the guard would
+    never be reached.
     """
+
+    def failing_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=["git", "grep"], returncode=128, stdout="", stderr="fatal: not a git repository"
+        )
+
     with pytest.raises(AssertionError, match="git grep failed"):
-        _content_net(cwd=tmp_path)
+        _content_net(run=failing_run)
 
 
 @needs_git
