@@ -118,10 +118,32 @@ def test_installer_notice_precedes_the_install_branch():
     assert text.index(LICENSE_URL) < text.index(branch)
 
 
-def _git(*args: str, check: bool = True) -> str:
+def _git(*args: str) -> str:
     return subprocess.run(
-        ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True, check=check
+        ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True, check=True
     ).stdout
+
+
+def _content_net(cwd: Path = REPO_ROOT) -> list[str]:
+    """Tracked files matching the RNS/LXMF source header, excluding our own quotes.
+
+    ``git grep`` exits 0 with matches, 1 with none, and anything else means the
+    search itself failed (unreadable index, not a repository). Only 0 and 1 are
+    allowed to look clean: swallowing a 128 would turn a broken net into a
+    passing one, which is the failure mode this whole test exists to prevent.
+    """
+    pattern = "This file is part of " + "RNS" + "|^#" + " Reticulum " + "License"
+    proc = subprocess.run(
+        ["git", "grep", "-l", "-E", pattern],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode not in (0, 1):
+        raise AssertionError(
+            f"git grep failed ({proc.returncode}): {proc.stderr.strip()}"
+        )
+    return [path for path in proc.stdout.splitlines() if path not in PATTERN_QUOTERS]
 
 
 needs_git = pytest.mark.skipif(
@@ -145,16 +167,19 @@ def test_no_vendored_source_by_content():
 
     The pattern is assembled from parts so this file's own source does not match
     it — with the literal typed whole, the test found itself as soon as it was
-    committed. ``git grep`` exits 1 when nothing matches, which is the passing
-    case, so the call runs unchecked and the empty output is the assertion.
+    committed.
     """
-    pattern = "This file is part of " + "RNS" + "|^#" + " Reticulum " + "License"
-    matching = [
-        path
-        for path in _git("grep", "-l", "-E", pattern, check=False).splitlines()
-        if path not in PATTERN_QUOTERS
-    ]
-    assert matching == []
+    assert _content_net() == []
+
+
+def test_content_net_reports_a_broken_search_instead_of_passing(tmp_path):
+    """A search that cannot run must fail, not read as an empty tree.
+
+    Without this, any git failure (unreadable index, a cwd outside the repository)
+    yields empty stdout and the net passes vacuously.
+    """
+    with pytest.raises(AssertionError, match="git grep failed"):
+        _content_net(cwd=tmp_path)
 
 
 @needs_git

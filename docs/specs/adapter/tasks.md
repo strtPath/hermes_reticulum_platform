@@ -939,8 +939,8 @@ pins `rns==1.6.1` / `lxmf==1.3.1` (the uv.lock pair, unchanged by `uv lock`), an
 the three condition sentences plus the manual URL appear in README's License section
 and in `install.sh` ahead of the install branch, the notice orders ahead of both pip
 commands, and both vendoring nets stay empty. Measured at head with `TMPDIR=/tmp`:
-real-base 659 passed / 4 skipped / 1 failed (the carded `test_tool_emoji` parity
-red); CI-stub 655 passed / 9 skipped / 0 failed against base's 644 / 9 / 0, so the
+real-base 660 passed / 4 skipped / 1 failed (the carded `test_tool_emoji` parity
+red); CI-stub 656 passed / 9 skipped / 0 failed against base's 644 / 9 / 0, so the
 delta is exactly the new tests. Against the card's acceptance 2, the second carded
 red (`test_sd_notify_sends_to_socket`) only fails when `TMPDIR` is this profile's
 long scratch dir — an AF_UNIX path-length artifact, not the tree — so the card's
