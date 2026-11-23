@@ -171,7 +171,28 @@ ruff check src/ tests/
 
 ## License
 
-MIT
+This project's own code is MIT — see [LICENSE](LICENSE).
+
+It depends on two libraries, [RNS](https://github.com/markqvist/Reticulum) and
+[LXMF](https://github.com/markqvist/LXMF), which are not MIT. Both ship under the
+**Reticulum License**, Copyright (c) 2016-2026 Mark Qvist: MIT-shaped, with two
+extra conditions on how the software may be used. They are installed from PyPI at
+exact pinned versions — never vendored into this repository — and their terms
+apply to every install of this project:
+
+> The Software shall not be used in any kind of system which includes amongst its functions the ability to purposefully do harm to human beings.
+>
+> The Software shall not be used, directly or indirectly, in the creation of an artificial intelligence, machine learning or language model training dataset, including but not limited to any use that contributes to the training or development of such a model or algorithm.
+>
+> The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+Full text, and the authoritative source for these terms:
+https://reticulum.network/manual/license.html
+
+RNS also carries third-party components under other licenses — an i2plib copy
+under `RNS/vendor/i2plib`, and MIT-licensed modules such as
+`RNS/Interfaces/util/netinfo.py` (Copyright (c) 2014 Stefan C. Mueller). The
+upstream LICENSE files in the installed packages list the full set.
 
 ## Acknowledgments
 

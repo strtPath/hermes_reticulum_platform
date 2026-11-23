@@ -246,3 +246,22 @@ GitHub noreply address (`<digits>+<user>@users.noreply.github.com`) reading as
 whole address shape before pattern matching; bare digit runs stay caught
 (`test_noreply_author_identity_is_not_a_finding`,
 `test_same_digits_bare_in_a_message_are_still_caught`).
+
+## Card A19: License close-out — exact pins, terms where users meet them
+
+| # | Acceptance criterion | Evidence | Result | Gap |
+|---|---|---|---|---|
+| 1 | `uv lock --check` passes; a test asserts pyproject's pinned rns/lxmf equal the uv.lock pair; no range specifiers left | `uv lock --check` exits 0 at head; `test_pin_is_exact_not_a_range` (one case per dependency, fullmatch `rns==X.Y.Z`) and `test_pin_matches_uv_lock` read pyproject and uv.lock via `tomllib`, so both files are the oracle rather than a copied constant. `uv lock` regenerated only the root `requires-dist` metadata lines (2 insertions, 2 deletions); the resolved pair is unchanged at rns 1.6.1 / lxmf 1.3.1 | PASS | - |
+| 2 | Suite run in real-base and CI-stub modes at the pinned pair, with the known reds named | Real-base: 658 passed / 4 skipped / 1 failed — the failure is the carded `test_tool_emoji.py::TestParityWithInstalledGateway::test_table_has_no_undeclared_extras` (installed gateway registers browser_*/yb_* tools the bridge emoji table does not). The other carded red, `test_core.py::TestBridgeLiveness::test_sd_notify_sends_to_socket`, did **not** reproduce on 2026-11-23: it passes at head both alone and in the full suite, so the card's "2 failed" line describes the 2026-11-21 environment (systemd notify socket present) and not this tree. CI-stub (`HOME=/nonexistent HERMES_GATEWAY_ROOT=/nonexistent HERMES_VENV_PATH=/nonexistent`): 626 passed / 9 skipped / 28 failed, and the 28 are byte-identical to the base's (`diff` of the FAILED lists is empty apart from this card's own 8 new rows) — all in `test_reticulum_transport.py`, caused by `HOME=/nonexistent` denying RNS its config root, pre-existing at dev and unrelated to the pins | PASS | - |
+| 3 | README License section and install.sh both contain the dataset-clause sentence verbatim and the license URL, asserted by a test that greps both files | `test_readme_states_the_conditions_verbatim` scopes to the `## License` section only; `test_installer_states_the_conditions_verbatim` greps the whole installer; both assert all three clauses (harm, dataset, notice) as single lines plus `https://reticulum.network/manual/license.html`, copied from the manual page rather than typed from memory. `test_installer_notice_precedes_the_pip_step` runs once per install branch (`pip install -e` and `pip install --break-system-packages -e`) and pins the notice ahead of both, so the default/`--venv` path and `--global` both show it | PASS | - |
+| 4 | Still no vendored RNS/LXMF at the merge commit (content net and names net both empty) | At head the content net (`git grep` for `This file is part of RNS` or a line opening `# Reticulum License`, excluding `docs`) prints nothing, and the names net over `git ls-files` for vendored rns/lxmf dirs, wheel and sdist archives prints 0. Both are pinned as tests (`test_no_vendored_source_by_content`, `test_no_vendored_source_by_name`), which `git grep` for the content net (exit 1 = the passing case) and read `git ls-files` for the names net. Getting the content net to stay empty cost one wording change: a comment block in `install.sh` that began a line with `# Reticulum License` matched the net, so the notice comment now keeps that phrase mid-line | PASS | - |
+
+Red-before at branch base dev@73b2ab5, `tests/test_license_posture.py`: 8 failed /
+2 passed (the two vendoring nets pass at base by design; the pin, the terms, and
+the notice-order rows fail). Green after: 10 passed.
+
+The third-party sentence in README is scoped to what the installed 1.6.1 wheel
+actually carries — `RNS/vendor/i2plib` and the MIT-headed
+`RNS/Interfaces/util/netinfo.py` — instead of the card's "pure25519", which in
+this wheel exists only as an attribution string inside
+`RNS/Cryptography/Ed25519.py`, not as a vendored package.
