@@ -935,13 +935,19 @@ has had its live check on the RNode.
 
 **Status 2026-11-23:** built on `step/A19-license-pins-and-terms`. `pyproject.toml`
 pins `rns==1.6.1` / `lxmf==1.3.1` (the uv.lock pair, unchanged by `uv lock`), and
-`tests/test_license_posture.py` holds the three mechanical claims — pins equal the
-lock, the three condition sentences plus the manual URL appear in README's License
-section and in `install.sh` before both pip branches, both vendoring nets empty.
-Against the card's acceptance 2, the measured real-base run at head was 1 failed
-(the `test_tool_emoji` parity red) rather than 2: `test_sd_notify_sends_to_socket`
-passes in this environment, so that carded red was environment-specific, not a
-property of the tree. Evidence rows: `verification.md` § Card A19.
+`tests/test_license_posture.py` holds the mechanical claims — pins equal the lock,
+the three condition sentences plus the manual URL appear in README's License section
+and in `install.sh` ahead of the install branch, the notice orders ahead of both pip
+commands, and both vendoring nets stay empty. Measured at head with `TMPDIR=/tmp`:
+real-base 659 passed / 4 skipped / 1 failed (the carded `test_tool_emoji` parity
+red); CI-stub 655 passed / 9 skipped / 0 failed against base's 644 / 9 / 0, so the
+delta is exactly the new tests. Against the card's acceptance 2, the second carded
+red (`test_sd_notify_sends_to_socket`) only fails when `TMPDIR` is this profile's
+long scratch dir — an AF_UNIX path-length artifact, not the tree — so the card's
+"2 failed" line describes that environment. The stub recipe needs a writable empty
+`HOME`: with `/nonexistent`, 28 transport tests fail at `plugin/transport.py:266`
+(`os.makedirs` of the storage path) at both base and head. Evidence rows:
+`verification.md` § Card A19.
 
 ## Branch and PR workflow
 

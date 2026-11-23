@@ -49,8 +49,11 @@ CONDITIONS = (
 def _dependencies() -> dict[str, str]:
     with PYPROJECT.open("rb") as handle:
         data = tomllib.load(handle)
+    # Split on any specifier operator, not just "=": keying on "=" alone turns a
+    # range regression ("rns>=1.5.4") into the key "rns>" and the failure the pin
+    # test exists to report becomes a KeyError that names nothing.
     return {
-        entry.split("=", 1)[0].strip(): entry
+        re.split(r"[<>=!~]", entry, maxsplit=1)[0].strip(): entry
         for entry in data["project"]["dependencies"]
     }
 
@@ -103,6 +106,18 @@ def test_installer_notice_precedes_the_pip_step(marker):
     )
 
 
+def test_installer_notice_precedes_the_install_branch():
+    """The property the row actually relies on: one unconditional block.
+
+    Comparing against the pip markers alone would stay green if the notice moved
+    inside the venv branch, leaving the --global path with no notice at all. The
+    branch line is the real boundary.
+    """
+    text = INSTALLER.read_text(encoding="utf-8")
+    branch = 'if [[ "$INSTALL_MODE" == "venv" ]]'
+    assert text.index(LICENSE_URL) < text.index(branch)
+
+
 def _git(*args: str, check: bool = True) -> str:
     return subprocess.run(
         ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True, check=check
@@ -113,6 +128,15 @@ needs_git = pytest.mark.skipif(
     shutil.which("git") is None or not (REPO_ROOT / ".git").exists(),
     reason="vendoring nets read the git index",
 )
+
+
+# The card and its evidence quote the net's own pattern, so they are the only
+# files allowed to contain it. Narrower than excluding docs/ wholesale: a vendored
+# blob dropped in any other doc would still be found.
+PATTERN_QUOTERS = {
+    "docs/specs/adapter/tasks.md",
+    "docs/specs/adapter/verification.md",
+}
 
 
 @needs_git
@@ -128,7 +152,7 @@ def test_no_vendored_source_by_content():
     matching = [
         path
         for path in _git("grep", "-l", "-E", pattern, check=False).splitlines()
-        if not path.startswith("docs/")
+        if path not in PATTERN_QUOTERS
     ]
     assert matching == []
 
