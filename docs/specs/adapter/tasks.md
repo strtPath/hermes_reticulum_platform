@@ -41,7 +41,7 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A17 | One mesh identity per profile: per-profile default storage path and an identity collision refused once with a named error; `rnsd` and interfaces stay shared | two-profile test harness (A11 handoff) | two profiles on one box connect with distinct identities; the default profile's address does not change | open, proposed 2026-11-19 (D1, D2 ruled; harness first) |
 | A18 | `docs/skills/repo-navigation.md` is stale: its code map lists five pre-move paths (`src/hermes_reticulum/{cli,core/*}.py`, now under `bridge/`), says "build cards A1-A10" while tasks.md runs to A17, and still calls `adapter` a live branch (deleted 2026-10-24) | - | every path in the navigation table resolves in-tree; card and branch references match the tree | open, proposed 2026-11-21 (PR #3 review, finding F3) |
 | A19 | License close-out per ADR-0002: pyproject still declares ranges (`rns>=1.5.4,<2.0`, `lxmf>=1.1.1,<2.0`) where the ADR decided exact pins, and the Reticulum License's field-of-use terms appear nowhere a user actually meets them — README's License section says only "MIT", install.sh never shows them, and the PyPI wheels carry no terms text. Vendoring audit 2026-11-21: zero RNS/LXMF source blobs across every committed path and object — re-runnable as `git log --remotes --name-only --pretty=format:` (paths only) or `git rev-list --objects --remotes`, each piped to the vendoring names grep spelled out in the acceptance list below → 0 — and across every local ref; keep it that way. | - | pins match uv.lock under `uv lock --check` plus a test; suite at the pinned pair with only the two named known reds; README and install.sh state the terms verbatim, test-grepped; both vendoring nets in the acceptance list below (content grep and names grep) stay empty | merged 2026-11-23 (PR #5, squash e75e6b0; senior GO 4/5 round 2, greptile 5/5; card landed 2026-11-21 in PR #4): pins applied as rns==1.6.1 / lxmf==1.3.1, terms in README + install.sh, both vendoring nets empty |
-| A20 | `ReticulumTransport.__init__` accepts `storage_path` but never uses it, so every transport test that passes the kwarg believes it isolated storage while `os.makedirs` writes the default path under the developer's `HOME` — CI-stub runs at `HOME=/nonexistent` fail 28 tests that have nothing to do with the code under test | - | the kwarg reaches `self.storage_path` (chain order pinned), a started transport creates nothing under `$HOME`, the transport file is 0-failure at `HOME=/nonexistent` | in progress, carded 2026-11-25 from GitHub issue #6 (found building A19) |
+| A20 | `ReticulumTransport.__init__` accepts `storage_path` but never uses it, so every transport test that passes the kwarg believes it isolated storage while `os.makedirs` writes the default path under the developer's `HOME` — CI-stub runs at `HOME=/nonexistent` fail 28 tests that have nothing to do with the code under test | - | the kwarg reaches `self.storage_path` (chain order pinned), a started transport creates nothing under `$HOME`, the transport file is 0-failure at `HOME=/nonexistent` | code in-review 2026-11-25 (PR #7, senior GO 4/5 first pass); carded 2026-11-25 from GitHub issue #6 (found building A19) |
 
 ## Cross-cutting constraint: no interactive UI over LXMF
 
@@ -960,9 +960,10 @@ effect of the pins. Evidence rows: `verification.md` § Card A19.
 passes the kwarg believes storage is isolated and it is not. Production is unaffected — the
 adapter passes settings through `extra` (seeded by `registration.py`) — but every transport
 test that calls `.start()` with the kwarg (nine call sites in
-`tests/test_reticulum_transport.py`: 357, 489, 610, 665, 798, 805, 820, 833, 843) actually
-runs `os.makedirs` (`plugin/transport.py:266`) against the default path expanded from the
-developer's `HOME`. That makes suite results depend on the environment: measured 2026-11-25
+`tests/test_reticulum_transport.py`: 357, 489, 610, 665, 798, 805, 820, 833, 843;
+coordinates as of dev@`ba5b5c2`, where every line reference in this card was measured)
+actually runs `os.makedirs` (`plugin/transport.py:266`) against the default path
+expanded from the developer's `HOME`. That makes suite results depend on the environment: measured 2026-11-25
 at dev@`ba5b5c2`, the documented CI-stub recipe with `HOME=/nonexistent` gives 28 failed /
 27 passed in that file — `PermissionError` from `makedirs` under `/nonexistent` — while a
 writable `HOME` is green. A19 spent two review rounds disagreeing over whether those numbers
@@ -970,12 +971,14 @@ reproduce (recorded in its verification row 2) before the A19 build filed this a
 issue #6 and stayed out of scope.
 **Spec basis:** none — API honesty and test honesty; same defect class as A15/A16, a green
 suite not doing what it claims, and it poisons the CI-stub evidence mode every card leans on.
-**Ruling (proposed):** issue #6 offered two fixes — fold the argument into the resolution
-chain, or delete the parameter and force callers onto `extra`/env. Fold, chain order
-`extra` > kwarg > scoped env > default: it keeps the documented constructor API, makes the
-nine test call sites finally mean what they say, and matches the docstring's existing
-"`extra` takes precedence" rule and the shape of the sibling fields (display name, announce
-interval). Builder proceeds on the fold; senior review can reverse it to the deletion.
+**Ruling:** the fold (option 1 from issue #6), chain order `extra` > kwarg > scoped env >
+default: it keeps the documented constructor API, makes the nine existing test call sites
+mean what they say, and leaves `extra` authoritative, so production cannot be surprised.
+The sibling named parameters (`display_name`, `announce_interval_min`, `rns_config_path`)
+are still accepted and dropped — same defect class, filed as issue #8 rather than widened
+into this card. Senior review (2026-11-25, first pass) ruled to keep the fold: deletion
+would rewrite the nine call sites and silently drop an advertised argument to buy
+consistency with no behavioral gain.
 **Acceptance:**
 - Given `ReticulumTransport(storage_path=X)`, Then `self.storage_path == expand_path(X)` —
   the argument reaching the attribute is pinned by a test, not just demonstrated in the diff.
@@ -990,8 +993,10 @@ interval). Builder proceeds on the fold; senior review can reverse it to the del
 - The comment at `tests/test_reticulum_transport.py:734` ("the `storage_path` kwarg is legacy
   and ignored") states the defect as fact — it becomes false with the fix and is corrected
   here, not left behind.
-**Status:** in progress, carded 2026-11-25 from GitHub issue #6 (owner directed the same day).
-Branch `step/A20-transport-storage-path`. Evidence rows: `verification.md` § Card A20.
+**Status:** code in-review 2026-11-25 (PR #7); senior first pass GO 4/5, sign-off
+conditions applied the same day. Carded 2026-11-25 from GitHub issue #6 (owner directed
+the same day). Branch `step/A20-transport-storage-path`. Evidence rows: `verification.md`
+§ Card A20.
 
 ## Branch and PR workflow
 
