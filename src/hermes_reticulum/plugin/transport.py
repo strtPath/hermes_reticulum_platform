@@ -144,10 +144,11 @@ class ReticulumTransport:
         require_shared_instance: bool | None = None,
         extra: dict | None = None,
     ):
-        """Build the transport. ``extra`` (the adapter's PlatformConfig.extra)
-        takes precedence over the named arguments; missing settings fall back
-        to the scoped env reader, then to defaults. Raises ValueError on an
-        invalid announce interval (fail loudly at startup)."""
+        """Build the transport. Settings come from ``extra`` (the adapter's
+        PlatformConfig.extra), then the scoped env reader, then defaults;
+        ``storage_path`` also honors its named argument, between ``extra``
+        and the env reader. Raises ValueError on an invalid announce
+        interval (fail loudly at startup)."""
         extra = dict(extra or {})
         self._name_lock = threading.Lock()
         with self._name_lock:
