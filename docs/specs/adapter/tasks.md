@@ -41,7 +41,7 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A17 | One mesh identity per profile: per-profile default storage path and an identity collision refused once with a named error; `rnsd` and interfaces stay shared | two-profile test harness (A11 handoff) | two profiles on one box connect with distinct identities; the default profile's address does not change | open, proposed 2026-11-19 (D1, D2 ruled; harness first) |
 | A18 | `docs/skills/repo-navigation.md` is stale: its code map lists five pre-move paths (`src/hermes_reticulum/{cli,core/*}.py`, now under `bridge/`), says "build cards A1-A10" while tasks.md runs to A17, and still calls `adapter` a live branch (deleted 2026-10-24) | - | every path in the navigation table resolves in-tree; card and branch references match the tree | open, proposed 2026-11-21 (PR #3 review, finding F3) |
 | A19 | License close-out per ADR-0002: pyproject still declares ranges (`rns>=1.5.4,<2.0`, `lxmf>=1.1.1,<2.0`) where the ADR decided exact pins, and the Reticulum License's field-of-use terms appear nowhere a user actually meets them — README's License section says only "MIT", install.sh never shows them, and the PyPI wheels carry no terms text. Vendoring audit 2026-11-21: zero RNS/LXMF source blobs across every committed path and object — re-runnable as `git log --remotes --name-only --pretty=format:` (paths only) or `git rev-list --objects --remotes`, each piped to the vendoring names grep spelled out in the acceptance list below → 0 — and across every local ref; keep it that way. | - | pins match uv.lock under `uv lock --check` plus a test; suite at the pinned pair with only the two named known reds; README and install.sh state the terms verbatim, test-grepped; both vendoring nets in the acceptance list below (content grep and names grep) stay empty | merged 2026-11-23 (PR #5, squash e75e6b0; senior GO 4/5 round 2, greptile 5/5; card landed 2026-11-21 in PR #4): pins applied as rns==1.6.1 / lxmf==1.3.1, terms in README + install.sh, both vendoring nets empty |
-| A20 | `ReticulumTransport.__init__` accepts `storage_path` but never uses it, so every transport test that passes the kwarg believes it isolated storage while `os.makedirs` writes the default path under the developer's `HOME` — CI-stub runs at `HOME=/nonexistent` fail 28 tests that have nothing to do with the code under test | - | the kwarg reaches `self.storage_path` (chain order pinned), a started transport creates nothing under `$HOME`, the transport file is 0-failure at `HOME=/nonexistent` | code in-review 2026-11-25 (PR #7, senior GO 4/5 first pass); carded 2026-11-25 from GitHub issue #6 (found building A19) |
+| A20 | `ReticulumTransport.__init__` accepts `storage_path` but never uses it, so every transport test that passes the kwarg believes it isolated storage while `os.makedirs` writes the default path under the developer's `HOME` — CI-stub runs at `HOME=/nonexistent` fail 28 tests that have nothing to do with the code under test | - | the kwarg reaches `self.storage_path` (chain order pinned), a started transport creates nothing under `$HOME`, the transport file is 0-failure at `HOME=/nonexistent` | merged 2026-11-25 (PR #7, squash c1dec26; senior GO 4/5 first pass with conditions, GO 5/5 second pass; greptile 5/5, threads auto-resolved): fold applied as `extra` > kwarg > env > default; sibling unwired arguments filed as issue #8 |
 
 ## Cross-cutting constraint: no interactive UI over LXMF
 
@@ -993,10 +993,11 @@ consistency with no behavioral gain.
 - The comment at `tests/test_reticulum_transport.py:734` ("the `storage_path` kwarg is legacy
   and ignored") states the defect as fact — it becomes false with the fix and is corrected
   here, not left behind.
-**Status:** code in-review 2026-11-25 (PR #7); senior first pass GO 4/5, sign-off
-conditions applied the same day. Carded 2026-11-25 from GitHub issue #6 (owner directed
-the same day). Branch `step/A20-transport-storage-path`. Evidence rows: `verification.md`
-§ Card A20.
+**Status:** merged 2026-11-25 (PR #7, squash c1dec26 into dev). Senior GO 4/5 on the
+first pass with docs/test-hygiene conditions, GO 5/5 confirming they were applied;
+greptile 5/5 with its one thread auto-resolved. Carded 2026-11-25 from GitHub issue #6
+(owner directed the same day). Branch `step/A20-transport-storage-path` (deleted on
+merge). Evidence rows: `verification.md` § Card A20.
 
 ## Branch and PR workflow
 
