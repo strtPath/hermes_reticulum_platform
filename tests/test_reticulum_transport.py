@@ -78,43 +78,43 @@ class TestValidateAnnounceInterval:
 # ── Construction ──────────────────────────────────────────────────────
 
 
-class TestConstruction:
-    def _stub_env(self, monkeypatch):
-        # Default-profile behaviour: scoped reader falls back to os.environ.
-        def fake_get(name, default=None, **kwargs):
-            val = os.environ.get(name)
-            return default if val is None else val
-        monkeypatch.setattr(transport_module, "_get_scoped_secret", fake_get)
+@pytest.fixture
+def scoped_env(monkeypatch):
+    # Default-profile behaviour: the scoped reader falls back to os.environ,
+    # and RETICULUM_STORAGE_PATH is cleared so ambient shell state cannot
+    # leak into construction tests.
+    def fake_get(name, default=None, **kwargs):
+        val = os.environ.get(name)
+        return default if val is None else val
+    monkeypatch.setattr(transport_module, "_get_scoped_secret", fake_get)
+    monkeypatch.delenv("RETICULUM_STORAGE_PATH", raising=False)
 
-    def test_default_interval_is_60(self, monkeypatch):
-        self._stub_env(monkeypatch)
+
+class TestConstruction:
+    def test_default_interval_is_60(self, scoped_env, monkeypatch):
         for var in ("RETICULUM_ANNOUNCE_INTERVAL", "RETICULUM_DISPLAY_NAME",
-                    "RETICULUM_STORAGE_PATH", "RETICULUM_RNS_CONFIG_PATH"):
+                    "RETICULUM_RNS_CONFIG_PATH"):
             monkeypatch.delenv(var, raising=False)
         t = transport_module.ReticulumTransport()
         assert t.announce_interval_min == 60.0
         assert t.display_name == "Hermes for Reticulum"
 
-    def test_extra_overrides_env(self, monkeypatch):
-        self._stub_env(monkeypatch)
+    def test_extra_overrides_env(self, scoped_env, monkeypatch):
         monkeypatch.setenv("RETICULUM_ANNOUNCE_INTERVAL", "90")
         t = transport_module.ReticulumTransport(extra={"announce_interval": 20})
         assert t.announce_interval_min == 20.0
 
-    def test_env_fallback_used(self, monkeypatch):
-        self._stub_env(monkeypatch)
+    def test_env_fallback_used(self, scoped_env, monkeypatch):
         monkeypatch.setenv("RETICULUM_ANNOUNCE_INTERVAL", "90")
         t = transport_module.ReticulumTransport()
         assert t.announce_interval_min == 90.0
 
-    def test_invalid_interval_fails_loudly_at_startup(self, monkeypatch):
-        self._stub_env(monkeypatch)
+    def test_invalid_interval_fails_loudly_at_startup(self, scoped_env):
         for v in (math.nan, math.inf, -math.inf, -1, 0.5, "garbage"):
             with pytest.raises(ValueError):
                 transport_module.ReticulumTransport(extra={"announce_interval": v})
 
-    def test_zero_interval_legal_via_extra(self, monkeypatch):
-        self._stub_env(monkeypatch)
+    def test_zero_interval_legal_via_extra(self, scoped_env):
         t = transport_module.ReticulumTransport(extra={"announce_interval": 0})
         assert t.announce_interval_min == 0.0
 
@@ -349,6 +349,55 @@ def fake_rns(monkeypatch):
 
     # identity re-calls for the send path tests:
     fake_rns_mod.Identity.recall = mock.Mock(return_value=None)
+
+
+class TestStoragePathChannel:
+    """A20: the storage_path argument must reach self.storage_path. Before the
+    fix the constructor accepted it and dropped it, so every test that passed
+    it was really writing to the default storage under the developer's HOME."""
+
+    def test_storage_path_kwarg_reaches_the_attribute(self, scoped_env, tmp_path):
+        t = transport_module.ReticulumTransport(
+            storage_path=str(tmp_path / "storage")
+        )
+        # Same helper as the fix, so normalization cannot mask a dropped value.
+        assert t.storage_path == transport_module.expand_path(
+            str(tmp_path / "storage")
+        )
+
+    def test_chain_order_extra_beats_kwarg_beats_env(self, scoped_env, monkeypatch, tmp_path):
+        monkeypatch.setenv("RETICULUM_STORAGE_PATH", str(tmp_path / "from-env"))
+        both = transport_module.ReticulumTransport(
+            storage_path=str(tmp_path / "from-kwarg"),
+            extra={"storage_path": str(tmp_path / "from-extra")},
+        )
+        assert both.storage_path == transport_module.expand_path(
+            str(tmp_path / "from-extra")
+        )
+        kwarg_wins_over_env = transport_module.ReticulumTransport(
+            storage_path=str(tmp_path / "from-kwarg")
+        )
+        assert kwarg_wins_over_env.storage_path == transport_module.expand_path(
+            str(tmp_path / "from-kwarg")
+        )
+
+    def test_started_transport_creates_nothing_under_home(
+        self, fake_rns, scoped_env, monkeypatch, tmp_path
+    ):
+        # The acceptance that makes the defect visible: with an isolated
+        # storage path, start() must not touch HOME at all. Red before the
+        # fix, where makedirs hits the default path expanded from HOME.
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+        t = transport_module.ReticulumTransport(
+            storage_path=str(tmp_path / "storage")
+        )
+        t.start()
+        try:
+            assert list(fake_home.iterdir()) == [], "start() wrote under $HOME"
+        finally:
+            t.stop()
 
 
 class TestSendTo:
@@ -730,8 +779,8 @@ class TestLifecycle:
 
 class TestRatchetQuarantine:
     def _make(self, tmp_path):
-        # The constructor only honors the path via extra/env (the
-        # storage_path kwarg is legacy and ignored), so pass it that way.
+        # Exercises the extra channel for the storage path; the kwarg
+        # channel is pinned in TestStoragePathChannel.
         return transport_module.ReticulumTransport(
             extra={"storage_path": str(tmp_path / "storage")}
         )
