@@ -351,6 +351,65 @@ def fake_rns(monkeypatch):
     fake_rns_mod.Identity.recall = mock.Mock(return_value=None)
 
 
+class TestStoragePathChannel:
+    """A20: the storage_path argument must reach self.storage_path. Before the
+    fix the constructor accepted it and dropped it, so every test that passed
+    it was really writing to the default storage under the developer's HOME."""
+
+    def _stub_env(self, monkeypatch):
+        def fake_get(name, default=None, **kwargs):
+            val = os.environ.get(name)
+            return default if val is None else val
+        monkeypatch.setattr(transport_module, "_get_scoped_secret", fake_get)
+        monkeypatch.delenv("RETICULUM_STORAGE_PATH", raising=False)
+
+    def test_storage_path_kwarg_reaches_the_attribute(self, monkeypatch, tmp_path):
+        self._stub_env(monkeypatch)
+        t = transport_module.ReticulumTransport(
+            storage_path=str(tmp_path / "storage")
+        )
+        # Same helper as the fix, so normalization cannot mask a dropped value.
+        assert t.storage_path == transport_module.expand_path(
+            str(tmp_path / "storage")
+        )
+
+    def test_chain_order_extra_beats_kwarg_beats_env(self, monkeypatch, tmp_path):
+        self._stub_env(monkeypatch)
+        monkeypatch.setenv("RETICULUM_STORAGE_PATH", str(tmp_path / "from-env"))
+        both = transport_module.ReticulumTransport(
+            storage_path=str(tmp_path / "from-kwarg"),
+            extra={"storage_path": str(tmp_path / "from-extra")},
+        )
+        assert both.storage_path == transport_module.expand_path(
+            str(tmp_path / "from-extra")
+        )
+        kwarg_wins_over_env = transport_module.ReticulumTransport(
+            storage_path=str(tmp_path / "from-kwarg")
+        )
+        assert kwarg_wins_over_env.storage_path == transport_module.expand_path(
+            str(tmp_path / "from-kwarg")
+        )
+
+    def test_started_transport_creates_nothing_under_home(
+        self, fake_rns, monkeypatch, tmp_path
+    ):
+        # The acceptance that makes the defect visible: with an isolated
+        # storage path, start() must not touch HOME at all. Red before the
+        # fix, where makedirs hits the default path expanded from HOME.
+        self._stub_env(monkeypatch)
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+        t = transport_module.ReticulumTransport(
+            storage_path=str(tmp_path / "storage")
+        )
+        t.start()
+        try:
+            assert not (fake_home / ".hermes").exists()
+        finally:
+            t.stop()
+
+
 class TestSendTo:
     def _started_transport(self, fake_rns, tmp_path):
         t = transport_module.ReticulumTransport(
@@ -730,8 +789,8 @@ class TestLifecycle:
 
 class TestRatchetQuarantine:
     def _make(self, tmp_path):
-        # The constructor only honors the path via extra/env (the
-        # storage_path kwarg is legacy and ignored), so pass it that way.
+        # Exercises the extra channel for the storage path; the kwarg
+        # channel is pinned in TestStoragePathChannel.
         return transport_module.ReticulumTransport(
             extra={"storage_path": str(tmp_path / "storage")}
         )

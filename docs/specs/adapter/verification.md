@@ -274,3 +274,27 @@ installed copy: the per-file headers (`RNS/__init__.py`, `LXMF/Utilities/lxmd.py
 that metadata field, and the credits list in the RNS package description on PyPI.
 Third, smaller: the copyright range is not one range — RNS headers read 2016-2026,
 LXMF's read 2020-2025 — so the README states each instead of applying RNS's to both.
+
+## Card A20: `ReticulumTransport` drops its own `storage_path` argument
+
+| # | Acceptance criterion | Evidence | Result | Gap |
+|---|---|---|---|---|
+| 1 | The `storage_path` kwarg reaches `self.storage_path`, pinned by a test | `test_storage_path_kwarg_reaches_the_attribute` asserts the attribute equals `transport_module.expand_path(X)` — the same helper the fix uses, so normalization cannot mask a dropped value | PASS | - |
+| 2 | Chain order pinned: `extra` beats kwarg, kwarg beats scoped env | `test_chain_order_extra_beats_kwarg_beats_env` sets all three sources at once and checks the two pairings; `_get_scoped_secret` is stubbed to `os.environ` exactly as `TestConstruction._stub_env` does, so the env half of the chain is exercised without profile state | PASS | - |
+| 3 | A started transport with an isolated storage path creates nothing under `$HOME` | `test_started_transport_creates_nothing_under_home` monkeypatches `HOME` to a fresh dir, starts, asserts `.hermes` absent under it. Red-before: run against the base `transport.py` (fix stashed) at branch base, it fails — the makedirs lands in the fake home. Independently confirmed at the suite level: the head CI-stub full run against a fresh empty `$HOME` leaves 0 paths matching `reticulum-gateway` anywhere under it | PASS | - |
+| 4 | Transport file at `HOME=/nonexistent`: 0 failures at head (base: 28); suite matches base except new tests | Red-before measured at dev@`ba5b5c2`: that file gives 28 failed / 27 passed under the documented CI-stub with `HOME=/nonexistent`; the same command at head gives 58 passed (the file's 55 plus 3 new). Real-base full suite: base 660 passed / 4 skipped / 1 failed (the carded `test_tool_emoji` parity red), head 663 / 4 / 1 — delta exactly the 3 new tests, same known red. CI-stub with fresh writable `$HOME`: base 656 / 9 / 0, head 659 / 9 / 0 | PASS | - |
+| 5 | The stale comment stating the defect is corrected | `tests/test_reticulum_transport.py` `TestRatchetQuarantine._make` comment ("the `storage_path` kwarg is legacy and ignored") replaced with a pointer to the pinned channel tests; the test keeps exercising the `extra` channel on purpose | PASS | - |
+
+Bonus row (not an acceptance condition, recorded because it retires a standing
+environment caveat): the **full** suite at head under the CI-stub with
+`HOME=/nonexistent` now gives 659 passed / 9 skipped / 0 failed — A19's row 2 had
+to insist `HOME` be an existing writable directory precisely because of this
+defect, and that constraint is gone at head. Other writes still appear under a
+stub `$HOME` (`~/.hermes/.reticulum-turn-alive`, a bridge-era step log) but none
+of them fail on a nonexistent `HOME`, so no follow-up is carded for them; they
+were observed at the base run too.
+
+Red-before, recorded at branch base dev@`ba5b5c2`: the final 3-case file run
+against the base `transport.py` (fix stashed) gives 3 failed — the kwarg test,
+the chain test, and the home-isolation test. Green after: 58 passed at
+`HOME=/nonexistent` for the whole transport file; 3/3 pass in every mode.
