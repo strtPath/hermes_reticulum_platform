@@ -170,6 +170,9 @@ class _FakeLXMessage:
 
     def __init__(self, dest, source, content="", **kwargs):
         self.dest = dest
+        # Real LXMessage stores the peer under .destination; code that
+        # reads the message must work against the real name.
+        self.destination = dest
         self.source = source
         self.content = content
         # Real LXMessage turns its constructor kwargs into attributes
@@ -593,15 +596,24 @@ class TestPathAwareSend:
         fake_rns.Identity.recall.return_value = mock.Mock()
         fake_rns.Transport.has_path.return_value = False
         t = self._started_transport(fake_rns, tmp_path)
+        # A destination we have delivered to before: full five-request
+        # budget (the proven-delivery gate is its own test below).
+        t._delivery_proven.add(bytes.fromhex(FAKE_HASH))
         t.PATH_WAIT_SECONDS = 55.0
         t.PATH_POLL_SECONDS = 0.5
         t.PATH_REREQUEST_SECONDS = 10.0
+        clock = FakeClock()
         monkeypatch.setattr(
-            transport_module.ReticulumTransport, "TIME_SOURCE", FakeClock()
+            transport_module.ReticulumTransport, "TIME_SOURCE", clock
+        )
+        request_times = []
+        fake_rns.Transport.request_path.side_effect = (
+            lambda _h: request_times.append(clock.now)
         )
         t.send_to(FAKE_HASH, "hello")
-        # t=0,10,20,30,40: five requests, then the cap holds.
-        assert fake_rns.Transport.request_path.call_count == 5
+        # Spacing is part of the contract: a tighter interval would burn
+        # the same mesh airtime the window exists to space out.
+        assert request_times == [0.0, 10.0, 20.0, 30.0, 40.0]
 
     def test_path_appearing_mid_window_stops_the_re_requests(
         self, fake_rns, tmp_path, monkeypatch
@@ -630,16 +642,124 @@ class TestPathAwareSend:
         fake_rns.Transport.has_path.side_effect = has_path
         fake_rns.Transport.hops_to.return_value = 3
         t = self._started_transport(fake_rns, tmp_path)
+        t._delivery_proven.add(bytes.fromhex(FAKE_HASH))  # proven peer
+        t.PATH_WAIT_SECONDS = 55.0
+        t.PATH_POLL_SECONDS = 0.5
+        t.PATH_REREQUEST_SECONDS = 10.0
+        clock = FakeClock()
+        monkeypatch.setattr(
+            transport_module.ReticulumTransport, "TIME_SOURCE", clock
+        )
+        request_times = []
+        fake_rns.Transport.request_path.side_effect = (
+            lambda _h: request_times.append(clock.now)
+        )
+        assert t.send_to(FAKE_HASH, "hello") is True
+        assert t.router.outbound[0].desired_method == _FakeLXMessage.DIRECT
+        # Path appeared around t=13s: only the t=0 and t=10 requests flew.
+        assert request_times == [0.0, 10.0]
+
+    def test_never_delivered_destination_gets_one_request_not_five(
+        self, fake_rns, tmp_path, monkeypatch
+    ):
+        """Path-request floods are budgeted by proven delivery, not by
+        announces: a rotating-identity stranger can mint an announce, but
+        cannot mint having received our traffic, so it gets a single
+        request even with a full window open."""
+
+        class FakeClock:
+            def __init__(self):
+                self.now = 0.0
+
+            def time(self):
+                return self.now
+
+            def sleep(self, seconds):
+                self.now += seconds
+
+        fake_rns.Identity.recall.return_value = mock.Mock()
+        fake_rns.Transport.has_path.return_value = False
+        t = self._started_transport(fake_rns, tmp_path)
         t.PATH_WAIT_SECONDS = 55.0
         t.PATH_POLL_SECONDS = 0.5
         t.PATH_REREQUEST_SECONDS = 10.0
         monkeypatch.setattr(
             transport_module.ReticulumTransport, "TIME_SOURCE", FakeClock()
         )
-        assert t.send_to(FAKE_HASH, "hello") is True
-        assert t.router.outbound[0].desired_method == _FakeLXMessage.DIRECT
-        # Path appeared around t=13s: only the t=0 and t=10 requests flew.
-        assert fake_rns.Transport.request_path.call_count == 2
+        t.send_to(FAKE_HASH, "hello")
+        assert fake_rns.Transport.request_path.call_count == 1
+
+    def test_abort_probes_ends_the_wait(self, fake_rns, tmp_path, monkeypatch):
+        """Teardown calls abort_probes() before waiting for sends to quiesce;
+        an in-flight probe must exit inside its poll interval, not sit out
+        the window and stall executor shutdown."""
+
+        class FakeClock:
+            def __init__(self):
+                self.now = 0.0
+
+            def time(self):
+                return self.now
+
+            def sleep(self, seconds):
+                self.now += seconds
+
+        fake_rns.Identity.recall.return_value = mock.Mock()
+        fake_rns.Transport.has_path.return_value = False
+        t = self._started_transport(fake_rns, tmp_path)
+        t._delivery_proven.add(bytes.fromhex(FAKE_HASH))  # full budget armed
+        t.PATH_WAIT_SECONDS = 55.0
+        t.PATH_POLL_SECONDS = 0.5
+        t.PATH_REREQUEST_SECONDS = 10.0
+
+        class AbortingClock(FakeClock):
+            """Disconnect lands at t=20 — exactly a re-request tick. An
+            abort arriving inside a poll step must not still buy one more
+            broadcast, which is what the stop-flag re-check after the
+            sleep pins down."""
+
+            def sleep(self, seconds):
+                super().sleep(seconds)
+                if self.now >= 20.0:
+                    t.abort_probes()
+
+        clock = AbortingClock()
+        monkeypatch.setattr(
+            transport_module.ReticulumTransport, "TIME_SOURCE", clock
+        )
+        request_times = []
+        fake_rns.Transport.request_path.side_effect = (
+            lambda _h: request_times.append(clock.now)
+        )
+        t.send_to(FAKE_HASH, "hello")
+        # Requests at t=0 and t=10; the abort at t=20 lands during the
+        # sleep before the third request would fire, and the post-sleep
+        # check ends the probe there. Without that check, request_times
+        # would carry a third broadcast at t=20.
+        assert request_times == [0.0, 10.0]
+        assert 20.0 <= clock.now < 21.0
+
+    def test_aborted_transport_requests_nothing(self, fake_rns, tmp_path):
+        """A probe that starts after teardown began must not touch the wire."""
+        fake_rns.Identity.recall.return_value = mock.Mock()
+        fake_rns.Transport.has_path.return_value = False
+        t = self._started_transport(fake_rns, tmp_path)
+        t.abort_probes()
+        t.send_to(FAKE_HASH, "hello")
+        fake_rns.Transport.request_path.assert_not_called()
+
+    def test_start_after_stop_re_arms_the_probe(self, fake_rns, tmp_path):
+        """stop() arms the probe-abort flag; start() after stop() is a
+        supported sequence and must clear it, or every later cold send
+        silently skips its path request and wait."""
+        fake_rns.Identity.recall.return_value = mock.Mock()
+        fake_rns.Transport.has_path.return_value = False
+        t = self._started_transport(fake_rns, tmp_path)
+        t.stop()
+        t.start()
+        t.PATH_WAIT_SECONDS = 0.0
+        t.send_to(FAKE_HASH, "hello")
+        fake_rns.Transport.request_path.assert_called()
 
     def test_no_path_with_node_sends_propagated(self, fake_rns, tmp_path):
         fake_rns.Identity.recall.return_value = mock.Mock()
@@ -708,6 +828,84 @@ class TestPathAwareSend:
 
         t.router.handle_outbound = mock.Mock(side_effect=sent)
         assert t.send_to(FAKE_HASH, "hello") is True
+
+    def test_delivered_send_makes_the_destination_proven(
+        self, fake_rns, tmp_path, monkeypatch
+    ):
+        """Budget wiring: a terminal DELIVERED marks the destination
+        proven — proven delivery, not announces, is what later unlocks the
+        full re-request cycle. SENT must not: for a propagated message it
+        only means a relay accepted it, which the peer controls."""
+
+        class HashedDestination(_FakeDestination):
+            def __init__(self, *args):
+                super().__init__(*args)
+                self.hash = bytes.fromhex(FAKE_HASH)
+
+        monkeypatch.setattr(fake_rns, "Destination", HashedDestination)
+        fake_rns.Identity.recall.return_value = mock.Mock()
+        fake_rns.Transport.has_path.return_value = True
+        t = self._started_transport(fake_rns, tmp_path)
+
+        def delivered(lxm):
+            t.router.outbound.append(lxm)
+            lxm.state = _FakeLXMessage.DELIVERED
+
+        t.router.handle_outbound = mock.Mock(side_effect=delivered)
+        assert t.send_to(FAKE_HASH, "hello") is True
+        assert bytes.fromhex(FAKE_HASH) in t._delivery_proven
+
+    def test_sent_alone_does_not_make_the_destination_proven(
+        self, fake_rns, tmp_path, monkeypatch
+    ):
+        """A propagated send the relay accepted but the peer never got
+        (SENT) is delivery success yet must not mint the proven flag —
+        otherwise a stranger running the relay mints the five-request
+        budget for free (Greptile round 3 on PR #10)."""
+
+        class HashedDestination(_FakeDestination):
+            def __init__(self, *args):
+                super().__init__(*args)
+                self.hash = bytes.fromhex(FAKE_HASH)
+
+        monkeypatch.setattr(fake_rns, "Destination", HashedDestination)
+        fake_rns.Identity.recall.return_value = mock.Mock()
+        fake_rns.Transport.has_path.return_value = True
+        t = self._started_transport(fake_rns, tmp_path)
+
+        def sent(lxm):
+            t.router.outbound.append(lxm)
+            lxm.state = _FakeLXMessage.SENT
+
+        t.router.handle_outbound = mock.Mock(side_effect=sent)
+        assert t.send_to(FAKE_HASH, "hello") is True
+        assert bytes.fromhex(FAKE_HASH) not in t._delivery_proven
+
+    def test_rejection_note_proven_false_delivers_without_proven(
+        self, fake_rns, tmp_path, monkeypatch
+    ):
+        """note_proven=False (the rejection reply path) must deliver cleanly
+        yet leave the destination unproven — a denied peer receiving its
+        rejection cannot buy the full probe budget with it (Greptile
+        round 4 on PR #10)."""
+
+        class HashedDestination(_FakeDestination):
+            def __init__(self, *args):
+                super().__init__(*args)
+                self.hash = bytes.fromhex(FAKE_HASH)
+
+        monkeypatch.setattr(fake_rns, "Destination", HashedDestination)
+        fake_rns.Identity.recall.return_value = mock.Mock()
+        fake_rns.Transport.has_path.return_value = True
+        t = self._started_transport(fake_rns, tmp_path)
+
+        def delivered(lxm):
+            t.router.outbound.append(lxm)
+            lxm.state = _FakeLXMessage.DELIVERED
+
+        t.router.handle_outbound = mock.Mock(side_effect=delivered)
+        assert t.send_to(FAKE_HASH, "denied", note_proven=False) is True
+        assert bytes.fromhex(FAKE_HASH) not in t._delivery_proven
 
     def test_no_identity_and_no_path_returns_false(self, fake_rns, tmp_path):
         fake_rns.Identity.recall.return_value = None

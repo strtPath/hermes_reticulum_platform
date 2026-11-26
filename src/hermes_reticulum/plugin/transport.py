@@ -206,6 +206,18 @@ class ReticulumTransport:
         # Periodic re-announce scheduler (set up on start, torn down on stop).
         self._announce_timer: threading.Thread | None = None
         self._announce_timer_stop: threading.Event | None = None
+        # Set by abort_probes()/stop() to end path probes promptly.
+        self._probe_stop = threading.Event()
+        # Destinations this node has actually DELIVERED to (terminal state
+        # DELIVERED only — SENT can be minted by a propagation node
+        # accepting a message the peer never receives; rejection replies
+        # carry note_proven=False and mint nothing). The probe
+        # re-request budget is keyed on this,
+        # not on received announces: a stranger mints an announce with a few
+        # milliseconds of their own CPU, while proven delivery is minted
+        # only by being a real peer (Greptile P2 on PR #10). Survives
+        # transport restart — it records a relationship, not a session.
+        self._delivery_proven: set = set()
 
         # Per-message delivery/failure callbacks registered through the
         # protocol. LXMF fires the per-message callback with the message
@@ -264,6 +276,12 @@ class ReticulumTransport:
         if self._started:
             logger.info("Transport already started (idempotent start)")
             return
+
+        # A stop() armed the probe-abort flag; a start() after stop() is a
+        # supported sequence and must re-arm probing, or every later
+        # cold-path send silently skips its request and wait (Greptile P1
+        # on PR #10).
+        self._probe_stop.clear()
 
         os.makedirs(self.storage_path, exist_ok=True)
 
@@ -496,6 +514,7 @@ class ReticulumTransport:
         and persists its data (Transport.exit_handler), and the router is
         dropped so a later ``start()`` re-initialises cleanly.
         """
+        self._probe_stop.set()
         if not self._started and self.reticulum is None:
             return
         self._stop_announce_timer()
@@ -584,6 +603,18 @@ class ReticulumTransport:
     # send path, so this is what keeps send_to tests fast by default.
     TIME_SOURCE = time
 
+    def abort_probes(self) -> None:
+        """Tell in-flight and future path probes to stop waiting.
+
+        Teardown calls this before quiescing sends. A probe can now run
+        for ``PATH_WAIT_SECONDS`` — longer than the adapter's idle wait —
+        and the reject worker's ``shutdown(wait=True)`` would then block
+        the event loop for the remainder of the window. The probe polls
+        at ``PATH_POLL_SECONDS``, so it notices within half a second and
+        its send fails cleanly instead of stalling disconnect.
+        """
+        self._probe_stop.set()
+
     def _probe_path(self, dest_hash: bytes) -> tuple[bool, int | None]:
         """(has_path, hops) for a destination, requesting one if absent.
 
@@ -592,12 +623,24 @@ class ReticulumTransport:
         (``MAX_PATHLESS_TRIES = 1``) even when the peer is reachable and simply
         has not announced recently. Asking first turns that guaranteed
         cancellation into a likely delivery.
+
+        Re-requests stay capped at ``PATH_REQUEST_MAX`` only for
+        destinations this node has delivered to before. Announces are the
+        wrong discriminator (Greptile P1+P2 on PR #10): an announce is
+        minted by the stranger — a rotating identity would farm five
+        broadcasts per message for the price of one signed announce.
+        Proven delivery is the signal only a real peer can mint. A
+        never-delivered destination gets one request, and the wait still
+        runs: 60s of patience (four times the pre-#9 window) bought with
+        one broadcast rather than five.
         """
         try:
             if RNS.Transport.has_path(dest_hash):
                 return True, RNS.Transport.hops_to(dest_hash)
         except Exception as e:
             logger.debug("path probe failed: %s", e)
+            return False, None
+        if self._probe_stop.is_set():
             return False, None
 
         try:
@@ -607,10 +650,15 @@ class ReticulumTransport:
             logger.debug("path request failed: %s", e)
             return False, None
 
+        # Full re-request budget only for destinations this node has
+        # actually delivered to — see the docstring for why announces (not
+        # delivery) being the discriminator was wrong twice over.
+        cap = self.PATH_REQUEST_MAX if dest_hash in self._delivery_proven else 1
+
         clock = self.TIME_SOURCE
         deadline = clock.time() + self.PATH_WAIT_SECONDS
         next_rerequest = clock.time() + self.PATH_REREQUEST_SECONDS
-        while clock.time() < deadline:
+        while not self._probe_stop.is_set() and clock.time() < deadline:
             clock.sleep(self.PATH_POLL_SECONDS)
             try:
                 if RNS.Transport.has_path(dest_hash):
@@ -624,14 +672,19 @@ class ReticulumTransport:
                 pass
             # One PATH_REQUEST may be lost; keep asking on the router's
             # cadence until the cap or the window runs out.
-            if requests_sent < self.PATH_REQUEST_MAX and clock.time() >= next_rerequest:
+            if self._probe_stop.is_set():
+                # Re-check after the sleep: an abort landing inside the
+                # poll step must not still buy one more broadcast
+                # (senior review on PR #10).
+                return False, None
+            if requests_sent < cap and clock.time() >= next_rerequest:
                 try:
                     RNS.Transport.request_path(dest_hash)
                     requests_sent += 1
                     logger.info(
                         "Repeated path request to peer (%d/%d)",
                         requests_sent,
-                        self.PATH_REQUEST_MAX,
+                        cap,
                     )
                 except Exception as e:
                     logger.debug("path re-request failed: %s", e)
@@ -680,8 +733,14 @@ class ReticulumTransport:
         """
         return self._last_send_direct
 
-    def send_to(self, destination_hash: str, payload: str) -> bool:
+    def send_to(
+        self, destination_hash: str, payload: str, *, note_proven: bool = True
+    ) -> bool:
         """Send ``payload`` to a destination hash (32 hex chars).
+
+        ``note_proven=False`` delivers without minting the proven-delivery
+        flag: the rejection reply to a denied sender must not hand that
+        stranger the full path-probe budget (Greptile round 4 on PR #10).
 
         Returns False (never raises) when the message could not be handed to
         the mesh, or when the router cancels or fails it. A path is probed
@@ -743,6 +802,11 @@ class ReticulumTransport:
             # field costs 1-2 bytes on the wire and changes nothing for them.
             # LXMessage has no set_field(); mutate the fields dict directly.
             self._stamp_renderer(lxm, payload)
+            if not note_proven:
+                # Read by _note_proven; a plain attribute on the message so
+                # both the synchronous wait and the async callbacks see it
+                # without tracking live sends in a set.
+                lxm._hermes_note_proven = False
             # Per-message callbacks (they live on LXMessage, not the router).
             # Register BEFORE dispatch so an immediate failure is not missed.
             # These fire on the RNS thread and report OUR OWN message's fate,
@@ -842,12 +906,37 @@ class ReticulumTransport:
             if state in terminal_failure:
                 return True
             if state in (LXMF.LXMessage.DELIVERED, LXMF.LXMessage.SENT):
+                # Proven is minted by DELIVERED only. A propagated send
+                # reaches SENT when some propagation node accepted it —
+                # the peer may never receive anything, and an attacker
+                # running (or autopeering to) that node mints SENT for
+                # free (Greptile round 3 on PR #10). The send itself
+                # still counts as accepted either way.
+                if state == LXMF.LXMessage.DELIVERED:
+                    self._note_proven(lxm)
                 return False
             if time.time() >= deadline:
                 break
             time.sleep(self.OUTCOME_POLL_SECONDS)
         # Still in flight after the grace period: in progress, not failed.
         return False
+
+    def _note_proven(self, message) -> None:
+        """Record that this node has DELIVERED to the message's destination.
+
+        Proven delivery is the only path-probe discriminator a stranger
+        cannot mint: they can announce at will, but they cannot fake
+        having actually received our message. Never raises into RNS
+        callback internals.
+        """
+        try:
+            if not getattr(message, "_hermes_note_proven", True):
+                return  # rejection reply: delivered, but mints nothing
+            dest_hash = getattr(getattr(message, "destination", None), "hash", None)
+            if isinstance(dest_hash, bytes) and dest_hash:
+                self._delivery_proven.add(dest_hash)
+        except Exception:
+            pass
 
     @staticmethod
     def _extract_inbound(message) -> tuple:
@@ -942,6 +1031,8 @@ class ReticulumTransport:
         internals.
         """
         try:
+            if getattr(message, "state", None) == LXMF.LXMessage.DELIVERED:
+                self._note_proven(message)
             if self._outbound_cb is not None:
                 self._outbound_cb(
                     self._extract_payload(message), getattr(message, "state", None)
