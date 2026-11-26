@@ -553,17 +553,38 @@ class ReticulumTransport:
 
     # ── Outbound ───────────────────────────────────────────────────────
 
-    # How long to wait for a path request to answer before giving up on
-    # direct delivery. LoRa hops are slow, so this is generous; it only
-    # applies when there is no path, so a warm path never pays it.
-    PATH_WAIT_SECONDS = 15.0
+    # How long to wait for a path to appear before giving up on direct
+    # delivery. Sized to LXMF's own delivery cycle (five attempts at
+    # DELIVERY_RETRY_WAIT spacing, roughly 50-70s on slow media) so the
+    # pre-dispatch probe is as patient as the router's post-dispatch
+    # retries. It only applies when there is no path, so a warm path
+    # never pays it.
+    PATH_WAIT_SECONDS = 60.0
+
+    # A cold peer may simply have missed our single PATH_REQUEST (LoRa
+    # collisions, an interface that was down when it flew). The router's
+    # own attempts re-request between tries, so we do the same inside the
+    # window, on the same 10s cadence LXMRouter.DELIVERY_RETRY_WAIT uses,
+    # capped at the same five requests.
+    PATH_REREQUEST_SECONDS = 10.0
+    PATH_REQUEST_MAX = 5
+    # (Re-request spacing must stay below the window: if it exceeds
+    # PATH_WAIT_SECONDS the window goes silent after the first request,
+    # which is the single-request failure mode this loop exists to fix.)
 
     # Poll interval inside that wait. Injectable so a test can drive the
     # deadline without sleeping for it (a mocked sleep does not advance
-    # time.time, so the loop would otherwise spin for the full real 15s).
+    # time.time, so the loop would otherwise spin for the full real
+    # window).
     PATH_POLL_SECONDS = 0.5
 
-    def _probe_path(self, dest_hash: bytes) -> tuple[bool, int]:
+    # The clock the probe pacing runs on. Tests substitute a fake clock
+    # so the ten-second cadence can be proven without ten seconds of
+    # real waiting — the probe is now the only unbounded wait on the
+    # send path, so this is what keeps send_to tests fast by default.
+    TIME_SOURCE = time
+
+    def _probe_path(self, dest_hash: bytes) -> tuple[bool, int | None]:
         """(has_path, hops) for a destination, requesting one if absent.
 
         DIRECT sends do not request paths (only OPPORTUNISTIC does), so a cold
@@ -577,27 +598,45 @@ class ReticulumTransport:
                 return True, RNS.Transport.hops_to(dest_hash)
         except Exception as e:
             logger.debug("path probe failed: %s", e)
-            return False, 128
+            return False, None
 
         try:
             RNS.Transport.request_path(dest_hash)
+            requests_sent = 1
         except Exception as e:
             logger.debug("path request failed: %s", e)
-            return False, 128
+            return False, None
 
-        deadline = time.time() + self.PATH_WAIT_SECONDS
-        while time.time() < deadline:
-            time.sleep(self.PATH_POLL_SECONDS)
+        clock = self.TIME_SOURCE
+        deadline = clock.time() + self.PATH_WAIT_SECONDS
+        next_rerequest = clock.time() + self.PATH_REREQUEST_SECONDS
+        while clock.time() < deadline:
+            clock.sleep(self.PATH_POLL_SECONDS)
             try:
                 if RNS.Transport.has_path(dest_hash):
                     hops = RNS.Transport.hops_to(dest_hash)
                     logger.info(
-                        "Path to peer appeared after a request (hops=%s)", hops
+                        "Path to peer appeared after a request (hops=%s)",
+                        "unknown" if hops is None else hops,
                     )
                     return True, hops
             except Exception:
                 pass
-        return False, 128
+            # One PATH_REQUEST may be lost; keep asking on the router's
+            # cadence until the cap or the window runs out.
+            if requests_sent < self.PATH_REQUEST_MAX and clock.time() >= next_rerequest:
+                try:
+                    RNS.Transport.request_path(dest_hash)
+                    requests_sent += 1
+                    logger.info(
+                        "Repeated path request to peer (%d/%d)",
+                        requests_sent,
+                        self.PATH_REQUEST_MAX,
+                    )
+                except Exception as e:
+                    logger.debug("path re-request failed: %s", e)
+                next_rerequest = clock.time() + self.PATH_REREQUEST_SECONDS
+        return False, None
 
     def _select_method(self, dest_hash: bytes, has_path: bool) -> int:
         """Pick the LXMF delivery method for this send.

@@ -573,6 +573,74 @@ class TestPathAwareSend:
         t.send_to(FAKE_HASH, "hello")
         fake_rns.Transport.request_path.assert_called()
 
+    def test_cold_path_re_requests_on_the_routers_cadence(
+        self, fake_rns, tmp_path, monkeypatch
+    ):
+        """One PATH_REQUEST can be lost on LoRa; the probe keeps asking up
+        to five times, matching LXMRouter's five-attempt delivery cycle,
+        instead of giving up on a single request."""
+
+        class FakeClock:
+            def __init__(self):
+                self.now = 0.0
+
+            def time(self):
+                return self.now
+
+            def sleep(self, seconds):
+                self.now += seconds
+
+        fake_rns.Identity.recall.return_value = mock.Mock()
+        fake_rns.Transport.has_path.return_value = False
+        t = self._started_transport(fake_rns, tmp_path)
+        t.PATH_WAIT_SECONDS = 55.0
+        t.PATH_POLL_SECONDS = 0.5
+        t.PATH_REREQUEST_SECONDS = 10.0
+        monkeypatch.setattr(
+            transport_module.ReticulumTransport, "TIME_SOURCE", FakeClock()
+        )
+        t.send_to(FAKE_HASH, "hello")
+        # t=0,10,20,30,40: five requests, then the cap holds.
+        assert fake_rns.Transport.request_path.call_count == 5
+
+    def test_path_appearing_mid_window_stops_the_re_requests(
+        self, fake_rns, tmp_path, monkeypatch
+    ):
+        """A late PATH_REPLY still wins: the probe returns DIRECT, and no
+        further requests fire once the path exists."""
+
+        class FakeClock:
+            def __init__(self):
+                self.now = 0.0
+
+            def time(self):
+                return self.now
+
+            def sleep(self, seconds):
+                self.now += seconds
+
+        fake_rns.Identity.recall.return_value = mock.Mock()
+        answers = {"n": 0}
+
+        def has_path(_hash):
+            answers["n"] += 1
+            # False for the initial probe plus ~12s of polls, then True.
+            return answers["n"] > 26
+
+        fake_rns.Transport.has_path.side_effect = has_path
+        fake_rns.Transport.hops_to.return_value = 3
+        t = self._started_transport(fake_rns, tmp_path)
+        t.PATH_WAIT_SECONDS = 55.0
+        t.PATH_POLL_SECONDS = 0.5
+        t.PATH_REREQUEST_SECONDS = 10.0
+        monkeypatch.setattr(
+            transport_module.ReticulumTransport, "TIME_SOURCE", FakeClock()
+        )
+        assert t.send_to(FAKE_HASH, "hello") is True
+        assert t.router.outbound[0].desired_method == _FakeLXMessage.DIRECT
+        # Path appeared around t=13s: only the t=0 and t=10 requests flew.
+        assert fake_rns.Transport.request_path.call_count == 2
+
     def test_no_path_with_node_sends_propagated(self, fake_rns, tmp_path):
         fake_rns.Identity.recall.return_value = mock.Mock()
         fake_rns.Transport.has_path.return_value = False
