@@ -210,7 +210,8 @@ class ReticulumTransport:
         self._probe_stop = threading.Event()
         # Destinations this node has actually DELIVERED to (terminal state
         # DELIVERED only — SENT can be minted by a propagation node
-        # accepting a message the peer never receives). The probe
+        # accepting a message the peer never receives; rejection replies
+        # carry note_proven=False and mint nothing). The probe
         # re-request budget is keyed on this,
         # not on received announces: a stranger mints an announce with a few
         # milliseconds of their own CPU, while proven delivery is minted
@@ -732,8 +733,14 @@ class ReticulumTransport:
         """
         return self._last_send_direct
 
-    def send_to(self, destination_hash: str, payload: str) -> bool:
+    def send_to(
+        self, destination_hash: str, payload: str, *, note_proven: bool = True
+    ) -> bool:
         """Send ``payload`` to a destination hash (32 hex chars).
+
+        ``note_proven=False`` delivers without minting the proven-delivery
+        flag: the rejection reply to a denied sender must not hand that
+        stranger the full path-probe budget (Greptile round 4 on PR #10).
 
         Returns False (never raises) when the message could not be handed to
         the mesh, or when the router cancels or fails it. A path is probed
@@ -795,6 +802,11 @@ class ReticulumTransport:
             # field costs 1-2 bytes on the wire and changes nothing for them.
             # LXMessage has no set_field(); mutate the fields dict directly.
             self._stamp_renderer(lxm, payload)
+            if not note_proven:
+                # Read by _note_proven; a plain attribute on the message so
+                # both the synchronous wait and the async callbacks see it
+                # without tracking live sends in a set.
+                lxm._hermes_note_proven = False
             # Per-message callbacks (they live on LXMessage, not the router).
             # Register BEFORE dispatch so an immediate failure is not missed.
             # These fire on the RNS thread and report OUR OWN message's fate,
@@ -918,6 +930,8 @@ class ReticulumTransport:
         callback internals.
         """
         try:
+            if not getattr(message, "_hermes_note_proven", True):
+                return  # rejection reply: delivered, but mints nothing
             dest_hash = getattr(getattr(message, "destination", None), "hash", None)
             if isinstance(dest_hash, bytes) and dest_hash:
                 self._delivery_proven.add(dest_hash)

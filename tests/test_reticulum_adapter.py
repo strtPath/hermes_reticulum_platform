@@ -275,7 +275,7 @@ def test_transport_without_path_state_is_treated_as_direct():
     adapter = make_adapter()
 
     class _NoAnswer:
-        def send_to(self, *a):
+        def send_to(self, *a, **kw):
             return True
 
     adapter._transport = _NoAnswer()
@@ -287,7 +287,7 @@ def test_path_state_error_is_treated_as_direct():
     adapter = make_adapter()
 
     class _Raises:
-        def send_to(self, *a):
+        def send_to(self, *a, **kw):
             return True
 
         def last_send_was_direct(self):
@@ -362,7 +362,7 @@ async def test_link_mode_falls_back_to_chunks_when_one_body_send_fails(monkeypat
             super().__init__(direct=False)
             self._attempts = 0
 
-        def send_to(self, destination_hash, payload):
+        def send_to(self, destination_hash, payload, note_proven=True):
             self._attempts += 1
             self.sent.append((destination_hash, payload))
             return self._attempts > 1  # refuse only the one-body attempt
@@ -398,7 +398,7 @@ async def test_link_mode_fallback_record_holds_only_attempted_payloads(monkeypat
             super().__init__(direct=True)
             self._attempts = 0
 
-        def send_to(self, destination_hash, payload):
+        def send_to(self, destination_hash, payload, note_proven=True):
             self._attempts += 1
             self.sent.append((destination_hash, payload))
             return self._attempts > 1
@@ -443,7 +443,7 @@ async def test_link_mode_same_body_resent_after_fallback_is_not_dropped(
             super().__init__(direct=True)
             self._refusals = 1
 
-        def send_to(self, destination_hash, payload):
+        def send_to(self, destination_hash, payload, note_proven=True):
             self.sent.append((destination_hash, payload))
             if self._refusals:
                 self._refusals -= 1
@@ -490,7 +490,7 @@ async def test_link_mode_body_delivered_then_false_never_counts_a_failure(
             super().__init__(direct=True)
             self._attempts = 0
 
-        def send_to(self, destination_hash, payload):
+        def send_to(self, destination_hash, payload, note_proven=True):
             self._attempts += 1
             self.sent.append((destination_hash, payload))
             if self._attempts == 1:
@@ -539,7 +539,7 @@ async def test_link_mode_supersede_mark_never_swallows_another_chats_receipt(
             super().__init__(direct=True)
             self.refusing = False
 
-        def send_to(self, destination_hash, payload):
+        def send_to(self, destination_hash, payload, note_proven=True):
             self.sent.append((destination_hash, payload))
             if self.refusing:
                 self.refusing = False
@@ -595,7 +595,7 @@ async def test_link_mode_replaced_receipt_never_lands_on_a_live_chat(monkeypatch
             super().__init__(direct=True)
             self.refusing = False
 
-        def send_to(self, destination_hash, payload):
+        def send_to(self, destination_hash, payload, note_proven=True):
             self.sent.append((destination_hash, payload))
             if self.refusing:
                 self.refusing = False
@@ -641,7 +641,7 @@ async def test_link_mode_receipts_arrive_through_the_loop_hop(monkeypatch):
     loop = asyncio.get_running_loop()
 
     class _DeliverOnThread(_TransportReportingPath):
-        def send_to(self, destination_hash, payload):
+        def send_to(self, destination_hash, payload, note_proven=True):
             self.sent.append((destination_hash, payload))
             loop.call_soon_threadsafe(
                 adapter._handle_outbound_outcome, payload, delivery.STATE_DELIVERED
@@ -679,7 +679,7 @@ async def test_link_mode_superseded_body_failed_then_delivered_counts_once(
             super().__init__(direct=True)
             self._attempts = 0
 
-        def send_to(self, destination_hash, payload):
+        def send_to(self, destination_hash, payload, note_proven=True):
             self._attempts += 1
             self.sent.append((destination_hash, payload))
             if self._attempts == 1:
@@ -731,7 +731,7 @@ async def test_link_mode_body_failure_counted_during_send_is_retracted(
             super().__init__(direct=True)
             self._attempts = 0
 
-        def send_to(self, destination_hash, payload):
+        def send_to(self, destination_hash, payload, note_proven=True):
             self._attempts += 1
             self.sent.append((destination_hash, payload))
             if self._attempts == 1:
@@ -772,7 +772,7 @@ async def test_link_mode_fallback_that_also_fails_stops_after_one_attempt(
     monkeypatch.delenv("HERMES_RNS_LINK_MODE", raising=False)
 
     class _RejectAll(_TransportReportingPath):
-        def send_to(self, destination_hash, payload):
+        def send_to(self, destination_hash, payload, note_proven=True):
             self.sent.append((destination_hash, payload))
             return False
 
@@ -811,7 +811,7 @@ async def test_link_mode_cancellation_during_send_skips_chunk_fallback(
     release = threading.Event()
 
     class _SlowReject(_TransportReportingPath):
-        def send_to(self, destination_hash, payload):
+        def send_to(self, destination_hash, payload, note_proven=True):
             self.sent.append((destination_hash, payload))
             started.set()
             release.wait(5)
@@ -1115,7 +1115,7 @@ async def test_delivery_during_send_does_not_leave_it_pending():
     thread. The entry is recorded before the send, so that callback resolves it
     and the reply is not left marked unconfirmed forever."""
     class ImmediateConfirmTransport(FakeTransport):
-        def send_to(self, destination_hash, payload):
+        def send_to(self, destination_hash, payload, note_proven=True):
             ok = super().send_to(destination_hash, payload)
             # The transport reports delivery synchronously, as a fast direct
             # send would: the callback fires before send() resumes.
@@ -1144,7 +1144,7 @@ async def test_disconnect_waits_for_in_flight_send():
     release = _threading.Event()
 
     class SlowTransport(FakeTransport):
-        def send_to(self, destination_hash, payload):
+        def send_to(self, destination_hash, payload, note_proven=True):
             started.set()
             release.wait(timeout=5)
             return super().send_to(destination_hash, payload)
@@ -1181,7 +1181,7 @@ async def test_cancelled_send_still_records_true_outcome():
     release = _threading.Event()
 
     class SlowTransport(FakeTransport):
-        def send_to(self, destination_hash, payload):
+        def send_to(self, destination_hash, payload, note_proven=True):
             started.set()
             release.wait(timeout=10)
             return super().send_to(destination_hash, payload)
@@ -1226,7 +1226,7 @@ async def test_cancelled_send_that_failed_is_not_left_pending():
     release = _threading.Event()
 
     class FailingTransport(FakeTransport):
-        def send_to(self, destination_hash, payload):
+        def send_to(self, destination_hash, payload, note_proven=True):
             started.set()
             release.wait(timeout=10)
             return False  # no path / no interface
@@ -1377,6 +1377,10 @@ async def test_a3_01_unlisted_peer_receives_canned_rejection(monkeypatch, caplog
     ))
     await _settle()
     assert adapter._transport.sent == [(PEER_B, adapter.REJECTION_TEXT)]
+    assert factory.transport.sent_note_proven == [False], (
+        "the rejection reply must be sent with note_proven=False — "
+        "receiving a rejection must not mint the stranger's probe budget"
+    )
     assert recorder.events == [], "denied inbound must not reach the gateway handler"
     await adapter.disconnect()
 
@@ -2402,7 +2406,7 @@ async def test_a3_17_rejection_send_uses_dedicated_executor_and_counts_in_flight
     seen_threads = []
     orig = adapter._transport.send_to
 
-    def blocking_send(h, payload):
+    def blocking_send(h, payload, note_proven=True):
         seen_threads.append(threading.current_thread().name)
         started.set()
         release.wait(timeout=5)
@@ -2453,7 +2457,7 @@ async def test_a3_18_disconnect_mid_rejection_send_keeps_future_alive(monkeypatc
     release = threading.Event()
     orig = adapter._transport.send_to
 
-    def blocking_send(h, payload):
+    def blocking_send(h, payload, note_proven=True):
         started.set()
         release.wait(timeout=5)
         return orig(h, payload)
@@ -2505,7 +2509,7 @@ async def test_disconnect_aborts_probes_before_quiescing(monkeypatch):
     started = threading.Event()
     abort_seen = threading.Event()
 
-    def probing_send(h, payload):
+    def probing_send(h, payload, note_proven=True):
         # Stands in for transport._probe_path polling _probe_stop: blocked
         # for the window unless the abort arrives first.
         started.set()

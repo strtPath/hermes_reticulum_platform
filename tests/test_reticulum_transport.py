@@ -881,6 +881,32 @@ class TestPathAwareSend:
         assert t.send_to(FAKE_HASH, "hello") is True
         assert bytes.fromhex(FAKE_HASH) not in t._delivery_proven
 
+    def test_rejection_note_proven_false_delivers_without_proven(
+        self, fake_rns, tmp_path, monkeypatch
+    ):
+        """note_proven=False (the rejection reply path) must deliver cleanly
+        yet leave the destination unproven — a denied peer receiving its
+        rejection cannot buy the full probe budget with it (Greptile
+        round 4 on PR #10)."""
+
+        class HashedDestination(_FakeDestination):
+            def __init__(self, *args):
+                super().__init__(*args)
+                self.hash = bytes.fromhex(FAKE_HASH)
+
+        monkeypatch.setattr(fake_rns, "Destination", HashedDestination)
+        fake_rns.Identity.recall.return_value = mock.Mock()
+        fake_rns.Transport.has_path.return_value = True
+        t = self._started_transport(fake_rns, tmp_path)
+
+        def delivered(lxm):
+            t.router.outbound.append(lxm)
+            lxm.state = _FakeLXMessage.DELIVERED
+
+        t.router.handle_outbound = mock.Mock(side_effect=delivered)
+        assert t.send_to(FAKE_HASH, "denied", note_proven=False) is True
+        assert bytes.fromhex(FAKE_HASH) not in t._delivery_proven
+
     def test_no_identity_and_no_path_returns_false(self, fake_rns, tmp_path):
         fake_rns.Identity.recall.return_value = None
         fake_rns.Transport.has_path.return_value = False

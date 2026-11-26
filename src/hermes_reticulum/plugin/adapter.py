@@ -26,6 +26,7 @@ import asyncio
 import contextlib
 import contextvars
 import datetime
+import functools
 import heapq
 import inspect
 import logging
@@ -93,9 +94,15 @@ class Transport(Protocol):
     Callbacks fire from the transport's own thread, never the asyncio loop.
     """
 
-    def send_to(self, destination_hash: str, payload: str) -> bool:
+    def send_to(
+        self, destination_hash: str, payload: str, *, note_proven: bool = True
+    ) -> bool:
         """Attempt to send ``payload`` to a destination hash. False when no
         interface can carry the packet (maps to a transient failure).
+
+        ``note_proven=False`` (used for the rejection reply) must deliver
+        without marking the destination as a proven peer — a denied sender
+        receiving its rejection must not earn the path-probe budget.
 
         The renderer declaration is inferred from the payload by the transport
         itself (see ReticulumTransport._stamp_renderer): an unsplit reply
@@ -169,14 +176,20 @@ class FakeTransport:
         self.stopped = False
         self.probes_aborted = False
         self.sent = []
+        # Parallel to sent: did each send carry note_proven? Pinning the
+        # rejection wiring (round-4 finding on PR #10).
+        self.sent_note_proven = []
         # Two slots, mirroring the real transport. Collapsing them is what
         # echoed every reply back in as inbound traffic.
         self._inbound_cb = None
         self._outbound_cb = None
         self._failed_cb = None
 
-    def send_to(self, destination_hash: str, payload: str) -> bool:
+    def send_to(
+        self, destination_hash: str, payload: str, *, note_proven: bool = True
+    ) -> bool:
         self.sent.append((destination_hash, payload))
+        self.sent_note_proven.append(note_proven)
         return True
 
     def last_send_was_direct(self) -> bool:
@@ -1489,9 +1502,14 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
                 # Transport torn down while this was queued; drop the send.
                 continue
             try:
+                # note_proven=False: receiving a rejection must not mint
+                # the sender's probe budget (round-4 finding on PR #10).
                 inner = loop.run_in_executor(
-                    self._reject_executor, transport.send_to,
-                    source_hash, self.REJECTION_TEXT,
+                    self._reject_executor,
+                    functools.partial(
+                        transport.send_to, source_hash, self.REJECTION_TEXT,
+                        note_proven=False,
+                    ),
                 )
                 with self._send_lock:
                     self._sends_in_flight += 1
