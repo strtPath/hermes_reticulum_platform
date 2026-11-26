@@ -596,7 +596,9 @@ class TestPathAwareSend:
         t.PATH_WAIT_SECONDS = 55.0
         t.PATH_POLL_SECONDS = 0.5
         t.PATH_REREQUEST_SECONDS = 10.0
-        monkeypatch.setattr(transport_module, "time", FakeClock())
+        monkeypatch.setattr(
+            transport_module.ReticulumTransport, "TIME_SOURCE", FakeClock()
+        )
         t.send_to(FAKE_HASH, "hello")
         # t=0,10,20,30,40: five requests, then the cap holds.
         assert fake_rns.Transport.request_path.call_count == 5
@@ -631,7 +633,9 @@ class TestPathAwareSend:
         t.PATH_WAIT_SECONDS = 55.0
         t.PATH_POLL_SECONDS = 0.5
         t.PATH_REREQUEST_SECONDS = 10.0
-        monkeypatch.setattr(transport_module, "time", FakeClock())
+        monkeypatch.setattr(
+            transport_module.ReticulumTransport, "TIME_SOURCE", FakeClock()
+        )
         assert t.send_to(FAKE_HASH, "hello") is True
         assert t.router.outbound[0].desired_method == _FakeLXMessage.DIRECT
         # Path appeared around t=13s: only the t=0 and t=10 requests flew.
