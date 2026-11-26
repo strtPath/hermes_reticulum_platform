@@ -209,7 +209,9 @@ class ReticulumTransport:
         # Set by abort_probes()/stop() to end path probes promptly.
         self._probe_stop = threading.Event()
         # Destinations this node has actually DELIVERED to (terminal state
-        # DELIVERED or SENT). The probe re-request budget is keyed on this,
+        # DELIVERED only — SENT can be minted by a propagation node
+        # accepting a message the peer never receives). The probe
+        # re-request budget is keyed on this,
         # not on received announces: a stranger mints an announce with a few
         # milliseconds of their own CPU, while proven delivery is minted
         # only by being a real peer (Greptile P2 on PR #10). Survives
@@ -892,7 +894,14 @@ class ReticulumTransport:
             if state in terminal_failure:
                 return True
             if state in (LXMF.LXMessage.DELIVERED, LXMF.LXMessage.SENT):
-                self._note_proven(lxm)
+                # Proven is minted by DELIVERED only. A propagated send
+                # reaches SENT when some propagation node accepted it —
+                # the peer may never receive anything, and an attacker
+                # running (or autopeering to) that node mints SENT for
+                # free (Greptile round 3 on PR #10). The send itself
+                # still counts as accepted either way.
+                if state == LXMF.LXMessage.DELIVERED:
+                    self._note_proven(lxm)
                 return False
             if time.time() >= deadline:
                 break

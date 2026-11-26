@@ -832,9 +832,36 @@ class TestPathAwareSend:
     def test_delivered_send_makes_the_destination_proven(
         self, fake_rns, tmp_path, monkeypatch
     ):
-        """Budget wiring: a terminal SENT/DELIVERED marks the destination
+        """Budget wiring: a terminal DELIVERED marks the destination
         proven — proven delivery, not announces, is what later unlocks the
-        full re-request cycle."""
+        full re-request cycle. SENT must not: for a propagated message it
+        only means a relay accepted it, which the peer controls."""
+
+        class HashedDestination(_FakeDestination):
+            def __init__(self, *args):
+                super().__init__(*args)
+                self.hash = bytes.fromhex(FAKE_HASH)
+
+        monkeypatch.setattr(fake_rns, "Destination", HashedDestination)
+        fake_rns.Identity.recall.return_value = mock.Mock()
+        fake_rns.Transport.has_path.return_value = True
+        t = self._started_transport(fake_rns, tmp_path)
+
+        def delivered(lxm):
+            t.router.outbound.append(lxm)
+            lxm.state = _FakeLXMessage.DELIVERED
+
+        t.router.handle_outbound = mock.Mock(side_effect=delivered)
+        assert t.send_to(FAKE_HASH, "hello") is True
+        assert bytes.fromhex(FAKE_HASH) in t._delivery_proven
+
+    def test_sent_alone_does_not_make_the_destination_proven(
+        self, fake_rns, tmp_path, monkeypatch
+    ):
+        """A propagated send the relay accepted but the peer never got
+        (SENT) is delivery success yet must not mint the proven flag —
+        otherwise a stranger running the relay mints the five-request
+        budget for free (Greptile round 3 on PR #10)."""
 
         class HashedDestination(_FakeDestination):
             def __init__(self, *args):
@@ -852,7 +879,7 @@ class TestPathAwareSend:
 
         t.router.handle_outbound = mock.Mock(side_effect=sent)
         assert t.send_to(FAKE_HASH, "hello") is True
-        assert bytes.fromhex(FAKE_HASH) in t._delivery_proven
+        assert bytes.fromhex(FAKE_HASH) not in t._delivery_proven
 
     def test_no_identity_and_no_path_returns_false(self, fake_rns, tmp_path):
         fake_rns.Identity.recall.return_value = None
