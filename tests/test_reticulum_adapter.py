@@ -2488,6 +2488,57 @@ async def test_a3_18_disconnect_mid_rejection_send_keeps_future_alive(monkeypatc
     assert adapter._sends_in_flight == 0
 
 
+@pytest.mark.asyncio
+async def test_disconnect_aborts_probes_before_quiescing(monkeypatch):
+    """The probe window (60s) now exceeds the idle wait (30s): a rejection
+    send that blocks for the whole probe must not hold
+    _reject_executor.shutdown(wait=True) — and therefore the event loop —
+    hostage. disconnect() aborts probes first; a probe-shaped send that
+    honours the abort returns in its poll interval, so teardown stays quick
+    while STILL waiting for the send's real completion.
+    """
+    monkeypatch.setenv("HERMES_RETICULUM_ALLOWED_USERS", PEER_A)
+    monkeypatch.setenv("HERMES_RETICULUM_REJECT_COOLDOWN_S", "300")
+    adapter = make_adapter()
+    assert await adapter.connect() is True
+
+    started = threading.Event()
+    abort_seen = threading.Event()
+
+    def probing_send(h, payload):
+        # Stands in for transport._probe_path polling _probe_stop: blocked
+        # for the window unless the abort arrives first.
+        started.set()
+        if not abort_seen.wait(timeout=5.0):
+            raise AssertionError("blocking probe-style send saw no abort")
+        return False
+
+    transport = adapter._transport
+    transport.send_to = probing_send
+    orig_abort = transport.abort_probes
+
+    def abort_and_signal():
+        orig_abort()
+        abort_seen.set()
+
+    transport.abort_probes = abort_and_signal
+
+    denied = _synthetic_denied_hashes(1)[0]
+    transport._inbound_cb(denied, "deny")
+    assert await _wait_for(lambda: started.is_set(), timeout=5.0)
+    assert adapter._sends_in_flight == 1
+
+    disconnect_task = asyncio.create_task(adapter.disconnect())
+    # The abort must land while the send is still in flight — that is the
+    # whole point of ordering it before _await_sends_idle().
+    assert await _wait_for(lambda: abort_seen.is_set(), timeout=5.0), (
+        "disconnect() must abort probes, not wait out the probe window"
+    )
+    await asyncio.wait_for(disconnect_task, timeout=5.0)
+    assert adapter._sends_in_flight == 0
+    assert transport.probes_aborted is True
+
+
 # ── Per-conversation chunk tags ───────────────────────────────────────
 
 

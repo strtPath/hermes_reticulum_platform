@@ -206,6 +206,8 @@ class ReticulumTransport:
         # Periodic re-announce scheduler (set up on start, torn down on stop).
         self._announce_timer: threading.Thread | None = None
         self._announce_timer_stop: threading.Event | None = None
+        # Set by abort_probes()/stop() to end path probes promptly.
+        self._probe_stop = threading.Event()
 
         # Per-message delivery/failure callbacks registered through the
         # protocol. LXMF fires the per-message callback with the message
@@ -496,6 +498,7 @@ class ReticulumTransport:
         and persists its data (Transport.exit_handler), and the router is
         dropped so a later ``start()`` re-initialises cleanly.
         """
+        self._probe_stop.set()
         if not self._started and self.reticulum is None:
             return
         self._stop_announce_timer()
@@ -584,6 +587,18 @@ class ReticulumTransport:
     # send path, so this is what keeps send_to tests fast by default.
     TIME_SOURCE = time
 
+    def abort_probes(self) -> None:
+        """Tell in-flight and future path probes to stop waiting.
+
+        Teardown calls this before quiescing sends. A probe can now run
+        for ``PATH_WAIT_SECONDS`` — longer than the adapter's idle wait —
+        and the reject worker's ``shutdown(wait=True)`` would then block
+        the event loop for the remainder of the window. The probe polls
+        at ``PATH_POLL_SECONDS``, so it notices within half a second and
+        its send fails cleanly instead of stalling disconnect.
+        """
+        self._probe_stop.set()
+
     def _probe_path(self, dest_hash: bytes) -> tuple[bool, int | None]:
         """(has_path, hops) for a destination, requesting one if absent.
 
@@ -592,12 +607,23 @@ class ReticulumTransport:
         (``MAX_PATHLESS_TRIES = 1``) even when the peer is reachable and simply
         has not announced recently. Asking first turns that guaranteed
         cancellation into a likely delivery.
+
+        Re-requests stay capped at ``PATH_REQUEST_MAX`` for destinations whose
+        identity the node has actually seen announced. An identity that has
+        never announced is usually a fresh or rotating peer (rejections to
+        strangers ride this same path); broadcasting five times for each of
+        them spends the scarce resource on SF11 links — airtime. Those get
+        one request, and the wait still runs: a first-contact reply stays as
+        patient as the old probe was, without the per-message broadcast
+        storm.
         """
         try:
             if RNS.Transport.has_path(dest_hash):
                 return True, RNS.Transport.hops_to(dest_hash)
         except Exception as e:
             logger.debug("path probe failed: %s", e)
+            return False, None
+        if self._probe_stop.is_set():
             return False, None
 
         try:
@@ -607,10 +633,16 @@ class ReticulumTransport:
             logger.debug("path request failed: %s", e)
             return False, None
 
+        try:
+            announced = bool(RNS.Transport.known_destinations.get(dest_hash))
+        except Exception:
+            announced = False
+        cap = self.PATH_REQUEST_MAX if announced else 1
+
         clock = self.TIME_SOURCE
         deadline = clock.time() + self.PATH_WAIT_SECONDS
         next_rerequest = clock.time() + self.PATH_REREQUEST_SECONDS
-        while clock.time() < deadline:
+        while not self._probe_stop.is_set() and clock.time() < deadline:
             clock.sleep(self.PATH_POLL_SECONDS)
             try:
                 if RNS.Transport.has_path(dest_hash):
@@ -624,14 +656,14 @@ class ReticulumTransport:
                 pass
             # One PATH_REQUEST may be lost; keep asking on the router's
             # cadence until the cap or the window runs out.
-            if requests_sent < self.PATH_REQUEST_MAX and clock.time() >= next_rerequest:
+            if requests_sent < cap and clock.time() >= next_rerequest:
                 try:
                     RNS.Transport.request_path(dest_hash)
                     requests_sent += 1
                     logger.info(
                         "Repeated path request to peer (%d/%d)",
                         requests_sent,
-                        self.PATH_REQUEST_MAX,
+                        cap,
                     )
                 except Exception as e:
                     logger.debug("path re-request failed: %s", e)

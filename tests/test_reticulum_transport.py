@@ -262,6 +262,10 @@ class _FakeTransport:
         self.has_path = mock.Mock(return_value=False)
         self.hops_to = mock.Mock(return_value=128)
         self.request_path = mock.Mock(return_value=None)
+        # Default: the standard test peer's identity is known (it announces,
+        # like a long-running peer). Tests about never-announced destinations
+        # clear this dict.
+        self.known_destinations = {bytes.fromhex(FAKE_HASH): mock.Mock()}
 
     @staticmethod
     def start(reticulum_instance):
@@ -596,12 +600,18 @@ class TestPathAwareSend:
         t.PATH_WAIT_SECONDS = 55.0
         t.PATH_POLL_SECONDS = 0.5
         t.PATH_REREQUEST_SECONDS = 10.0
+        clock = FakeClock()
         monkeypatch.setattr(
-            transport_module.ReticulumTransport, "TIME_SOURCE", FakeClock()
+            transport_module.ReticulumTransport, "TIME_SOURCE", clock
+        )
+        request_times = []
+        fake_rns.Transport.request_path.side_effect = (
+            lambda _h: request_times.append(clock.now)
         )
         t.send_to(FAKE_HASH, "hello")
-        # t=0,10,20,30,40: five requests, then the cap holds.
-        assert fake_rns.Transport.request_path.call_count == 5
+        # Spacing is part of the contract: a tighter interval would burn
+        # the same mesh airtime the window exists to space out.
+        assert request_times == [0.0, 10.0, 20.0, 30.0, 40.0]
 
     def test_path_appearing_mid_window_stops_the_re_requests(
         self, fake_rns, tmp_path, monkeypatch
@@ -633,13 +643,89 @@ class TestPathAwareSend:
         t.PATH_WAIT_SECONDS = 55.0
         t.PATH_POLL_SECONDS = 0.5
         t.PATH_REREQUEST_SECONDS = 10.0
+        clock = FakeClock()
         monkeypatch.setattr(
-            transport_module.ReticulumTransport, "TIME_SOURCE", FakeClock()
+            transport_module.ReticulumTransport, "TIME_SOURCE", clock
+        )
+        request_times = []
+        fake_rns.Transport.request_path.side_effect = (
+            lambda _h: request_times.append(clock.now)
         )
         assert t.send_to(FAKE_HASH, "hello") is True
         assert t.router.outbound[0].desired_method == _FakeLXMessage.DIRECT
         # Path appeared around t=13s: only the t=0 and t=10 requests flew.
-        assert fake_rns.Transport.request_path.call_count == 2
+        assert request_times == [0.0, 10.0]
+
+    def test_unannounced_destination_gets_one_request_not_five(
+        self, fake_rns, tmp_path, monkeypatch
+    ):
+        """Path-request floods are budgeted per sender, not per burst: a
+        rotating-identity peer (the rejection path's audience) that has
+        never announced gets a single request even with a full window."""
+
+        class FakeClock:
+            def __init__(self):
+                self.now = 0.0
+
+            def time(self):
+                return self.now
+
+            def sleep(self, seconds):
+                self.now += seconds
+
+        fake_rns.Identity.recall.return_value = mock.Mock()
+        fake_rns.Transport.has_path.return_value = False
+        fake_rns.Transport.known_destinations = {}
+        t = self._started_transport(fake_rns, tmp_path)
+        t.PATH_WAIT_SECONDS = 55.0
+        t.PATH_POLL_SECONDS = 0.5
+        t.PATH_REREQUEST_SECONDS = 10.0
+        monkeypatch.setattr(
+            transport_module.ReticulumTransport, "TIME_SOURCE", FakeClock()
+        )
+        t.send_to(FAKE_HASH, "hello")
+        assert fake_rns.Transport.request_path.call_count == 1
+
+    def test_abort_probes_ends_the_wait(self, fake_rns, tmp_path, monkeypatch):
+        """Teardown calls abort_probes() before waiting for sends to quiesce;
+        an in-flight probe must exit inside its poll interval, not sit out
+        the window and stall executor shutdown."""
+
+        class FakeClock:
+            def __init__(self):
+                self.now = 0.0
+
+            def time(self):
+                return self.now
+
+            def sleep(self, seconds):
+                self.now += seconds
+
+        fake_rns.Identity.recall.return_value = mock.Mock()
+        fake_rns.Transport.has_path.return_value = False
+        t = self._started_transport(fake_rns, tmp_path)
+        clock = FakeClock()
+        monkeypatch.setattr(
+            transport_module.ReticulumTransport, "TIME_SOURCE", clock
+        )
+
+        def aborting_request(_h):
+            fake_rns.Transport.request_path.side_effect = None
+            t.abort_probes()
+
+        fake_rns.Transport.request_path.side_effect = aborting_request
+        t.send_to(FAKE_HASH, "hello")
+        assert fake_rns.Transport.request_path.call_count == 1
+        assert clock.now < 1.0  # exited after one poll, not the 60s window
+
+    def test_aborted_transport_requests_nothing(self, fake_rns, tmp_path):
+        """A probe that starts after teardown began must not touch the wire."""
+        fake_rns.Identity.recall.return_value = mock.Mock()
+        fake_rns.Transport.has_path.return_value = False
+        t = self._started_transport(fake_rns, tmp_path)
+        t.abort_probes()
+        t.send_to(FAKE_HASH, "hello")
+        fake_rns.Transport.request_path.assert_not_called()
 
     def test_no_path_with_node_sends_propagated(self, fake_rns, tmp_path):
         fake_rns.Identity.recall.return_value = mock.Mock()

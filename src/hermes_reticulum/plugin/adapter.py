@@ -158,6 +158,7 @@ class FakeTransport:
     def __init__(self):
         self.started = False
         self.stopped = False
+        self.probes_aborted = False
         self.sent = []
         # Two slots, mirroring the real transport. Collapsing them is what
         # echoed every reply back in as inbound traffic.
@@ -196,6 +197,11 @@ class FakeTransport:
 
     def start(self) -> None:
         self.started = True
+
+    def abort_probes(self) -> None:
+        # Mirrors ReticulumTransport.abort_probes so disconnect() exercises
+        # the real call against this double.
+        self.probes_aborted = True
 
     def stop(self) -> None:
         self.stopped = True
@@ -485,6 +491,14 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
                 # armed, so those peers stay silent regardless.
                 logger.debug("Reticulum: dropping %d queued rejection(s)", pending)
             self._reject_queue = None
+        # Abort path probes before quiescing: a probe can now run the full
+        # 60s window, longer than the idle wait below. Left running, the
+        # reject worker would still be probing when _reject_executor
+        # .shutdown(wait=True) runs, freezing the event loop for the
+        # remainder. Aborted probes fail their send cleanly and quickly.
+        if self._transport is not None:
+            with contextlib.suppress(Exception):
+                self._transport.abort_probes()
         # Wait for any in-flight send to finish before tearing the transport
         # down. send_to() runs in a worker thread; stopping the transport under
         # it makes an in-flight reply fail after its connection check passed.
@@ -851,9 +865,10 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
             fell_back = False
             while index < len(parts):
                 part = parts[index]
-                # send_to() can block: with no cached path it polls for up to 15s
-                # waiting for an announce (transport._probe_path). Run it off the
-                # event loop so a cold send cannot stall the gateway's other work,
+                # send_to() can block: with no cached path it probes for up to
+                # PATH_WAIT_SECONDS (60s), re-requesting every 10s until the
+                # window closes (transport._probe_path). Run it off the event
+                # loop so a cold send cannot stall the gateway's other work,
                 # including inbound messages.
                 if self._transport is not transport:
                     # disconnect()/connect() replaced the transport while this
@@ -870,7 +885,8 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
                         error_kind="transient",
                     )
                 # The worker sends in a thread, off the event loop (send_to can
-                # block up to 15s probing for a path).
+                # block for the full 60s probe window; disconnect() aborts
+                # probes so teardown does not wait for all of it).
                 #
                 # A cancelled coroutine cannot stop that worker thread:
                 # asyncio.to_thread is not interruptible. So on cancellation we
