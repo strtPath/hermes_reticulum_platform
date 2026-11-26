@@ -623,14 +623,13 @@ class ReticulumTransport:
 
         Re-requests stay capped at ``PATH_REQUEST_MAX`` only for
         destinations this node has delivered to before. Announces are the
-        wrong discriminator (Greptile P1+P2 on PR #10): the attribute lives
-        on ``RNS.Identity``, not ``RNS.Transport``, and even read correctly
-        an announce is minted by the stranger — a rotating identity would
-        farm five broadcasts per message for the price of one signed
-        announce. Proven delivery is the signal only a real peer can mint.
-        A never-delivered destination gets one request, and the wait still
-        runs: a first-contact reply stays as patient as the old probe was,
-        without the per-message broadcast storm.
+        wrong discriminator (Greptile P1+P2 on PR #10): an announce is
+        minted by the stranger — a rotating identity would farm five
+        broadcasts per message for the price of one signed announce.
+        Proven delivery is the signal only a real peer can mint. A
+        never-delivered destination gets one request, and the wait still
+        runs: 60s of patience (four times the pre-#9 window) bought with
+        one broadcast rather than five.
         """
         try:
             if RNS.Transport.has_path(dest_hash):
@@ -670,6 +669,11 @@ class ReticulumTransport:
                 pass
             # One PATH_REQUEST may be lost; keep asking on the router's
             # cadence until the cap or the window runs out.
+            if self._probe_stop.is_set():
+                # Re-check after the sleep: an abort landing inside the
+                # poll step must not still buy one more broadcast
+                # (senior review on PR #10).
+                return False, None
             if requests_sent < cap and clock.time() >= next_rerequest:
                 try:
                     RNS.Transport.request_path(dest_hash)

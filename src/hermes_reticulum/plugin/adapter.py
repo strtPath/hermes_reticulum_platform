@@ -139,6 +139,15 @@ class Transport(Protocol):
         """Register ``callback(reason)`` fired on delivery failure."""
         ...
 
+    def abort_probes(self) -> None:
+        """End in-flight and future path discovery promptly (teardown).
+
+        A cold ``send_to`` can block for the full probe window; disconnect
+        arms this before quiescing so executor shutdown cannot stall the
+        event loop on it.
+        """
+        ...
+
     def start(self) -> None:
         """Start the transport (RNS instance / LXMF router)."""
         ...
@@ -516,7 +525,12 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
                 await self._cleanup_task
             self._cleanup_task = None
         if self._reject_executor is not None:
-            self._reject_executor.shutdown(wait=True)
+            # Off the event loop: if a worker still blocks for a non-probe
+            # reason (the probe case is aborted above), waiting for it here
+            # would freeze the whole gateway for the send's duration
+            # (senior review on PR #10).
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._reject_executor.shutdown)
             self._reject_executor = None
         if self._transport is not None:
             with contextlib.suppress(Exception):

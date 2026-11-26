@@ -713,13 +713,14 @@ class TestPathAwareSend:
         t.PATH_REREQUEST_SECONDS = 10.0
 
         class AbortingClock(FakeClock):
-            """Disconnect lands at t=12, mid-window: the abort arrives
-            while the poll loop is running, which is exactly what the
-            stop-flag check inside the loop is for."""
+            """Disconnect lands at t=20 — exactly a re-request tick. An
+            abort arriving inside a poll step must not still buy one more
+            broadcast, which is what the stop-flag re-check after the
+            sleep pins down."""
 
             def sleep(self, seconds):
                 super().sleep(seconds)
-                if self.now >= 12.0:
+                if self.now >= 20.0:
                     t.abort_probes()
 
         clock = AbortingClock()
@@ -731,11 +732,12 @@ class TestPathAwareSend:
             lambda _h: request_times.append(clock.now)
         )
         t.send_to(FAKE_HASH, "hello")
-        # Requests at t=0 and t=10; the abort at t=12 exits the loop on
-        # its next condition check. Without the in-loop stop check this
-        # would spin out the full 55s window (and the real one, 60s).
+        # Requests at t=0 and t=10; the abort at t=20 lands during the
+        # sleep before the third request would fire, and the post-sleep
+        # check ends the probe there. Without that check, request_times
+        # would carry a third broadcast at t=20.
         assert request_times == [0.0, 10.0]
-        assert 12.0 <= clock.now < 13.0
+        assert 20.0 <= clock.now < 21.0
 
     def test_aborted_transport_requests_nothing(self, fake_rns, tmp_path):
         """A probe that starts after teardown began must not touch the wire."""
