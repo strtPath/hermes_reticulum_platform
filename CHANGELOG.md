@@ -5,6 +5,24 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] — 2026-11-27
+
+### Added
+- **Exact dependency pins and license placement**: the installer pins
+  `rns`/`lxmf` to exact versions, and the Reticulum License text is placed
+  where users meet it — README terms and install-time disclosure (card A19).
+
+### Fixed
+- **`storage_path` is honoured**: the transport config argument now folds into
+  the chain that resolves the storage location; previously it was accepted and
+  ignored (card A20, PR #7).
+- **Cold-link courtesy**: path probes abort on disconnect and route
+  re-requests are capped to announced peers, ending endless re-asking of
+  unreachable peers (PRs #9, #10).
+- **Docs orientation**: stale claims naming the archived standalone bridge as
+  the supported path were corrected across `AGENTS.md`, the bridge README, and
+  module docstrings (PR #3).
+
 ## [0.3.0] — 2026-11-20
 
 ### Added

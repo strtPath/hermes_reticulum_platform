@@ -1169,7 +1169,7 @@ when `HERMES_RETICULUM_VENV` (`plugins/reticulum/__init__.py:49-51`) overrides t
 at runtime, the check cannot see that; and the marker attests to roots, not to the age of
 the copied `mesh-tool-gate` — a fresh marker beside a stale gate reads green (a gate
 `plugin.yaml` version compare is available — `src/hermes_reticulum/mesh-tool-gate/plugin.yaml`
-carries `version: "0.3.0"` — but comparing copied-tree versions is A21-adjacent scope;
+carries a `version` field — but comparing copied-tree versions is A21-adjacent scope;
 this card prints the limitation instead). Sweeping **writes** are out:
 a re-run rewrites the venv the running gateway imports from (`install.sh:114-116`; A19's
 note, `tasks.md:911-914`: the checkout venv "is the live adapter's import root, so an
