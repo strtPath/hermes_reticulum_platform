@@ -171,7 +171,33 @@ ruff check src/ tests/
 
 ## License
 
-MIT
+This project's own code is MIT — see [LICENSE](LICENSE).
+
+It depends on two libraries, [RNS](https://github.com/markqvist/Reticulum) and
+[LXMF](https://github.com/markqvist/LXMF), which are not MIT. Both ship under the
+**Reticulum License** — MIT-shaped, with two extra conditions on how the software
+may be used; Copyright (c) Mark Qvist (RNS headers read 2016-2026, LXMF's read
+2020-2025). They are installed from PyPI at exact pinned versions — never vendored
+into this repository — and their terms apply to every install of this project:
+
+> The Software shall not be used in any kind of system which includes amongst its functions the ability to purposefully do harm to human beings.
+>
+> The Software shall not be used, directly or indirectly, in the creation of an artificial intelligence, machine learning or language model training dataset, including but not limited to any use that contributes to the training or development of such a model or algorithm.
+>
+> The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+Full text, and the authoritative source for these terms:
+https://reticulum.network/manual/license.html
+
+Neither installed wheel ships a LICENSE file — the terms reach an installed copy
+through the per-file headers (`RNS/__init__.py`, and `LXMF/Utilities/lxmd.py` for
+LXMF), and the package metadata's `License: Reticulum License` field. RNS also
+carries third-party components under other licenses, including a vendored
+`pure25519` (MIT, Copyright (c) 2015 Brian Warner and other contributors), an
+i2plib copy under `RNS/vendor/i2plib`, and `RNS/Interfaces/util/netinfo.py` (MIT,
+Copyright (c) 2014 Stefan C. Mueller and 2025 Mark Qvist). The RNS package
+description on PyPI lists the full set of credits; the upstream repositories carry
+the authoritative license files.
 
 ## Acknowledgments
 

@@ -171,7 +171,7 @@ class TestVersion:
 
     def test_version_importable(self):
         from hermes_reticulum import __version__
-        assert __version__ == "0.3.0"
+        assert __version__ == "0.3.1"
 
     def test_plugin_manifests_match_package_version(self):
         """Both plugin.yaml manifests must track __version__ (review D-note:

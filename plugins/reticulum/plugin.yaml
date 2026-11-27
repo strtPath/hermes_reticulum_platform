@@ -1,5 +1,5 @@
 name: reticulum
-version: "0.3.0"
+version: "0.3.1"
 kind: platform
 description: >
   Registers Reticulum/LXMF as a native Hermes gateway platform, so mesh

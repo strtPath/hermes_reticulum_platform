@@ -246,3 +246,78 @@ GitHub noreply address (`<digits>+<user>@users.noreply.github.com`) reading as
 whole address shape before pattern matching; bare digit runs stay caught
 (`test_noreply_author_identity_is_not_a_finding`,
 `test_same_digits_bare_in_a_message_are_still_caught`).
+
+## Card A19: License close-out — exact pins, terms where users meet them
+
+| # | Acceptance criterion | Evidence | Result | Gap |
+|---|---|---|---|---|
+| 1 | `uv lock --check` passes; a test asserts pyproject's pinned rns/lxmf equal the uv.lock pair; no range specifiers left | `uv lock --check` exits 0 at head; `test_pin_is_exact_not_a_range` (one case per dependency, fullmatch `rns==X.Y.Z`) and `test_pin_matches_uv_lock` read pyproject and uv.lock via `tomllib`, so both files are the oracle rather than a copied constant. `uv lock` regenerated only the root `requires-dist` metadata lines (2 insertions, 2 deletions); the resolved pair is unchanged at rns 1.6.1 / lxmf 1.3.1 | PASS | - |
+| 2 | Suite run in real-base and CI-stub modes at the pinned pair, with the known reds named | Real-base at head, `TMPDIR=/tmp PYTHONPATH=$HOME/.hermes/hermes-agent/venv/lib/python3.11/site-packages .venv/bin/python -m pytest tests/ -q`: 660 passed / 4 skipped / 1 failed — the carded `test_tool_emoji.py::TestParityWithInstalledGateway::test_table_has_no_undeclared_extras` (the installed gateway registers browser_*/yb_* tools the bridge emoji table does not). `TMPDIR` matters and is recorded here because it bit a reviewer: with this profile's long scratch `TMPDIR`, `test_core.py::TestBridgeLiveness::test_sd_notify_sends_to_socket` also fails, on an AF_UNIX 108-byte `sun_path` limit, not on anything in the tree — so the card's "2 failed" line describes that long-TMPDIR environment, and the sd_notify test passes under `TMPDIR=/tmp`. CI-stub at head: `env -u PYTHONPATH HOME=/tmp/a19-home HERMES_GATEWAY_ROOT=/nonexistent HERMES_VENV_PATH=/nonexistent TMPDIR=/tmp .venv/bin/python -m pytest tests/ -q` → 656 passed / 9 skipped / 0 failed; the same command against a detached worktree of base `73b2ab5` → 644 passed / 9 skipped / 0 failed, so the delta is exactly this card's 12 new tests, all passing. `HOME` must be an existing writable empty directory. It is the one stub variable whose value changes results on this box, and the reason is a test defect rather than the pins: `tests/test_reticulum_transport.py` builds each transport with `storage_path=`, but `ReticulumTransport.__init__` reads only `extra`, the scoped env reader, and the `~/.hermes/.reticulum-gateway/storage` default (`plugin/transport.py:168-172`) — the kwarg is dropped, so the default expands from `HOME` and `plugin/transport.py:266` calls `os.makedirs("/nonexistent")`. Measured 2026-11-23: `HOME=/nonexistent` gives 28 failures in that file at both base and head, while `HOME=/tmp/a19-home` gives 656/9/0. The reviewer measured 0 failures under `/nonexistent`, so treat that variant as environment-dependent and use the writable-HOME command above; the dropped kwarg is worth its own card. (Mystery closed by Card A20: the reviewer's shell almost certainly exported `RETICULUM_STORAGE_PATH` — this box runs the adapter — which satisfies the chain so the default never expands; scrubbing `-u RETICULUM_STORAGE_PATH -u RETICULUM_DISPLAY_NAME` makes 28/27 reproduce exactly, and A20 makes the file immune to the variable at head.) | PASS | - |
+| 3 | README License section and install.sh both contain the dataset-clause sentence verbatim and the license URL, asserted by a test that greps both files | `test_readme_states_the_conditions_verbatim` scopes to the `## License` section only; `test_installer_states_the_conditions_verbatim` greps the whole installer; both assert all three clauses (harm, dataset, notice) as single lines plus `https://reticulum.network/manual/license.html`, copied from the manual page rather than typed from memory. `test_installer_notice_precedes_the_install_branch` pins the notice ahead of the `INSTALL_MODE` branch line — the boundary that actually covers the default `./venv`, `--venv PATH` and `--global` paths; `test_installer_notice_precedes_the_pip_step` additionally orders it ahead of both pip commands | PASS | - |
+| 4 | Still no vendored RNS/LXMF at the merge commit (content net and names net both empty) | At head the content net (`git grep` for `This file is part of RNS` or a line opening `# Reticulum License`) prints nothing outside the two card documents that quote the pattern, and the names net over `git ls-files` for vendored rns/lxmf dirs, wheel and sdist archives prints 0; history forms (`git log --remotes --name-only --pretty=format:`, `git rev-list --objects --remotes`) are also 0. Both are pinned as tests (`test_no_vendored_source_by_content`, `test_no_vendored_source_by_name`), which `git grep` for the content net and read `git ls-files` for the names net. The content net refuses to read as clean when the search itself fails: it accepts `git grep` exits 0 and 1 and raises with stderr on anything else (`test_content_net_reports_a_broken_search_instead_of_passing`), because empty stdout from a broken index would otherwise look like an empty tree. Two corrections came out of review: a comment block in `install.sh` that began a line with `# Reticulum License` matched the net, so the notice comment keeps that phrase mid-line; and the test's original `docs/` exclusion was narrowed to an explicit two-file `PATTERN_QUOTERS` set, so a blob dropped in any other doc would still be found | PASS | - |
+
+Red-before at branch base dev@73b2ab5, measured with the final 12-case file: 9 failed /
+3 passed (the two vendoring nets plus the broken-search guard pass at base by design;
+the pin rows, the terms rows, the two pip-order rows and the branch-order row fail).
+Green after: 12 passed.
+
+The README's third-party paragraph and this row both had to be corrected against the
+installed 1.6.1 wheel. First claim, wrong: `pure25519` was described as "only an
+attribution string inside `Ed25519.py`" — it is a five-module vendored package at
+`RNS/Cryptography/pure25519/` (MIT, 2015 Brian Warner and other contributors),
+shipped in the wheel and imported at `Ed25519.py:32`, so the README now names it.
+Second claim, wrong: the README pointed at "the upstream LICENSE files in the
+installed packages" — neither wheel ships one (`find` for `*licen*` under `RNS/`,
+`LXMF/` and both dist-info directories returns nothing; the metadata carries only
+`License: Reticulum License`). The README now says where the terms actually reach an
+installed copy: the per-file headers (`RNS/__init__.py`, `LXMF/Utilities/lxmd.py`),
+that metadata field, and the credits list in the RNS package description on PyPI.
+Third, smaller: the copyright range is not one range — RNS headers read 2016-2026,
+LXMF's read 2020-2025 — so the README states each instead of applying RNS's to both.
+
+## Card A20: `ReticulumTransport` drops its own `storage_path` argument
+
+| # | Acceptance criterion | Evidence | Result | Gap |
+|---|---|---|---|---|
+| 1 | The `storage_path` kwarg reaches `self.storage_path`, pinned by a test | `test_storage_path_kwarg_reaches_the_attribute` asserts the attribute equals `transport_module.expand_path(X)` — the same helper the fix uses, so normalization cannot mask a dropped value | PASS | - |
+| 2 | Chain order pinned: `extra` beats kwarg, kwarg beats scoped env | `test_chain_order_extra_beats_kwarg_beats_env` sets all three sources at once and checks the two pairings; the scoped reader is stubbed to `os.environ` through the module-level `scoped_env` fixture shared with `TestConstruction`, so the env half of the chain is exercised without profile state | PASS | - |
+| 3 | A started transport with an isolated storage path creates nothing under `$HOME` | `test_started_transport_creates_nothing_under_home` monkeypatches `HOME` to a fresh dir, starts, and asserts the dir is still empty (`list(fake_home.iterdir()) == []`) — the assertion says what the acceptance says, not just that one known child is missing. Red-before: run against the base `transport.py` (fix stashed) at branch base, it fails — the makedirs lands in the fake home. Independently confirmed at the suite level: the head CI-stub full run against a fresh empty `$HOME` leaves 0 paths matching `reticulum-gateway` anywhere under it | PASS | - |
+| 4 | Transport file at `HOME=/nonexistent`: 0 failures at head (base: 28); suite matches base except new tests | Red-before measured at dev@`ba5b5c2`: that file gives 28 failed / 27 passed under `env -u PYTHONPATH -u RETICULUM_STORAGE_PATH -u RETICULUM_DISPLAY_NAME HOME=/nonexistent HERMES_GATEWAY_ROOT=/nonexistent HERMES_VENV_PATH=/nonexistent TMPDIR=/tmp .venv/bin/python -m pytest tests/test_reticulum_transport.py -q` — the two `-u` scrubs are mandatory for the base number, an ambient `RETICULUM_STORAGE_PATH` (this box runs the adapter) satisfies the chain and hides all 28; the same command at head gives 58 passed (the file's 55 plus 3 new). Real-base full suite: base 660 passed / 4 skipped / 1 failed (the carded `test_tool_emoji` parity red), head 663 / 4 / 1 — delta exactly the 3 new tests, same known red. CI-stub (scrubbed) with fresh writable `$HOME`: base 656 / 9 / 0, head 659 / 9 / 0 | PASS | - |
+| 5 | The stale comment stating the defect is corrected | `tests/test_reticulum_transport.py` `TestRatchetQuarantine._make` comment ("the `storage_path` kwarg is legacy and ignored") replaced with a pointer to the pinned channel tests; the test keeps exercising the `extra` channel on purpose | PASS | - |
+| 6 | The docstring claims only what the constructor does (Greptile P2 on PR #7) | 0156f64 rewrites the precedence sentence to speak only of `storage_path` (`extra` > named argument > env reader > defaults) instead of promising the order for all named arguments, which is false: `display_name`, `announce_interval_min` and `rns_config_path` are still accepted and dropped, and `require_shared_instance` deliberately takes the argument over `extra`. Those three are the same defect class, filed as issue #8 rather than widened into this card | PASS | - |
+
+Bonus row (not an acceptance condition, recorded because it retires a standing
+environment caveat): the **full** suite at head under the CI-stub with
+`HOME=/nonexistent` now gives 659 passed / 9 skipped / 0 failed — A19's row 2 had
+to insist `HOME` be an existing writable directory precisely because of this
+defect, and that constraint is gone at head. Other writes still appear under a
+stub `$HOME` (`~/.hermes/.reticulum-turn-alive`, a bridge-era step log) but none
+of them fail on a nonexistent `HOME`, so no follow-up is carded for them; they
+were observed at the base run too.
+
+Red-before, recorded at branch base dev@`ba5b5c2`: the final 3-case file run
+against the base `transport.py` (fix stashed) gives 3 failed — the kwarg test,
+the chain test, and the home-isolation test. Green after: 58 passed at
+`HOME=/nonexistent` for the whole transport file; 3/3 pass in every mode.
+
+## Card A21: `install.sh` installs into one hardcoded Hermes home, so every extra profile drifts
+
+| # | Acceptance criterion | Evidence | Result | Gap |
+|---|---|---|---|---|
+| 1 | plugin copies (marker/`__pycache__` excluded from dir-diff, marker asserted separately) land in the named home; pre-existing default-home `plugins/` untouched |  |  |  |
+| 2 | `plugins.enabled` + `approvals.timeout: 900` written to the named home |  |  |  |
+| 3 | an existing `approvals.timeout` and unrelated entries survive (value-level); no duplicate keys |  |  |  |
+| 4 | no-flag run identical on home-scoped writes; default venv a static read, never executed |  |  |  |
+| 5 | precedence flag > env > default (flag+env sub-case); nonexistent named home refused; env install creates no default home; env-named default created on a fresh box; profiles/ home accepted, `<root>/profiles` refused |  |  |  |
+| 6 | `--check`: stale roots nonzero; missing marker nonzero; not-installed informational; `HERMES_HOME` as ROOT default; bad ROOT nonzero; `--hermes-home` combination refused; all three limitations printed; fixtures built by install runs, mutated per case |  |  |  |
+| 7 | CI guard: writes outside selected home ∪ `$SCRIPT_DIR` ∪ explicit `--venv` ∪ `${HOME}/.reticulum` ∪ `${HOME}/.lxmf/storage` fail the test |  |  |  |
+| 8 | next-steps names the selected home (`.env` pointer, `RETICULUM_*` guidance) |  |  |  |
+| 9 | PII sweep exit 0; no literal absolute home path added to the script |  |  |  |
+| 10 | non-default home skips the service step (`--service --venv <tmp>/venv`, stub `systemctl` never invoked); skip line in auto and explicit mode; resolved-default-via-flag run does **not** skip (stub invoked) |  |  |  |
+| 11 | docs: profile section; default-home-only references generalised (incl. QUICKSTART:42, README:118 disambiguated); caution ordered, no unverified peer claims |  |  |  |
+| 12 | `--global --no-service` (no `--venv`, stub `pip`): marker lists only roots that mode used (no venv line); `--check` green; venv root impossible outside venv mode |  |  |  |
+| 13 | `--help` and usage banner list `--hermes-home` and `--check` |  |  |  |
+
+Status: **open, proposed 2026-11-26** — peer recommendation adopted by the operator; passed
+senior review **GO 4/5** (fifth pass, 2026-11-27) with zero blocking issues; that pass's
+eight non-blocking nits are folded in; the operator's ruling gates landing it in `tasks.md`.

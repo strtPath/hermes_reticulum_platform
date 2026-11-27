@@ -4,19 +4,19 @@ This package is the original long-lived Reticulum/LXMF bridge. It drives the Her
 CLI in one-shot mode: `hermes-reticulum run` starts an LXMF router, receives a mesh
 message, runs one Hermes turn, and sends the reply back over LXMF.
 
-It is kept because it is the deployed, working system and some installs still run it.
-It is **not** the direction of travel. New work belongs in the platform adapter at
-`src/hermes_reticulum/plugin/`, which ships Reticulum as a native Hermes gateway
-platform. The adapter design is in `docs/specs/adapter/spec.md`.
+It is kept because some installs still run it; it gets bug fixes only. It is archived:
+new features belong in the platform adapter at `src/hermes_reticulum/plugin/`, which
+ships Reticulum as a native Hermes gateway platform. The adapter design is in
+`docs/specs/adapter/spec.md`.
 
 ## What stayed in `core/`
 
-`core/` is now shared, not bridge-only:
+`core/` holds the module the adapter shares, plus the bridge's own emoji table:
 
 - `core/acl.py` — the access-control gate. The adapter imports it directly
   (`plugin/adapter.py`), and the bridge's `control_server.py` does too.
-- `core/tool_emoji.py` — the tool-name → emoji table used by both architectures'
-  step/recap rendering.
+- `core/tool_emoji.py` — the tool-name → emoji table, imported only by the bridge's
+  modules (and their tests).
 
 Everything else in `core/` moved here.
 

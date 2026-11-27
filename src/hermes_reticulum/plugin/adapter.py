@@ -5,25 +5,28 @@ Implements the gateway ``BasePlatformAdapter`` contract so the mesh becomes
 a first-class platform: inbound LXMF messages are bridged into the asyncio
 event loop and replies go back out over the mesh.
 
-Foundation stage (design: docs/spec-reticulum-platform-adapter.md):
+Design: ``docs/specs/adapter/spec.md``; build cards and acceptance evidence:
+``docs/specs/adapter/tasks.md`` and ``verification.md``.
 
-- The transport sits behind the ``Transport`` protocol (spec section 5/10).
-  A minimal ``FakeTransport`` in this module proves the wiring without a
-  live mesh; the real LXMF implementation is a later ticket and is NOT
-  imported here.
+- The transport sits behind the ``Transport`` protocol. The real LXMF
+  implementation is ``ReticulumTransport`` (``plugin/transport.py``); the
+  minimal ``FakeTransport`` in this module is used by the test suite to
+  exercise the wiring without a live mesh.
 - ``connect()`` is idempotent, re-initialises from scratch when
   ``is_reconnect=True``, and returns True when the local transport is up.
-- ``send()`` returns a well-formed failing ``SendResult`` for every
-  failure class known at this stage; the full DELIVERED/FAILED/SENT receipt
-  mapping (spec section 6/14) lands with the real transport.
-- Deferred by design (later tickets): identity/display-name map beyond a
-  trivial stub, the propagation pending set, chunking, error_kind mapping.
+- Outbound send accounting lives in ``plugin/delivery.py``: chunking, the
+  propagation pending set, and the DELIVERED/FAILED/SENT receipt mapping
+  (``delivery.map_receipt``) consumed by the outbound callbacks below.
+- Access control is ``core.acl.AccessControl``, built in this module against
+  the gateway's profile-scoped ``platform_gate_env``; ``plugin/registration.py``
+  declares the env var names (``HERMES_RETICULUM_ALLOWED_USERS`` / ``_ALLOW_ALL``).
 """
 
 import asyncio
 import contextlib
 import contextvars
 import datetime
+import functools
 import heapq
 import inspect
 import logging
@@ -91,9 +94,15 @@ class Transport(Protocol):
     Callbacks fire from the transport's own thread, never the asyncio loop.
     """
 
-    def send_to(self, destination_hash: str, payload: str) -> bool:
+    def send_to(
+        self, destination_hash: str, payload: str, *, note_proven: bool = True
+    ) -> bool:
         """Attempt to send ``payload`` to a destination hash. False when no
         interface can carry the packet (maps to a transient failure).
+
+        ``note_proven=False`` (used for the rejection reply) must deliver
+        without marking the destination as a proven peer — a denied sender
+        receiving its rejection must not earn the path-probe budget.
 
         The renderer declaration is inferred from the payload by the transport
         itself (see ReticulumTransport._stamp_renderer): an unsplit reply
@@ -137,6 +146,15 @@ class Transport(Protocol):
         """Register ``callback(reason)`` fired on delivery failure."""
         ...
 
+    def abort_probes(self) -> None:
+        """End in-flight and future path discovery promptly (teardown).
+
+        A cold ``send_to`` can block for the full probe window; disconnect
+        arms this before quiescing so executor shutdown cannot stall the
+        event loop on it.
+        """
+        ...
+
     def start(self) -> None:
         """Start the transport (RNS instance / LXMF router)."""
         ...
@@ -150,21 +168,28 @@ class FakeTransport:
     """In-repo no-op transport used to prove adapter wiring (spec section 10).
 
     Not a dependency of the real adapter: it is injected for tests. The
-    real LXMF transport comes in a later ticket behind this same protocol.
+    real transport is ``ReticulumTransport``, behind this same protocol.
     """
 
     def __init__(self):
         self.started = False
         self.stopped = False
+        self.probes_aborted = False
         self.sent = []
+        # Parallel to sent: did each send carry note_proven? Pinning the
+        # rejection wiring (round-4 finding on PR #10).
+        self.sent_note_proven = []
         # Two slots, mirroring the real transport. Collapsing them is what
         # echoed every reply back in as inbound traffic.
         self._inbound_cb = None
         self._outbound_cb = None
         self._failed_cb = None
 
-    def send_to(self, destination_hash: str, payload: str) -> bool:
+    def send_to(
+        self, destination_hash: str, payload: str, *, note_proven: bool = True
+    ) -> bool:
         self.sent.append((destination_hash, payload))
+        self.sent_note_proven.append(note_proven)
         return True
 
     def last_send_was_direct(self) -> bool:
@@ -194,6 +219,11 @@ class FakeTransport:
 
     def start(self) -> None:
         self.started = True
+
+    def abort_probes(self) -> None:
+        # Mirrors ReticulumTransport.abort_probes so disconnect() exercises
+        # the real call against this double.
+        self.probes_aborted = True
 
     def stop(self) -> None:
         self.stopped = True
@@ -483,6 +513,14 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
                 # armed, so those peers stay silent regardless.
                 logger.debug("Reticulum: dropping %d queued rejection(s)", pending)
             self._reject_queue = None
+        # Abort path probes before quiescing: a probe can now run the full
+        # 60s window, longer than the idle wait below. Left running, the
+        # reject worker would still be probing when _reject_executor
+        # .shutdown(wait=True) runs, freezing the event loop for the
+        # remainder. Aborted probes fail their send cleanly and quickly.
+        if self._transport is not None:
+            with contextlib.suppress(Exception):
+                self._transport.abort_probes()
         # Wait for any in-flight send to finish before tearing the transport
         # down. send_to() runs in a worker thread; stopping the transport under
         # it makes an in-flight reply fail after its connection check passed.
@@ -500,7 +538,12 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
                 await self._cleanup_task
             self._cleanup_task = None
         if self._reject_executor is not None:
-            self._reject_executor.shutdown(wait=True)
+            # Off the event loop: if a worker still blocks for a non-probe
+            # reason (the probe case is aborted above), waiting for it here
+            # would freeze the whole gateway for the send's duration
+            # (senior review on PR #10).
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._reject_executor.shutdown)
             self._reject_executor = None
         if self._transport is not None:
             with contextlib.suppress(Exception):
@@ -569,10 +612,9 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
     async def _dispatch_inbound(self, event) -> None:
         """Turn one transport callback event into a gateway MessageEvent.
 
-        Foundation-stage parsing: ``event`` is a ``(source_hash, text)``
-        tuple (or a dict with ``source``/``text``) produced by the callback
-        registration in ``connect()``. The real transport will deliver
-        LXMF receipt objects; this seam keeps the drain shape testable now.
+        The real transport fires this from ``_on_router_delivery`` with a
+        ``(source_hash, payload)`` tuple; the drain accepts a tuple or a dict
+        with ``source``/``text``.
         """
         source_hash, text = self._normalize_inbound(event)
         if source_hash is None:
@@ -850,9 +892,10 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
             fell_back = False
             while index < len(parts):
                 part = parts[index]
-                # send_to() can block: with no cached path it polls for up to 15s
-                # waiting for an announce (transport._probe_path). Run it off the
-                # event loop so a cold send cannot stall the gateway's other work,
+                # send_to() can block: with no cached path it probes for up to
+                # PATH_WAIT_SECONDS (60s), re-requesting every 10s until the
+                # window closes (transport._probe_path). Run it off the event
+                # loop so a cold send cannot stall the gateway's other work,
                 # including inbound messages.
                 if self._transport is not transport:
                     # disconnect()/connect() replaced the transport while this
@@ -869,7 +912,8 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
                         error_kind="transient",
                     )
                 # The worker sends in a thread, off the event loop (send_to can
-                # block up to 15s probing for a path).
+                # block for the full 60s probe window; disconnect() aborts
+                # probes so teardown does not wait for all of it).
                 #
                 # A cancelled coroutine cannot stop that worker thread:
                 # asyncio.to_thread is not interruptible. So on cancellation we
@@ -1278,7 +1322,7 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Map one LXMF delivery-state callback into a ``SendResult``.
 
-        This is the seam the real transport will drive. ``state`` is an LXMF
+        This is the seam the real transport drives. ``state`` is an LXMF
         state value; ``reason`` carries the failure string for ``FAILED``.
         The mapping is owned by :func:`hermes_reticulum.plugin.delivery.map_receipt`
         and runs against the adapter's own pending set.
@@ -1458,9 +1502,14 @@ class ReticulumPlatformAdapter(BasePlatformAdapter):
                 # Transport torn down while this was queued; drop the send.
                 continue
             try:
+                # note_proven=False: receiving a rejection must not mint
+                # the sender's probe budget (round-4 finding on PR #10).
                 inner = loop.run_in_executor(
-                    self._reject_executor, transport.send_to,
-                    source_hash, self.REJECTION_TEXT,
+                    self._reject_executor,
+                    functools.partial(
+                        transport.send_to, source_hash, self.REJECTION_TEXT,
+                        note_proven=False,
+                    ),
                 )
                 with self._send_lock:
                     self._sends_in_flight += 1

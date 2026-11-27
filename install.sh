@@ -83,6 +83,24 @@ if [[ -z "$PYTHON" ]]; then
     exit 1
 fi
 
+# ─── Third-party license notice ───
+# This package depends on rns and lxmf, both under the Reticulum License
+# (MIT-shaped, with two extra field-of-use conditions), copyright 2016-2026
+# Mark Qvist. Neither is MIT. pip prints nothing license-shaped, so the terms
+# are shown here, before the install step, on every path (default ./venv,
+# --venv PATH, and --global).
+echo ""
+echo "── Third-party notice: RNS and LXMF ──"
+echo "This project's own code is MIT. Its dependencies rns and lxmf are under the"
+echo "Reticulum License, Copyright (c) 2016-2026 Mark Qvist, with two extra conditions:"
+echo ""
+echo "  The Software shall not be used in any kind of system which includes amongst its functions the ability to purposefully do harm to human beings."
+echo "  The Software shall not be used, directly or indirectly, in the creation of an artificial intelligence, machine learning or language model training dataset, including but not limited to any use that contributes to the training or development of such a model or algorithm."
+echo "  The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software."
+echo ""
+echo "  Full text: https://reticulum.network/manual/license.html"
+echo ""
+
 # ─── Install ───
 if [[ "$INSTALL_MODE" == "venv" ]]; then
     echo ""

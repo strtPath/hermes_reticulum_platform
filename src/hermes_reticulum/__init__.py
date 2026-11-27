@@ -7,5 +7,5 @@ adapter in :mod:`hermes_reticulum.plugin`. Both reach RNodes, Sideband, and any
 LXMF client over LoRa/TCP/I2P.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 __author__ = "strtPath"

@@ -39,6 +39,10 @@ decision (O-8, delivery bot choice) stays blocked, not guessed.
 | A15 | Real-base harness double-loads `gateway.platforms.event`, so `MessageType` comparisons inside `base.py` are dead in tests — a green-suite blind spot | - | one event module loaded, conftest identity assert, and the silently-untested base branches re-audited | open, proposed 2026-11-14 |
 | A16 | `scripts/security-sweep.py` silently passes a nonexistent path argument, so `security-sweep.py origin/dev..HEAD` is a false green | - | nonexistent paths exit nonzero and a git-range-looking argument is honored or rejected loudly | code merged into dev 2026-11-21 (PR #2; same-day follow-up teaches the sweep to allow GitHub noreply author addresses) |
 | A17 | One mesh identity per profile: per-profile default storage path and an identity collision refused once with a named error; `rnsd` and interfaces stay shared | two-profile test harness (A11 handoff) | two profiles on one box connect with distinct identities; the default profile's address does not change | open, proposed 2026-11-19 (D1, D2 ruled; harness first) |
+| A18 | `docs/skills/repo-navigation.md` is stale: its code map lists five pre-move paths (`src/hermes_reticulum/{cli,core/*}.py`, now under `bridge/`), says "build cards A1-A10" while tasks.md runs to A17, and still calls `adapter` a live branch (deleted 2026-10-24) | - | every path in the navigation table resolves in-tree; card and branch references match the tree | open, proposed 2026-11-21 (PR #3 review, finding F3) |
+| A19 | License close-out per ADR-0002: pyproject still declares ranges (`rns>=1.5.4,<2.0`, `lxmf>=1.1.1,<2.0`) where the ADR decided exact pins, and the Reticulum License's field-of-use terms appear nowhere a user actually meets them — README's License section says only "MIT", install.sh never shows them, and the PyPI wheels carry no terms text. Vendoring audit 2026-11-21: zero RNS/LXMF source blobs across every committed path and object — re-runnable as `git log --remotes --name-only --pretty=format:` (paths only) or `git rev-list --objects --remotes`, each piped to the vendoring names grep spelled out in the acceptance list below → 0 — and across every local ref; keep it that way. | - | pins match uv.lock under `uv lock --check` plus a test; suite at the pinned pair with only the two named known reds; README and install.sh state the terms verbatim, test-grepped; both vendoring nets in the acceptance list below (content grep and names grep) stay empty | merged 2026-11-23 (PR #5, squash e75e6b0; senior GO 4/5 round 2, greptile 5/5; card landed 2026-11-21 in PR #4): pins applied as rns==1.6.1 / lxmf==1.3.1, terms in README + install.sh, both vendoring nets empty |
+| A20 | `ReticulumTransport.__init__` accepts `storage_path` but never uses it, so every transport test that passes the kwarg believes it isolated storage while `os.makedirs` writes the default path under the developer's `HOME` — CI-stub runs at `HOME=/nonexistent` fail 28 tests that have nothing to do with the code under test | - | the kwarg reaches `self.storage_path` (chain order pinned), a started transport creates nothing under `$HOME`, the transport file is 0-failure at `HOME=/nonexistent` | merged 2026-11-25 (PR #7, squash c1dec26; senior GO 4/5 first pass with conditions, GO 5/5 second pass; greptile 5/5, threads auto-resolved): fold applied as `extra` > kwarg > env > default; sibling unwired arguments filed as issue #8 |
+| A21 | `install.sh` hardcodes `${HOME}/.hermes`, so every other Hermes home (each profile is its own home, and the multiplexed gateway loads plugins from each) keeps whatever shim and `venv_path.txt` it had: observed 2026-11-26, the default home connected on the release checkout while a second profile connected on the retired one, each logging a happy `connected` line | - | a named home receives the shim, both `venv_path.txt` roots, the gate copy and the config writes; an existing user value survives; no-flag run is identical on home-scoped writes; a read-only drift check (`--check`) names stale and marker-less homes; non-default homes skip the archived unit; docs name the per-home marker. Homes consistent here; mesh identities stay distinct in A17 — until that lands a second profile still collides on `gateway_identity` (`tasks.md:808-810` records the collision; the field is named at `:798`, `:821`) | open, proposed 2026-11-26; card landed 2026-11-27 (this PR; senior GO 4/5 fifth pass): build not started |
 
 ## Cross-cutting constraint: no interactive UI over LXMF
 
@@ -66,7 +70,9 @@ See the A5 card record.
 
 Parked, not forgotten: cron-over-RNS delivery vehicle (community LXMF bot note, §21.3 item 8
 in `plan.md`), `standalone_sender_fn` design question, P-2 map,
-P-3 media, P-4 NomadNet channel, P-9 gateway watchdog, RNS version pin (§14).
+P-3 media, P-4 NomadNet channel, P-9 gateway watchdog. (The RNS version pin,
+long parked here as "§14", is carded now — A19; the §14 pointer was a
+misreference, the licensing section is §11.)
 
 **Owner request 2026-10-28 — spec pass next:** inbound image support (P-14 media,
 image-in half): a client attaches an image to a mesh DM; the adapter carries it
@@ -846,6 +852,527 @@ and an INFO line naming the owner; a profile that needs its own RNS instance
 runs its own gateway process. Peer also ruled that sharing `rnsd` and the
 interfaces is fine, so the card only has to make the identities distinct.
 Ready to build once the two-profile harness exists.
+
+## Card A19: License close-out — exact pins, terms where users meet them
+
+**Build:** Finish what ADR-0002 decided. `pyproject.toml` declares `rns` and
+`lxmf` as ranges; the ADR ruled exact pins — "a range can resolve to a version
+whose source nobody here has read" — and spec §11 completes the thought: "the
+same exposure the vendoring argument rejects." The delta was never applied.
+Pin both `==` the uv.lock resolved pair — at proposal time rns 1.6.1 /
+lxmf 1.3.1 — a self-consistent pair, since lxmf 1.3.1 declares `rns>=1.6.1`
+in its own PyPI metadata (checked 2026-11-21), so the exact pins cannot
+contradict the dependency. Run the suite in both gateway modes at that pair,
+and record the pair in the card status line so the release note names it. Then put the
+Reticulum License where a user meets it. The README License section says only
+"MIT"; the wheels carry `License: Reticulum License` in metadata with no
+conditions text; upstream the terms live in each repo's LICENSE file and the
+manual license page, and in the header of most RNS source files (77 of the
+105 .py files the 1.6.1 wheel installs) but almost none of LXMF's (1 of the
+10 files its 1.3.1 wheel installs) — measured in the live gateway venv,
+2026-11-21 — and nowhere a downstream install meets them. (RNS also carries
+third-party parts under other licenses: `vendor/` (i2plib among them),
+pure25519, and `Interfaces/util/netinfo.py` under a 2014 Stefan C. Mueller
+MIT header.) The license
+is MIT-shaped with three conditions: no use in "any kind of system which
+includes amongst its functions the ability to purposefully do harm to human
+beings", no use in creating AI/ML training datasets, and the copyright and
+permission notice travels with any copy. Canonical source:
+https://reticulum.network/manual/license.html. Add a third-party
+notice to the README quoting them, and make `install.sh` print the same notice
+before its `pip install` step — on both the default-venv path and
+`--venv PATH` (which installs this package, and with it rns/lxmf, into a
+chosen existing venv rather than creating one).
+**Spec basis:** `docs/adr/0002-pin-rns-lxmf-not-vendor.md` (Accepted) and the
+licensing half of spec §11; the instance-sharing half of §11 covers why one
+rnsd serves several adapters. The ADR's own "spec §14" implementation-delta
+pointer is a misreference — §14 is error taxonomy — and the un-carded list in
+this file kept the pin parked under the same wrong pointer until this card;
+both corrected above.
+**License posture, honestly stated:** the Reticulum License grants use subject
+to its conditions; no clause names "dependency" or "transport" use as a
+permitted category. Our reading — ours, not an upstream blessing — is that
+installing rns/lxmf from PyPI at setup time and running them as the mesh
+transport sits inside the grant, while vendoring their source into a
+crawler-visible public repository is the exposure the dataset clause aims at.
+Upstream does warn — but not where a pip install meets it: both PyPI
+descriptions in the pinned pair (checked 2026-11-21) call the copyright and
+license assertions that machine/LLM-generated derivatives of the projects
+make "void grants", and warn that "all downstream projects using the
+infringing derivatives, are directly and personally liable for the legal
+consequences". The package metadata carries a single `License: Reticulum
+License` field and no conditions text — the warning itself only rides along
+in the embedded long description, which pip never prints. Nothing at
+install time shows a user the conditions, which is why install-time
+disclosure is part of this card rather than optional polish.
+**State on this box (checked 2026-11-21):** the supported gateway path
+imports RNS from the venv named in `~/.hermes/plugins/reticulum/venv_path.txt`
+(Projects/rns_hermes_endpoint_private/venv), which already runs rns 1.6.1 and
+lxmf 1.3.1 — the pin codifies the live state rather than changing it, and no
+rns 1.5.4 exists on this box. The same fact cuts the other way: that venv is
+the live adapter's import root, so an `install.sh` re-run here touches the
+running gateway. Do not re-run install.sh on this box until the pinned pair
+has had its live check on the RNode.
+**Blocked by:** nothing.
+**Acceptance:**
+1. `uv lock --check` passes and a test asserts pyproject's pinned rns and
+   lxmf versions equal the uv.lock resolved pair; no range specifiers left.
+2. Suite run in real-base and CI-stub modes at the pinned pair. Name the two
+   known reds so review does not chase them:
+   `test_core.py::TestBridgeLiveness::test_sd_notify_sends_to_socket` and
+   `test_tool_emoji.py::TestParityWithInstalledGateway::test_table_has_no_undeclared_extras`
+   — both reproduce at dev in the same environment (measured 2026-11-21,
+   2 failed / 647 passed / 4 skipped); any other failure must be proven
+   pre-existing at base per the house rule.
+3. README License section and install.sh both contain the dataset-clause
+   sentence verbatim ("shall not be used, directly or indirectly, in the
+   creation of an artificial intelligence…") and the license URL — asserted
+   by a test that greps both files, not by review prose.
+4. Still no vendored RNS/LXMF at the merge commit: `git grep -l -E 'This file
+   is part of RNS|^# Reticulum License' -- ':!docs'` returns nothing, and
+   `git ls-files | { grep -icE '(^|/)(rns|lxmf)[-/_.]|\.(whl|tar\.gz)$' || true; }`
+   stays 0 — one net for vendored dirs, renamed modules and wheel/sdist
+   archives, with the `|| true` keeping a zero count from reading as command
+   failure.
+
+**Status 2026-11-23:** merged in PR #5 (squash `e75e6b0`). Built on `step/A19-license-pins-and-terms`. `pyproject.toml`
+pins `rns==1.6.1` / `lxmf==1.3.1` (the uv.lock pair, unchanged by `uv lock`), and
+`tests/test_license_posture.py` holds the mechanical claims — pins equal the lock,
+the three condition sentences plus the manual URL appear in README's License section
+and in `install.sh` ahead of the install branch, the notice orders ahead of both pip
+commands, and both vendoring nets stay empty. Measured at head with `TMPDIR=/tmp`:
+real-base 660 passed / 4 skipped / 1 failed (the carded `test_tool_emoji` parity
+red); CI-stub 656 passed / 9 skipped / 0 failed against base's 644 / 9 / 0, so the
+delta is exactly the new tests. Against the card's acceptance 2, the second carded
+red (`test_sd_notify_sends_to_socket`) only fails when `TMPDIR` is this profile's
+long scratch dir — an AF_UNIX path-length artifact, not the tree — so the card's
+"2 failed" line describes that environment. The stub recipe needs a writable empty
+`HOME` because the transport tests pass a `storage_path=` kwarg that
+`ReticulumTransport.__init__` drops (`plugin/transport.py:168-172`), so the default
+expands from `HOME`; with `/nonexistent` that is 28 failures in
+`test_reticulum_transport.py` at both base and head — a test defect to card, not an
+effect of the pins. Evidence rows: `verification.md` § Card A19.
+
+## Card A20: `ReticulumTransport` drops its own `storage_path` argument
+
+**Build:** `__init__` accepts `storage_path` (`plugin/transport.py:142`) and never uses it:
+`self.storage_path` is built from `extra`, then the scoped env reader, then the
+`~/.hermes/.reticulum-gateway/storage` default (`plugin/transport.py:168-172`). A caller who
+passes the kwarg believes storage is isolated and it is not. Production is unaffected — the
+adapter passes settings through `extra` (seeded by `registration.py`) — but every transport
+test that calls `.start()` with the kwarg (nine call sites in
+`tests/test_reticulum_transport.py`: 357, 489, 610, 665, 798, 805, 820, 833, 843;
+coordinates as of dev@`ba5b5c2`, where every line reference in this card was measured)
+actually runs `os.makedirs` (`plugin/transport.py:266`) against the default path
+expanded from the developer's `HOME`. That makes suite results depend on the environment: measured 2026-11-25
+at dev@`ba5b5c2`, the documented CI-stub recipe with `HOME=/nonexistent` gives 28 failed /
+27 passed in that file — `PermissionError` from `makedirs` under `/nonexistent` — while a
+writable `HOME` is green. A19 spent two review rounds disagreeing over whether those numbers
+reproduce (recorded in its verification row 2) before the A19 build filed this as GitHub
+issue #6 and stayed out of scope.
+**Spec basis:** none — API honesty and test honesty; same defect class as A15/A16, a green
+suite not doing what it claims, and it poisons the CI-stub evidence mode every card leans on.
+**Ruling:** the fold (option 1 from issue #6), chain order `extra` > kwarg > scoped env >
+default: it keeps the documented constructor API, makes the nine existing test call sites
+mean what they say, and leaves `extra` authoritative, so production cannot be surprised.
+The sibling named parameters (`display_name`, `announce_interval_min`, `rns_config_path`)
+are still accepted and dropped — same defect class, filed as issue #8 rather than widened
+into this card. Senior review (2026-11-25, first pass) ruled to keep the fold: deletion
+would rewrite the nine call sites and silently drop an advertised argument to buy
+consistency with no behavioral gain.
+**Acceptance:**
+- Given `ReticulumTransport(storage_path=X)`, Then `self.storage_path == expand_path(X)` —
+  the argument reaching the attribute is pinned by a test, not just demonstrated in the diff.
+- Given the whole chain: `extra`'s `storage_path` beats the kwarg, and the kwarg beats the
+  scoped env variable — chain order pinned by a test, since the fix defines it.
+- Given a transport built with an isolated storage path and a monkeypatched `HOME`, when it
+  `.start()`s, Then nothing is created under that `HOME` — red before (the makedirs hits the
+  default under the fake home), green after.
+- Given the CI-stub with `HOME=/nonexistent`, when the transport test file runs at head,
+  Then 0 failures (base: 28). The full suite in real-base and CI-stub modes matches the base
+  run except for this card's new tests.
+- The comment at `tests/test_reticulum_transport.py:734` ("the `storage_path` kwarg is legacy
+  and ignored") states the defect as fact — it becomes false with the fix and is corrected
+  here, not left behind.
+**Status:** merged 2026-11-25 (PR #7, squash c1dec26 into dev). Senior GO 4/5 on the
+first pass with docs/test-hygiene conditions, GO 5/5 confirming they were applied;
+greptile 5/5 with its one thread auto-resolved. Carded 2026-11-25 from GitHub issue #6
+(owner directed the same day). Branch `step/A20-transport-storage-path` (deleted on
+merge). Evidence rows: `verification.md` § Card A20.
+## Card A21: `install.sh` installs into one hardcoded Hermes home, so every extra profile drifts
+
+Source: live switch-over of the supported gateway path to the release checkout on
+2026-11-26 (`install.sh --no-service` reported success; the second profile kept running the
+retired bridge's code — see "Evidence of the gap").
+
+**Build:** Thread the Hermes home through `install.sh` — a flag surface plus `HERMES_HOME` resolution —
+so the shim copy, both `venv_path.txt` roots, the `mesh-tool-gate` copy, the config
+enablement and the next-steps output land in the home the operator names, instead of only
+`${HOME}/.hermes`. This means:
+
+- `--hermes-home PATH` / `HERMES_HOME` resolution (D-1) feeding the plugin-dir, config and
+  marker write paths — including `:205`'s `mkdir -p "${HOME}/.hermes"`, which must follow
+  the selected home or be conditional, or a profile install manufactures the default home
+  it was told not to touch;
+- a new read-only `--check` subcommand: the drift report of D-4 (the one place the card
+  adds a subcommand, ruled in deliberately);
+- the service step is skipped when the target home is not the default one (D-6) — the
+  archived bridge unit must not be enabled against a profile;
+- `--global` mode currently writes `$VENV_DIR` into the marker (`install.sh:181`) although
+  that mode never creates it (`:109-112` is not on that path), which under D-4(a) would
+  make every `--global` home permanently red; the marker write lists only roots the run
+  actually used, conditioned on `INSTALL_MODE == venv` — not on path existence: the default
+  `${SCRIPT_DIR}/venv` (:22) exists on any box that ever took a default install, so an
+  `-d` test would list a venv the global run never used, and the shim would prepend it
+  (`__init__.py:101-106` — the A22 shadowing class) while `--check` reads green. The script
+  already computes the right value (`BRIDGE_VENV=""` for global, `:338-344`);
+- `--check` must branch out before the A19 license notice (`:86-102`) and the install
+  branch, or every check prints twenty licensing lines; A19's ordering test pins the
+  notice ahead of the `INSTALL_MODE` branch (`verification.md:256`), so the placement is
+  chosen against that test, not guessed;
+- the script's own help (`:6-15` usage banner, `:46-53` `--help` block) gains
+  `--hermes-home` and `--check` — an undocumented flag surface is this card's defect in
+  miniature;
+- the next-steps text (`install.sh:455-456`): today it directs the operator to put
+  `RETICULUM_*` and `HERMES_RETICULUM_*` in `~/.hermes/.env`, and for a profile install
+  that is the wrong home — the profile's adapter hydrates secret sources from the profile
+  home (`run_adapters.py:1095`), so an allowlist written by the installer's own
+  instructions lands where nothing reads it and deny-by-default
+  (`_shared.platform_gate_env`, `spec.md:238`) silently rejects every peer. One echo line;
+  the same silent-drift failure this card exists to kill.
+
+Not retargeted, and stated so the acceptance guard can name them: `${HOME}/.reticulum`
+(mkdir + example config copy, `install.sh:138-147`) and `${HOME}/.lxmf/storage` (`:152`)
+are OS-home RNS/LXMF directories, not Hermes-home artifacts — they belong to the shared
+rnsd this repo's README supports. (A17's per-profile storage is a different path,
+`$HERMES_HOME/.reticulum-gateway/storage`; no conflict.) The `${SCRIPT_DIR}/.env`
+interaction (`:156-161`) stays checkout-scoped.
+
+**Spec basis:** No spec section prescribes the installer's target home — checked, not assumed: §16 is the
+adapter-invariant list (`spec.md:598-610`) and §17.5 is the env-vs-YAML config gap
+(`spec.md:662-669`); neither is about install targets. The closest spec fact is §16's
+invariant **"Profile-scoped env reads fail closed and never fall back to `os.environ`
+under multiplex"** (`spec.md:604`) — profile isolation is spec'd behavior, and that is the
+design pressure behind this fix.
+
+The basis is therefore an observation with code citations, not spec prose: Hermes resolves
+its home as context override → `HERMES_HOME` → platform default
+(`hermes_constants.py:207`); a named profile's home is `<root>/profiles/<name>`
+(`named_profile_home`, `hermes_constants.py:358`; the profiles-root check is
+`_is_hermes_profiles_root`, `:336`); directory plugins are discovered per home at
+`$HERMES_HOME/plugins/` (`plugin_loader.py:82-88` — `def` at :82, and it returns `None`
+when the directory is missing, which is why the installer's `mkdir -p` at `:168` matters);
+and the multiplexed gateway discovers plugins inside each profile's own runtime scope
+(`gateway/run_adapters.py:1099-1102`; the dispatcher is `_start_secondary_profiles` at
+`gateway/run_startup.py:1407`, comment at `:1416`). The shim's own contract is already
+home-agnostic (`plugins/reticulum/__init__.py:41-42` resolves `venv_path.txt` from
+`__file__`, `_roots()` `:45-62` reads the roots). Only the installer hardcodes the
+destination. (Citation convention, as elsewhere in `tasks.md`: `install.sh`,
+`plugins/reticulum/…`, `.gitignore` are this repo; `hermes_constants.py`,
+`plugins/plugin_loader.py`, `gateway/…` are the Hermes core installation.)
+Whether any of this should become a spec statement is the operator's call, not this
+card's — it authors none.
+
+**Blocked by:** Nothing hard. Sequencing: **A6 (open)** edits the same config-editor block
+(`install.sh:215-326` — three write paths; five `raise SystemExit(0)` sites at `:254`,
+`:267`, `:276`, `:284`, `:303`, of which `:276`, `:284` and `:303` write nothing; the
+third write path at `:318-319` has no early exit), so whichever card lands second rebases
+onto the other's branch conditions. A19's install-time notice text (`install.sh`, ahead of
+the install branch) is untouched by this card. (A6's own cited install.sh line numbers are
+stale against the current file; the rebase fixes A6's numbers rather than inheriting them.)
+
+**Evidence of the gap:** Observed on this box, 2026-11-26 (PII rule respected: no paths outside `~/`, no hashes, no
+hostnames, no session ids):
+
+- `install.sh --no-service` from the release checkout finished green and rewrote the default
+  home's shim (`~/.hermes/plugins/reticulum/`) with both roots naming the release checkout.
+- A second profile's shim (`~/.hermes/profiles/<profile>/plugins/reticulum/`) still named the
+  retired bridge checkout's `venv` and `src`, with a stale shim body one revision behind
+  (no `reversed(_roots())`, no deps-path comment) and a stale `mesh-tool-gate`.
+- Consequence: while the default profile connected on the release code, the second profile
+  connected on the retired code — the gateway logged a happy `✓ reticulum connected
+  (profile: …)` line for both. Nothing in the install output, the gateway log, or `hermes
+  status` says "this home was not installed".
+- Repair was by hand (copy the two plugin directories, rewrite `venv_path.txt`, restart).
+  That hand-repair is the procedure this card replaces.
+- Installer side, same session: `install.sh:167`
+  `HERMES_PLUGINS_DIR="${HOME}/.hermes/plugins"`; `:204`
+  `HERMES_CONFIG="${HOME}/.hermes/config.yaml"`; `:205` `mkdir -p "${HOME}/.hermes"`; `:456`
+  the next-steps text names `~/.hermes/.env`. No branch anywhere in `install.sh` consults
+  `HERMES_HOME`.
+
+**Ruled:** recommended by peer, adopted by operator 2026-11-26; senior fifth-pass review
+**GO 4/5** (2026-11-27).
+
+D-1. **Flag surface.** `--hermes-home PATH` plus honouring `HERMES_HOME`; precedence
+flag > env > default. No `--profile` sugar — resolving `<root>/profiles/<name>` in bash
+duplicates `hermes_constants` root logic and invites drift. The documented profile
+invocation is `--hermes-home <root>/profiles/<name>`. **Nonexistent target refused:** when
+a *named* home (flag or env) does not exist, the installer refuses by name and exits
+nonzero — `mkdir -p` for a named home blesses a typo as a green install no gateway ever
+reads, the exact failure class this card exists to kill. Only a **resolved** default home —
+the path equals `${HOME}/.hermes` whether the flag, the env or neither selected it, the same
+resolved-value test D-6 uses — keeps today's create-on-install semantics (`:205`): on a fresh
+box `HERMES_HOME=${HOME}/.hermes` creates the home (the default, not a typo), while
+`HERMES_HOME=${HOME}/.hermes2` is refused. An existing but empty named directory is
+accepted (a deliberately new home). **Profiles-root predicate, pinned:** the refusal
+applies when the *named target itself* is a directory named `profiles` whose parent is a
+Hermes root under the single root predicate used across this card (`_is_hermes_profiles_root`,
+`hermes_constants.py:336-355` — marker files, a root named `.hermes`, the default root, or a
+`profiles/.deleted` tombstone) — so `--hermes-home <root>/profiles` cannot install into the root. An ordinary home that
+merely *contains* a `profiles/` subdirectory (every multiplex root home, including
+today's default) is accepted; without this pinning, D-2's own default-home path would be
+refused by its own clause.
+
+D-2. **Default stays `${HOME}/.hermes`.** No flag, no env: byte-identical to today.
+
+D-3. **One venv, many homes.** Statement-only — like D-8, it constrains design, not a
+row. A home may name a shared venv + `src/`; the per-home artifact is the plugin
+directory, not the interpreter. Coupling stated: a shared venv must satisfy every home's
+gateway interpreter — which is exactly why the sibling finding (A22) matters.
+One operational sequencing caveat: a second home installed against the shared venv re-runs
+`pip install -e` into the venv the *first* home is live-importing (`install.sh:114-116`) —
+A19's fence applies across homes, so order installs with that in mind.
+
+D-4. **Sweep or single target.** Install stays single-target. `--check` is ruled in as a
+**read-only** drift report with its own target: `--check [ROOT]`, `ROOT` defaulting to
+`${HERMES_HOME:-${HOME}/.hermes}` — the *root* (a home plus its `profiles/`); honouring
+`HERMES_HOME` matters because README.md:118 documents exactly that env for a dedicated
+profile, and a check that ignored it would scan an unrelated root and exit green.
+**`--check` combined with `--hermes-home` is refused by name** — the flag names a home to
+write; letting it half-name a scan root while D-4's stated semantics ignore it would scan
+homes the operator never asked about, possibly green. `--check` validates its ROOT: a
+nonexistent ROOT exits nonzero naming it; a ROOT that exists but is no Hermes root under
+the card's single root predicate (D-1: marker files, a root named `.hermes`, the default
+root, or a `profiles/.deleted` tombstone) is reported
+"not a Hermes root" and exits nonzero — a typo'd ROOT scanning nothing and printing the
+not-installed line is the same false green, moved from the write path to the read path.
+Limitations are printed in the check's own output — first: a home installed *outside* any
+root (D-1 permits `--hermes-home <tmp>/alt`) is invisible to `--check` unless named as ROOT.
+`--check` walks
+`ROOT/plugins/reticulum/venv_path.txt` and every
+`ROOT/profiles/*/plugins/reticulum/venv_path.txt` — dot-directories excluded, since
+`profiles/.deleted` is a real directory (`hermes_constants.py:331`) and a tombstone
+printing as a not-installed home would confuse the check's own output — and reports:
+(a) a home whose marker names root paths that do not exist — drift, exit nonzero (the
+Build's `--global` marker conditional is what keeps such a home from being permanently
+red for the wrong reason);
+(b) a home with no `plugins/reticulum/` directory at all — **not** drift: an informational
+"adapter not installed here" line, exit 0, or every fresh box is permanently red;
+(c) a home with `plugins/reticulum/` present but **no** `venv_path.txt` — the shim's own
+contract needs the marker (`__init__.py:41-42` resolves it from `__file__`), so this is a
+broken install: report it, exit nonzero.
+No "foreign checkout" detection — there is no registry of legitimate checkouts, so
+existence is the whole check. The other two limitations, also printed in the check's own
+output:
+when `HERMES_RETICULUM_VENV` (`plugins/reticulum/__init__.py:49-51`) overrides the marker
+at runtime, the check cannot see that; and the marker attests to roots, not to the age of
+the copied `mesh-tool-gate` — a fresh marker beside a stale gate reads green (a gate
+`plugin.yaml` version compare is available — `src/hermes_reticulum/mesh-tool-gate/plugin.yaml`
+carries a `version` field — but comparing copied-tree versions is A21-adjacent scope;
+this card prints the limitation instead). Sweeping **writes** are out:
+a re-run rewrites the venv the running gateway imports from (`install.sh:114-116`; A19's
+note, `tasks.md:911-914`: the checkout venv "is the live adapter's import root, so an
+`install.sh` re-run here touches the running gateway"), and the documented consequence of
+the restart that follows is in our own docs — "A restart drops the live gateway session
+(in-flight chats end); pick the moment" (`docs/skills/updating-the-adapter.md:71`).
+Operators run installs outside live turns; this goes in the docs (D-7).
+
+D-5. **Config-editor parity.** Same two writes per home (`plugins.enabled`,
+`approvals.timeout: 900`), same "existing user value is left alone" convention. The editor
+block is *already* parameterised on the config path — `:215` passes `"$HERMES_CONFIG"` as
+`argv[1]`, `:221` reads it — so A21's delta there is the two HOME-hardcoded lines `:204`
+(config path) and `:205` (`mkdir -p "${HOME}/.hermes"`, which must follow the selected
+home or a profile install manufactures the default home), nothing more; the `:198-200`
+comment above the heredoc names the old config path literally and should be updated with
+the two lines. Joining the early-exit branches is A6's work, not this card's. A6's prompt stays
+A6's.
+
+D-6. **Archived bridge unit.** The rendered unit goes to `${HOME}/.config/systemd/user/`
+(`install.sh:378-379`) — the OS home, never a Hermes home — so the live question is what
+`--hermes-home <profile> --service` does, and as written today it would render and enable
+the archived unit anyway. Ruled: when the resolved target home ≠ `${HOME}/.hermes`
+("non-default" means the resolved value, not merely the flag's presence — which also
+catches an operator who followed README.md:118 and exported `HERMES_HOME`), the installer
+**skips the service step, `--service` given or not**, and prints the skip line naming the
+reason (the bridge is archived and must not be enabled against a profile's mesh identity)
+in auto mode too — silently dropping an explicit flag, or silently shipping a different
+artifact set because of an env var, is the same silence this card kills.
+
+D-7. **Docs wording.** README / QUICKSTART keep `~/.hermes` as the primary example and gain
+a short "installing into a profile" section showing the flag. The docs that teach operators
+where to look name the default home today — `docs/skills/updating-the-adapter.md:56` and
+`:83` carry the marker path literally (`:10-11` split it across lines), `README.md:139`
+names the default-home plugin dir, `QUICKSTART.md:42` states the installer installs into
+`~/.hermes/plugins/` and edits `~/.hermes/config.yaml`, and `QUICKSTART.md:154`'s remedy
+says "re-run `install.sh`" without naming a home. They gain "the
+`plugins/reticulum/venv_path.txt` under the home you installed into (check with
+`install.sh --check`)"-style wording and the remedy names the home. README.md:118 is
+itself ambiguous between `HERMES_HOME` naming the multiplex root and naming one profile's
+home — the docs pass disambiguates it, or an operator installs into the root and wonders
+why the profile is still stale.
+Plus one operator caution, lead first with the mutation and second with the restart: a
+re-run while the gateway is live rewrites the venv the live adapter is importing
+(`install.sh:114-116`; A19's fence, `tasks.md:911-914`), and the restart that follows ends
+the live session — "A restart drops the live gateway session (in-flight chats end); pick
+the moment" (`docs/skills/updating-the-adapter.md:71`). Do not assert in the docs what a
+mesh peer sees beyond that: an interrupted turn leaves a fenced session, freed when its
+300-second turn lease expires or its holder is found dead (`persistence/authority/coordination.py:477`; TTL default `agent/runtime_session_store.py:362`) and the
+peer-visible path is A12/A14 territory — verify before shipping a stronger claim. Run
+installs and `--check` outside live turns. A19's license notice text stays verbatim.
+
+D-8. **Naming.** A21 lands alone; the interpreter finding becomes its own card (A22).
+Tracker: both gaps are already filed upstream as strtPath/hermes_reticulum_platform issue
+#11 — when these cards land, split #11 or reference-and-close it so the tracker does not
+double-count. #11 also asks for `--profile` sugar, which D-1 explicitly declines; record
+that in the split/close note so closing #11 does not read as ignoring the ask.
+
+**Acceptance:** Each row re-runnable by a second party. **Every installer row** runs against a temp
+`HOME` (never a real one) and passes `--venv <tmp>/venv --no-service`. Exactly two
+exceptions, each stated in its own row: **row 10** passes `--service` instead of
+`--no-service` and still passes `--venv <tmp>/venv`; it additionally stubs `systemctl`
+on `PATH` (`systemctl --user` reaches the operator's real user manager regardless of
+`HOME` redirection — `install.sh:373-374`, `:422-432` — so an unguarded second-party run
+mutates the live gateway and can re-enable the deliberately archived bridge unit).
+**Row 12** tests `--global` mode and therefore takes **no** `--venv` flag (`--venv` sets
+`INSTALL_MODE=venv` at `:29-33` and `--global` sets it back at `:34-37`; a run carrying
+both is order-dependent and tests the wrong mode) — it instead stubs `pip` on `PATH`, or
+the run reaches `:128`'s real `pip install --break-system-packages -e "$SCRIPT_DIR"`.
+Anything about the **default** venv location is read statically from `:22`/`:110`, never
+executed (`pip install -e` into `${SCRIPT_DIR}/venv` is this box's live import root —
+A19's fence, `tasks.md:911-914`).
+
+1. Given a temp root `<tmp>/.hermes/` with `plugins/` already created (so an untouched-directory
+   assertion proves something about a directory that existed) and `profiles/p2/config.yaml`
+   whose `plugins.enabled` is empty, When `install.sh --no-service --hermes-home
+   <tmp>/.hermes/profiles/p2 --venv <tmp>/venv` runs, Then under that profile home exactly:
+   `plugins/reticulum/` equal to the checkout's **minus** `venv_path.txt`
+   (`diff -r --exclude=venv_path.txt --exclude=__pycache__` — the marker is written into the
+   destination at `install.sh:180-183` and is gitignored (`.gitignore:57`), `cp -r` copies
+   any `__pycache__` (`:177`), so whole-directory byte identity is unachievable; assert the
+   marker separately: two lines, `<tmp>/venv` then `<checkout>/src`);
+   `plugins/mesh-tool-gate/`; and `<tmp>/.hermes/plugins/` — the default home's plugin
+   directory, a *different* home from the target — untouched (before/after `find -newer`
+   snapshot).
+2. Given the same temp home, When the run finishes, Then that home's `config.yaml` parses as
+   YAML with exactly one top-level `plugins:` key, both plugin names in `plugins.enabled`, and
+   `approvals.timeout: 900`.
+3. Given a profile config that already sets `approvals.timeout: 300` and lists an unrelated
+   plugin, When the run finishes, Then both survive **at the value level** (the
+   `plugins:`-present path round-trips through `yaml.safe_dump` at `:318-319`, so comments
+   and formatting do not survive by design — assert parsed values, not bytes), no duplicate
+   top-level key appears, and the exit code is 0 (assert with system `python3`, not the venv's
+   PyYAML — per the sibling finding that venv's C extensions can be foreign-ABI).
+4. Given no `--hermes-home` flag and `HERMES_HOME` unset, When the run executes with `HOME` pointed at a temp
+   dir (and `--venv <tmp>/venv --no-service` per the preamble), Then every **home-scoped**
+   write (plugin dirs, markers, `config.yaml`) lands under `<tmp>/.hermes/…` with the same
+   file set and content rules as today (D-2 back-compat). The default venv location is a
+   **static read** of `:22`/`:110`, never an execution (`python -m venv ${SCRIPT_DIR}/venv`
+   at `:109-112` and the `source` at `:114` run before any `pip` stub could matter); same
+   for the `${SCRIPT_DIR}/.env` interaction (`:156-161`).
+5. Given `HERMES_HOME=<tmp>/alt` (an existing dir), When the run executes with no
+   `--hermes-home` flag, Then the target is `<tmp>/alt` — D-1 ruled flag > env > default,
+   so the outcome is assertable, not disjunctive — and no `<tmp>/.hermes` path is created
+   (the `:205` mkdir followed the selected home). And given `HERMES_HOME=${HOME}/.hermes`
+   on a fresh box, the default home is created, not refused (D-1's resolved-value rule).
+   And given `--hermes-home <tmp>/no-such-dir`, the run exits nonzero naming
+   the path and creates nothing (D-1 refusal). And a home that merely contains a `profiles/`
+   subdirectory is accepted (D-1 predicate pinned), while `--hermes-home <root>/profiles`
+   under a Hermes root is refused by name. And given both `--hermes-home <tmp>/flag-home`
+   and `HERMES_HOME=<tmp>/env-home` (both existing), the **flag** target is the one
+   installed into (D-1 precedence exercised, not just named).
+6. Given homes whose fixtures are each **built by a real install run into that home** (so a
+   `config.yaml` exists and no fixture trips the "not a Hermes root" rule before any drift
+   report), then **mutated per case**: one whose `plugins/reticulum/venv_path.txt` names a
+   root that does not exist, When
+   `--check` runs, Then it exits nonzero, names that home and the stale root, and writes
+   nothing; a home with no `plugins/reticulum/` directory is reported as not-installed and
+   does not make the exit code nonzero; a home with `plugins/reticulum/` but no marker is
+   reported and exits nonzero (D-4(c)); `--check` with `HERMES_HOME` set and no `ROOT`
+   argument scans the `HERMES_HOME` root (D-4 default); a nonexistent `ROOT` exits nonzero
+   naming it; an existing `ROOT` failing the card's root predicate is
+   reported "not a Hermes root" and exits nonzero; `--check --hermes-home <anything>` exits
+   nonzero naming the combination; the output prints all three stated limitations —
+   outside-ROOT invisibility, the `HERMES_RETICULUM_VENV` override, and marker-attests-roots-
+   not-gate-age; the `profiles/.deleted` tombstone produces no output line (D-4 walk).
+   Remediation is a separate install run naming that home.
+7. Given the new tests, When the CI pytest job runs, Then they pass in a `HOME`-redirected
+   fixture — and fail if `install.sh` writes outside the explicit allow-set: the selected
+   home, `$SCRIPT_DIR` (default venv and `.env` are checkout-scoped, `:22`/`:110`/
+   `:156-161`), the explicit `--venv` target, `${HOME}/.reticulum` and
+   `${HOME}/.lxmf/storage` (`:138-147`, `:152` — OS-home RNS/LXMF artifacts, not
+   Hermes-home artifacts, per Build). Not `${HOME}` wholesale: a stray write into the
+   *default* home during a profile install must fail the guard it advertises. A guard that
+   forbade the checkout paths would contradict the script under test. Note the guard's
+   boundary honestly: `$SCRIPT_DIR` in the allow-set contains the default venv by design
+   (home-scope proof, not a net), so row 7 is **not** the safety net for the venv-mutation
+   class — the preamble's flag rules are. If the guard matrix includes a `--global` run, it
+   stubs `pip` there per the preamble's row-12 exception.
+8. Given a profile-home install, Then the next-steps output names the **selected** home —
+   its `.env` pointer paths `<selected home>/.env`, not `~/.hermes/.env` (a grep for
+   `/home/`/`/Users/` cannot catch that defect), and same for the `RETICULUM_*` guidance
+   (`install.sh:455-456`).
+9. Given the diff, When `python3 scripts/security-sweep.py --untracked` runs, Then exit 0;
+   and the diff adds no literal absolute home path (`/home/…`, `/Users/…`) to the script —
+   runtime echoes of `$VENV_DIR`/`$RETICULUM_PLUGIN_DST`/`$UNIT_DST`/`$HERMES_CONFIG`
+   (`:107`, `:184`, `:253`, `:442`) are fine and expected.
+10. Given `--hermes-home <tmp>/.hermes/profiles/p2 --service --venv <tmp>/venv` with
+    `HOME=<tmp>` and `systemctl` stubbed on `PATH`, Then no unit file exists under
+    `<tmp>/.config/systemd/` (any path), the stub was **never invoked**, and the output
+    contains the named skip line (D-6; same skip line expected in auto mode — assert it
+    there too). And the negative half: `--hermes-home ${HOME}/.hermes --service
+    --venv <tmp>/venv` (the **resolved default** named via the flag) with the same stub →
+    the stub **is** invoked and no skip line prints — D-6 keys the skip on the resolved
+    path, not on flag presence.
+11. Given the docs diff, Then README/QUICKSTART carry the "installing into a profile"
+    section; `docs/skills/updating-the-adapter.md:56`/`:83` and the split path at `:10-11`
+    no longer name only the default home; `README.md:139` and `QUICKSTART.md:42` are
+    generalised; `QUICKSTART.md:154`'s remedy names the home; `README.md:118` is
+    disambiguated (root vs one profile's home); and the live-turn caution leads with the
+    venv mutation (`install.sh:114-116`), restart second, without unverified peer-visible
+    claims (D-7).
+12. Given `--global --no-service` with `HOME` redirected, **no `--venv` flag, and `pip`
+    stubbed on `PATH`** (per the preamble exception; the stub records its args — without
+    it, `:128` performs a real editable install outside HOME; `--no-service` stated here
+    too because in `--global` the target is the resolved default, so D-6's skip cannot
+    fire and an omitted flag reaches the real user manager at `:422-432`), Then the marker
+    lists only the roots
+    that mode actually used — `src`, no venv line (`INSTALL_MODE`-conditioned, `:338-344`
+    model) — and `--check` on that home exits green; no mode other than venv can put a
+    venv root in the marker.
+13. Given `install.sh --help` and the usage banner, Then both list `--hermes-home` and
+    `--check` (`:6-15`, `:46-53`).
+
+**Out of scope:** - Per-profile mesh identity and default storage path (A17), ACL profile scoping (A11), the
+  config editor's prompt behaviour (A6). The archived bridge's code is frozen; only its
+  install-time enablement is fenced here (D-6).
+- Anything about which checkout an operator *should* run; this card only removes the reason a
+  home silently keeps an older one.
+- A connect-time log line naming the plugin home / import root (`gateway/run_adapters.py:1384`
+  already logs the profile name; one addition naming the import root would have made tonight
+  self-diagnosing). Candidate follow-up card — the cheapest permanent fix for "nothing says
+  this home wasn't installed", but not this card's scope.
+
+**Sibling finding — not this card (candidate A22):** `install.sh:66` prefers `python3.13 python3.12 python3.11 python3` when creating the venv, so
+the venv can be a different **minor** than the gateway interpreter. The shim then prepends that
+venv's `site-packages` to the gateway's `sys.path` (`plugins/reticulum/__init__.py:99-106`,
+`sys.path.insert` at `:105`), so
+wrong-ABI C extensions in it shadow the gateway's own (`_yaml.cpython-311-*.so`,
+`_cffi_backend.cpython-311-*.so` under a 3.14 gateway on this box — PyYAML degrades to its pure
+parser, cffi fails after the shim is loaded). Observed 2026-11-26 as an install-time 3.11 venv
+under a 3.14 gateway; rebuilding the venv on the gateway's interpreter fixed it.
+
+Suggested shape if carded: choose the interpreter from the Hermes installation the target home
+belongs to (or refuse a mismatch by name), assert the venv's `sys.version_info[:2]` equals the
+gateway's in a test, and never prepend a foreign-ABI `site-packages`. Card it separately per the
+no-scope-expansion rule.
+
+**Status:** open, proposed 2026-11-26 — peer recommendation adopted by the operator; passed
+senior review **GO 4/5** (fifth pass, 2026-11-27) with zero blocking issues and that pass's
+eight non-blocking nits folded in; carded into `tasks.md` 2026-11-27 (this PR); build not
+started. Line references to `tasks.md` inside this card are coordinates as of dev@`faa63b5`,
+where they were measured. Evidence rows: `verification.md` § Card A21.
+
 
 ## Branch and PR workflow
 

@@ -1,0 +1,203 @@
+"""Card A19 — license posture: exact pins, terms where users meet them.
+
+ADR-0002 rules that rns and lxmf are pinned to exact PyPI versions rather than
+vendored, and that their conditions are shown where a user actually meets them.
+pip prints nothing license-shaped, so the disclosure lives in README.md and
+install.sh. These tests assert all three halves mechanically:
+
+1. pyproject's rns/lxmf pins are exact suffixes and equal the uv.lock pair, so a
+   range can never reopen the "resolved version nobody read" gap the ADR closed.
+2. The condition sentences and the canonical license URL appear verbatim in both
+   the README License section and the installer, ahead of install.sh's pip step.
+3. The vendoring nets stay empty: no RNS/LXMF source blob by content or by name.
+
+Quoted text is compared as literals taken from
+https://reticulum.network/manual/license.html, not from memory.
+"""
+
+import re
+import shutil
+import subprocess
+import tomllib
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PYPROJECT = REPO_ROOT / "pyproject.toml"
+UV_LOCK = REPO_ROOT / "uv.lock"
+README = REPO_ROOT / "README.md"
+INSTALLER = REPO_ROOT / "install.sh"
+
+LICENSE_URL = "https://reticulum.network/manual/license.html"
+
+# The Reticulum License's two extra field-of-use conditions plus the notice
+# clause, verbatim. Tests assert these as single lines in both files: a wrapped
+# quote would still read as present to a reviewer but would drift silently.
+CONDITIONS = (
+    "The Software shall not be used in any kind of system which includes amongst "
+    "its functions the ability to purposefully do harm to human beings.",
+    "The Software shall not be used, directly or indirectly, in the creation of an "
+    "artificial intelligence, machine learning or language model training dataset, "
+    "including but not limited to any use that contributes to the training or "
+    "development of such a model or algorithm.",
+    "The above copyright notice and this permission notice shall be included in "
+    "all copies or substantial portions of the Software.",
+)
+
+
+def _dependencies() -> dict[str, str]:
+    with PYPROJECT.open("rb") as handle:
+        data = tomllib.load(handle)
+    # Split on any specifier operator, not just "=": keying on "=" alone turns a
+    # range regression ("rns>=1.5.4") into the key "rns>" and the failure the pin
+    # test exists to report becomes a KeyError that names nothing.
+    return {
+        re.split(r"[<>=!~]", entry, maxsplit=1)[0].strip(): entry
+        for entry in data["project"]["dependencies"]
+    }
+
+
+def _locked_version(name: str) -> str:
+    with UV_LOCK.open("rb") as handle:
+        data = tomllib.load(handle)
+    for package in data["package"]:
+        if package["name"] == name:
+            return package["version"]
+    raise AssertionError(f"{name} is not in uv.lock")
+
+
+@pytest.mark.parametrize("name", ["rns", "lxmf"])
+def test_pin_is_exact_not_a_range(name):
+    spec = _dependencies()[name]
+    assert re.fullmatch(rf"{name}==\d+\.\d+\.\d+", spec), (
+        f"{name} must be pinned exactly per ADR-0002, got {spec!r}; "
+        "a range can resolve to a version whose source nobody here has read"
+    )
+
+
+@pytest.mark.parametrize("name", ["rns", "lxmf"])
+def test_pin_matches_uv_lock(name):
+    spec = _dependencies()[name]
+    assert spec == f"{name}=={_locked_version(name)}"
+
+
+def test_readme_states_the_conditions_verbatim():
+    text = README.read_text(encoding="utf-8")
+    license_section = text.split("## License", 1)[1].split("\n## ", 1)[0]
+    for condition in CONDITIONS:
+        assert condition in license_section
+    assert LICENSE_URL in license_section
+
+
+def test_installer_states_the_conditions_verbatim():
+    text = INSTALLER.read_text(encoding="utf-8")
+    for condition in CONDITIONS:
+        assert condition in text
+    assert LICENSE_URL in text
+
+
+@pytest.mark.parametrize("marker", ["pip install -e", "pip install --break-system-packages -e"])
+def test_installer_notice_precedes_the_pip_step(marker):
+    text = INSTALLER.read_text(encoding="utf-8")
+    notice = text.index(LICENSE_URL)
+    assert notice < text.index(marker), (
+        "the notice must be printed before the install step, or it is never seen"
+    )
+
+
+def test_installer_notice_precedes_the_install_branch():
+    """The property the row actually relies on: one unconditional block.
+
+    Comparing against the pip markers alone would stay green if the notice moved
+    inside the venv branch, leaving the --global path with no notice at all. The
+    branch line is the real boundary.
+    """
+    text = INSTALLER.read_text(encoding="utf-8")
+    branch = 'if [[ "$INSTALL_MODE" == "venv" ]]'
+    assert text.index(LICENSE_URL) < text.index(branch)
+
+
+def _git(*args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True, check=True
+    ).stdout
+
+
+def _content_net(cwd: Path = REPO_ROOT, run=subprocess.run) -> list[str]:
+    """Tracked files matching the RNS/LXMF source header, excluding our own quotes.
+
+    ``git grep`` exits 0 with matches, 1 with none, and anything else means the
+    search itself failed (unreadable index, not a repository). Only 0 and 1 are
+    allowed to look clean: swallowing a 128 would turn a broken net into a
+    passing one, which is the failure mode this whole test exists to prevent.
+
+    ``run`` is injectable so the broken-search guard does not depend on the cwd
+    being outside a repository — a pytest ``tmp_path`` under the checkout is
+    still inside one, where git exits 1 (no matches) rather than failing.
+    """
+    pattern = "This file is part of " + "RNS" + "|^#" + " Reticulum " + "License"
+    proc = run(
+        ["git", "grep", "-l", "-E", pattern],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode not in (0, 1):
+        raise AssertionError(
+            f"git grep failed ({proc.returncode}): {proc.stderr.strip()}"
+        )
+    return [path for path in proc.stdout.splitlines() if path not in PATTERN_QUOTERS]
+
+
+needs_git = pytest.mark.skipif(
+    shutil.which("git") is None or not (REPO_ROOT / ".git").exists(),
+    reason="vendoring nets read the git index",
+)
+
+
+# The card and its evidence quote the net's own pattern, so they are the only
+# files allowed to contain it. Narrower than excluding docs/ wholesale: a vendored
+# blob dropped in any other doc would still be found.
+PATTERN_QUOTERS = {
+    "docs/specs/adapter/tasks.md",
+    "docs/specs/adapter/verification.md",
+}
+
+
+@needs_git
+def test_no_vendored_source_by_content():
+    """Content net: an RNS/LXMF source blob would carry the upstream header.
+
+    The pattern is assembled from parts so this file's own source does not match
+    it — with the literal typed whole, the test found itself as soon as it was
+    committed.
+    """
+    assert _content_net() == []
+
+
+def test_content_net_reports_a_broken_search_instead_of_passing():
+    """A search that cannot run must fail, not read as an empty tree.
+
+    Without this, any git failure (unreadable index, cwd outside the repository)
+    yields empty stdout and the net passes vacuously. The failing runner is
+    injected rather than simulated with a cwd: a pytest ``tmp_path`` inside the
+    checkout is still inside a repository, where git exits 1 and the guard would
+    never be reached.
+    """
+
+    def failing_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=["git", "grep"], returncode=128, stdout="", stderr="fatal: not a git repository"
+        )
+
+    with pytest.raises(AssertionError, match="git grep failed"):
+        _content_net(run=failing_run)
+
+
+@needs_git
+def test_no_vendored_source_by_name():
+    """Names net: vendored dirs, renamed modules, and wheel/sdist archives."""
+    pattern = re.compile(r"(^|/)(rns|lxmf)[-/_.]|\.(whl|tar\.gz)$", re.IGNORECASE)
+    offenders = [path for path in _git("ls-files").splitlines() if pattern.search(path)]
+    assert offenders == []
