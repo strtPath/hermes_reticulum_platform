@@ -299,3 +299,25 @@ Red-before, recorded at branch base dev@`ba5b5c2`: the final 3-case file run
 against the base `transport.py` (fix stashed) gives 3 failed — the kwarg test,
 the chain test, and the home-isolation test. Green after: 58 passed at
 `HOME=/nonexistent` for the whole transport file; 3/3 pass in every mode.
+
+## Card A21: `install.sh` installs into one hardcoded Hermes home, so every extra profile drifts
+
+| # | Acceptance criterion | Evidence | Result | Gap |
+|---|---|---|---|---|
+| 1 | plugin copies (marker/`__pycache__` excluded from dir-diff, marker asserted separately) land in the named home; pre-existing default-home `plugins/` untouched |  |  |  |
+| 2 | `plugins.enabled` + `approvals.timeout: 900` written to the named home |  |  |  |
+| 3 | an existing `approvals.timeout` and unrelated entries survive (value-level); no duplicate keys |  |  |  |
+| 4 | no-flag run identical on home-scoped writes; default venv a static read, never executed |  |  |  |
+| 5 | precedence flag > env > default (flag+env sub-case); nonexistent named home refused; env install creates no default home; env-named default created on a fresh box; profiles/ home accepted, `<root>/profiles` refused |  |  |  |
+| 6 | `--check`: stale roots nonzero; missing marker nonzero; not-installed informational; `HERMES_HOME` as ROOT default; bad ROOT nonzero; `--hermes-home` combination refused; all three limitations printed; fixtures built by install runs, mutated per case |  |  |  |
+| 7 | CI guard: writes outside selected home ∪ `$SCRIPT_DIR` ∪ explicit `--venv` ∪ `${HOME}/.reticulum` ∪ `${HOME}/.lxmf/storage` fail the test |  |  |  |
+| 8 | next-steps names the selected home (`.env` pointer, `RETICULUM_*` guidance) |  |  |  |
+| 9 | PII sweep exit 0; no literal absolute home path added to the script |  |  |  |
+| 10 | non-default home skips the service step (`--service --venv <tmp>/venv`, stub `systemctl` never invoked); skip line in auto and explicit mode; resolved-default-via-flag run does **not** skip (stub invoked) |  |  |  |
+| 11 | docs: profile section; default-home-only references generalised (incl. QUICKSTART:42, README:118 disambiguated); caution ordered, no unverified peer claims |  |  |  |
+| 12 | `--global --no-service` (no `--venv`, stub `pip`): marker lists only roots that mode used (no venv line); `--check` green; venv root impossible outside venv mode |  |  |  |
+| 13 | `--help` and usage banner list `--hermes-home` and `--check` |  |  |  |
+
+Status: **open, proposed 2026-11-26** — peer recommendation adopted by the operator; passed
+senior review **GO 4/5** (fifth pass, 2026-11-27) with zero blocking issues; that pass's
+eight non-blocking nits are folded in; the operator's ruling gates landing it in `tasks.md`.
