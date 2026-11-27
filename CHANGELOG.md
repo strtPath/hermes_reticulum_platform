@@ -17,8 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the chain that resolves the storage location; previously it was accepted and
   ignored (card A20, PR #7).
 - **Cold-link courtesy**: path probes abort on disconnect and route
-  re-requests are capped to announced peers, ending endless re-asking of
-  unreachable peers (PRs #9, #10).
+  re-requests are limited to previously delivered-to peers, ending endless
+  re-asking of unreachable peers (PRs #9, #10).
 - **Docs orientation**: stale claims naming the archived standalone bridge as
   the supported path were corrected across `AGENTS.md`, the bridge README, and
   module docstrings (PR #3).
