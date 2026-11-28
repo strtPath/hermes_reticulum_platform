@@ -21,10 +21,10 @@ a real RNS/LXMF stack (RNS 1.5.x / LXMF 1.1.x):
   the final instance state (with the RNS version, which a shared
   instance couples by start order with no warning).
 
-Configuration is read from ``PlatformConfig.extra`` first, with the
-scoped env reader as fallback — never ``os.getenv`` (spec section 16:
-under multiplexing a raw env read silently returns the default
-profile's value).
+Configuration is read from ``PlatformConfig.extra`` first, then the named
+constructor argument, then the scoped env reader — never ``os.getenv``
+(spec section 16: under multiplexing a raw env read silently returns the
+default profile's value).
 """
 
 import logging
@@ -137,33 +137,43 @@ class ReticulumTransport:
 
     def __init__(
         self,
-        display_name: str = "Hermes for Reticulum",
-        announce_interval_min: Any = DEFAULT_ANNOUNCE_INTERVAL_MIN,
+        display_name: str | None = None,
+        announce_interval_min: Any = None,
         storage_path: str | None = None,
         rns_config_path: str | None = None,
         require_shared_instance: bool | None = None,
         extra: dict | None = None,
     ):
-        """Build the transport. Settings come from ``extra`` (the adapter's
-        PlatformConfig.extra), then the scoped env reader, then defaults;
-        ``storage_path`` also honors its named argument, between ``extra``
-        and the env reader. Raises ValueError on an invalid announce
-        interval (fail loudly at startup)."""
+        """Build the transport. Settings resolve through one chain:
+        ``extra`` (the adapter's PlatformConfig.extra), then the named
+        argument, then the scoped env reader, then the default — per field
+        (issue #8, following the A20 precedent for ``storage_path``).
+        ``require_shared_instance`` is operator policy and stays outside
+        that chain: the explicit argument beats ``extra``, no env. Raises
+        ValueError on an invalid announce interval (fail loudly at
+        startup)."""
         extra = dict(extra or {})
         self._name_lock = threading.Lock()
         with self._name_lock:
             self._display_name = (
                 extra.get("display_name")
+                or display_name
                 or _get_scoped_secret("RETICULUM_DISPLAY_NAME")
                 or "Hermes for Reticulum"
             )
         raw_interval = extra.get("announce_interval")
+        interval_source = "extra['announce_interval']"
+        if raw_interval is None:
+            raw_interval = announce_interval_min
+            interval_source = "announce_interval_min"
         if raw_interval is None:
             raw_interval = _get_scoped_secret("RETICULUM_ANNOUNCE_INTERVAL")
+            interval_source = "RETICULUM_ANNOUNCE_INTERVAL"
         if raw_interval is None:
             raw_interval = DEFAULT_ANNOUNCE_INTERVAL_MIN
+            interval_source = "the default announce interval"
         self.announce_interval_min = validate_announce_interval(
-            raw_interval, "RETICULUM_ANNOUNCE_INTERVAL"
+            raw_interval, interval_source
         )
 
         self.storage_path = expand_path(
@@ -172,13 +182,12 @@ class ReticulumTransport:
             or _get_scoped_secret("RETICULUM_STORAGE_PATH")
             or "~/.hermes/.reticulum-gateway/storage"
         )
-        self.rns_config_path = (
-            str(extra.get("rns_config_path")
-                or _get_scoped_secret("RETICULUM_RNS_CONFIG_PATH"))
-            if (extra.get("rns_config_path")
-                or _get_scoped_secret("RETICULUM_RNS_CONFIG_PATH"))
-            else None
+        raw_rns_config = (
+            extra.get("rns_config_path")
+            or rns_config_path
+            or _get_scoped_secret("RETICULUM_RNS_CONFIG_PATH")
         )
+        self.rns_config_path = str(raw_rns_config) if raw_rns_config else None
         # Propagation policy: who carries a reply when the peer has no path.
         # "auto" autopeers, "off" disables, or a 32-hex hash pins one node.
         raw_propagation = extra.get("propagation_node")

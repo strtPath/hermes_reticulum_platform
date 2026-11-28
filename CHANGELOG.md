@@ -5,6 +5,15 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **Named constructor arguments are honoured**: `display_name`,
+  `announce_interval_min` and `rns_config_path` now fold into the resolution
+  chain (extra > argument > scoped env > default); previously all three were
+  accepted and ignored (issue #8). Validation errors name the source the
+  value came from.
+
 ## [0.3.1] — 2026-11-27
 
 ### Added
