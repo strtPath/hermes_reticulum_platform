@@ -21,10 +21,10 @@ a real RNS/LXMF stack (RNS 1.5.x / LXMF 1.1.x):
   the final instance state (with the RNS version, which a shared
   instance couples by start order with no warning).
 
-Configuration is read from ``PlatformConfig.extra`` first, with the
-scoped env reader as fallback — never ``os.getenv`` (spec section 16:
-under multiplexing a raw env read silently returns the default
-profile's value).
+Configuration is read from ``PlatformConfig.extra`` first, then the named
+constructor argument, then the scoped env reader — never ``os.getenv``
+(spec section 16: under multiplexing a raw env read silently returns the
+default profile's value).
 """
 
 import logging
@@ -162,14 +162,18 @@ class ReticulumTransport:
                 or "Hermes for Reticulum"
             )
         raw_interval = extra.get("announce_interval")
+        interval_source = "extra['announce_interval']"
         if raw_interval is None:
             raw_interval = announce_interval_min
+            interval_source = "announce_interval_min"
         if raw_interval is None:
             raw_interval = _get_scoped_secret("RETICULUM_ANNOUNCE_INTERVAL")
+            interval_source = "RETICULUM_ANNOUNCE_INTERVAL"
         if raw_interval is None:
             raw_interval = DEFAULT_ANNOUNCE_INTERVAL_MIN
+            interval_source = "the default announce interval"
         self.announce_interval_min = validate_announce_interval(
-            raw_interval, "announce interval"
+            raw_interval, interval_source
         )
 
         self.storage_path = expand_path(

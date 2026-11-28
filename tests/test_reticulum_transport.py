@@ -452,9 +452,33 @@ class TestNamedArgumentChain:
 
     def test_announce_interval_kwarg_is_still_validated(self, scoped_env):
         # Folding the kwarg in must not bypass the startup validation that
-        # rejects cadences below the floor.
-        with pytest.raises(ValueError):
+        # rejects cadences below the floor — and the error must name the
+        # argument the value actually came from, not the env var and not a
+        # source-less generic label.
+        with pytest.raises(ValueError, match="announce_interval_min"):
             transport_module.ReticulumTransport(announce_interval_min=0.5)
+
+    def test_env_sourced_invalid_interval_names_the_env_var(
+        self, scoped_env, monkeypatch
+    ):
+        monkeypatch.setenv("RETICULUM_ANNOUNCE_INTERVAL", "abc")
+        with pytest.raises(ValueError, match="RETICULUM_ANNOUNCE_INTERVAL"):
+            transport_module.ReticulumTransport()
+
+    def test_explicit_none_display_name_falls_through_to_env(
+        self, scoped_env, monkeypatch
+    ):
+        # None-defaulting means a passed None must not mask the env chain.
+        monkeypatch.setenv("RETICULUM_DISPLAY_NAME", "from-env")
+        t = transport_module.ReticulumTransport(display_name=None)
+        assert t.display_name == "from-env"
+
+    def test_zero_interval_via_kwarg_stays_zero(self, scoped_env, monkeypatch):
+        # 0 disables announces; a falsy-collapse refactor would silently
+        # re-enable the 60-minute cadence on a receive-only node.
+        monkeypatch.delenv("RETICULUM_ANNOUNCE_INTERVAL", raising=False)
+        t = transport_module.ReticulumTransport(announce_interval_min=0)
+        assert t.announce_interval_min == 0.0
 
     def test_rns_config_path_kwarg_reaches_and_orders_in_chain(
         self, scoped_env, monkeypatch, tmp_path
