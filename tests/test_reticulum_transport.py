@@ -403,6 +403,87 @@ class TestStoragePathChannel:
             t.stop()
 
 
+class TestNamedArgumentChain:
+    """Issue #8: display_name, announce_interval_min and rns_config_path
+    were accepted and dropped — the same defect class A20 fixed for
+    storage_path. Fold each into the chain: extra > kwarg > env > default."""
+
+    def test_display_name_kwarg_reaches_the_attribute(self, scoped_env, monkeypatch):
+        monkeypatch.delenv("RETICULUM_DISPLAY_NAME", raising=False)
+        t = transport_module.ReticulumTransport(display_name="Radio Relay")
+        assert t.display_name == "Radio Relay"
+
+    def test_display_name_chain_extra_beats_kwarg_beats_env(
+        self, scoped_env, monkeypatch
+    ):
+        monkeypatch.setenv("RETICULUM_DISPLAY_NAME", "from-env")
+        both = transport_module.ReticulumTransport(
+            display_name="from-kwarg",
+            extra={"display_name": "from-extra"},
+        )
+        assert both.display_name == "from-extra"
+        kwarg_beats_env = transport_module.ReticulumTransport(
+            display_name="from-kwarg"
+        )
+        assert kwarg_beats_env.display_name == "from-kwarg"
+        monkeypatch.delenv("RETICULUM_DISPLAY_NAME", raising=False)
+        assert (
+            transport_module.ReticulumTransport().display_name
+            == "Hermes for Reticulum"
+        )
+
+    def test_announce_interval_kwarg_reaches_and_orders_in_chain(
+        self, scoped_env, monkeypatch
+    ):
+        monkeypatch.setenv("RETICULUM_ANNOUNCE_INTERVAL", "90")
+        both = transport_module.ReticulumTransport(
+            announce_interval_min=15, extra={"announce_interval": 30}
+        )
+        assert both.announce_interval_min == 30.0
+        kwarg_beats_env = transport_module.ReticulumTransport(
+            announce_interval_min=15
+        )
+        assert kwarg_beats_env.announce_interval_min == 15.0
+        monkeypatch.delenv("RETICULUM_ANNOUNCE_INTERVAL", raising=False)
+        assert (
+            transport_module.ReticulumTransport().announce_interval_min
+            == transport_module.DEFAULT_ANNOUNCE_INTERVAL_MIN
+        )
+
+    def test_announce_interval_kwarg_is_still_validated(self, scoped_env):
+        # Folding the kwarg in must not bypass the startup validation that
+        # rejects cadences below the floor.
+        with pytest.raises(ValueError):
+            transport_module.ReticulumTransport(announce_interval_min=0.5)
+
+    def test_rns_config_path_kwarg_reaches_and_orders_in_chain(
+        self, scoped_env, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv(
+            "RETICULUM_RNS_CONFIG_PATH", str(tmp_path / "from-env.conf")
+        )
+        both = transport_module.ReticulumTransport(
+            rns_config_path=str(tmp_path / "from-kwarg.conf"),
+            extra={"rns_config_path": str(tmp_path / "from-extra.conf")},
+        )
+        assert both.rns_config_path == str(tmp_path / "from-extra.conf")
+        kwarg_beats_env = transport_module.ReticulumTransport(
+            rns_config_path=str(tmp_path / "from-kwarg.conf")
+        )
+        assert kwarg_beats_env.rns_config_path == str(tmp_path / "from-kwarg.conf")
+        monkeypatch.delenv("RETICULUM_RNS_CONFIG_PATH", raising=False)
+        assert transport_module.ReticulumTransport().rns_config_path is None
+
+    def test_require_shared_instance_policy_unchanged(self, scoped_env):
+        # Operator policy, deliberately NOT in the env chain: the explicit
+        # argument beats extra. Pinned so this fold cannot sweep it up.
+        t = transport_module.ReticulumTransport(
+            require_shared_instance=False,
+            extra={"require_shared_instance": True},
+        )
+        assert t.require_shared_instance is False
+
+
 class TestSendTo:
     def _started_transport(self, fake_rns, tmp_path):
         t = transport_module.ReticulumTransport(
