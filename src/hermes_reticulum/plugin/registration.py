@@ -14,6 +14,9 @@ updating that shim.
 import logging
 
 from gateway.platforms._shared import (
+    apply_yaml_bridge as _apply_yaml_bridge,
+)
+from gateway.platforms._shared import (
     get_scoped_secret as _get_scoped_secret,
 )
 from gateway.platforms._shared import (
@@ -45,6 +48,29 @@ _ENV_TABLE = (
 # because the variable was spelled differently. RETICULUM_STORAGE_PATH wins
 # when both are set.
 _LEGACY_STORAGE_ENV = "RETICULUM_STORAGE"
+
+# (yaml_key, ENV_VAR, kind) table for the apply_yaml_config_fn hook (card
+# A7, closing spec sections 12 and 17.5). A platforms.reticulum key from
+# config.yaml bridges to the env name the transport already reads AND seeds
+# the raw YAML value into PlatformConfig.extra, which the transport's
+# resolution chain reads first. Precedence belongs to
+# ``_shared.yaml_env_setter``: a value the operator put in .env or a secret
+# source wins over the YAML key; the hook never writes env under a
+# multiplexed secondary profile's scope (that profile still gets its own
+# seeded extra). display_name bridges RETICULUM_DISPLAY_NAME, so a YAML-only
+# setup satisfies the enablement gate; announce_interval alone never enables
+# the platform.
+_YAML_BRIDGE = (
+    ("display_name", "RETICULUM_DISPLAY_NAME", "str"),
+    ("announce_interval", "RETICULUM_ANNOUNCE_INTERVAL", "str"),
+)
+
+
+def _apply_yaml_config(yaml_cfg: dict, reticulum_cfg: dict) -> dict | None:
+    """``apply_yaml_config_fn`` body for ``platforms.reticulum``: table-
+    driven through ``_shared.apply_yaml_bridge``. Returns the seeded extra
+    (None when the config block carried none of the keys)."""
+    return _apply_yaml_bridge(reticulum_cfg, _YAML_BRIDGE)
 
 
 def _seed_extra() -> dict:
@@ -161,6 +187,7 @@ def register(ctx):
         validate_config=_validate_config,
         is_connected=_is_connected,
         env_enablement_fn=_env_enablement,
+        apply_yaml_config_fn=_apply_yaml_config,
         required_env=[],
         install_hint="pip install hermes-reticulum",
         emoji="🛜",

@@ -10,6 +10,7 @@ secret reader in a default-profile environment behaves like a plain env
 read, which the stub reproduces.
 """
 import inspect
+import json
 import os
 import sys
 import types
@@ -165,6 +166,33 @@ else:
     _shared_stub.platform_gate_env = (
         lambda name, default="": str(os.environ.get(name, default) or "").strip()
     )
+
+    def _stub_apply_yaml_bridge(cfg, spec):
+        """Mirror the real ``apply_yaml_bridge`` closely enough to test.
+
+        Same ``(yaml_key, ENV_VAR, kind)`` table walk: seed the original YAML
+        value into the returned extra and bridge the encoded value to env.
+        The real setter also handles operator-sourced values, bridge markers
+        and multiplexed secondary scopes (no scoped loads happen under the
+        stub); the bridge-to-unset-env and raw-seed behaviours asserted by
+        the tests are identical in both.
+        """
+        kinds = {
+            "lower": (lambda cfg, key: key in cfg, lambda v: str(v).lower()),
+            "str": (lambda cfg, key: cfg.get(key) not in (None, ""), str),
+            "csv": (lambda cfg, key: cfg.get(key) is not None, lambda v: v),
+            "json": (lambda cfg, key: key in cfg, json.dumps),
+        }
+        seeded = {}
+        for key, env, kind in spec:
+            applies, encode = kinds[kind]
+            if applies(cfg, key):
+                seeded[key] = cfg[key]
+                if not str(os.environ.get(env, "") or "").strip():
+                    os.environ[env] = str(encode(cfg[key]))
+        return seeded or None
+
+    _shared_stub.apply_yaml_bridge = _stub_apply_yaml_bridge
 
     class _SendResult:
         def __init__(self, success, error=None, retryable=False, error_kind=None):
