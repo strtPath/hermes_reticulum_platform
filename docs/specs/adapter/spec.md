@@ -80,10 +80,8 @@ be implemented later. Out of scope for the first version (section 9).
   construction, so env-only setups appear in `hermes gateway status`. Build from a
   `(ENV_VAR, extra_key, conv)` table via `_shared.seed_extra_from_env`.
 - `apply_yaml_config_fn` — own the YAML schema for this platform rather than growing core
-  config boilerplate. Return `_shared.apply_yaml_bridge(platform_cfg, TABLE)`. **Not wired
-  yet** (see section 17): config currently arrives from env only, and
-  `RETICULUM_DISPLAY_NAME` / `RETICULUM_ANNOUNCE_INTERVAL` are read from env, not from
-  `config.yaml` as section 12 requires.
+  config boilerplate. Return `_shared.apply_yaml_bridge(platform_cfg, TABLE)`. Registered
+  on card A7; see section 17.5 for what that closed and what it did not.
 - `is_connected` — implemented as `_validate_config(config)` returning `True` (every field
   has a default), matching the IRC reference plugin's contract. This replaced an earlier
   version that read a runtime flag nothing ever sets, which made the gate permanently
@@ -659,7 +657,7 @@ the gateway-side ceiling, not a transport constant. The 368-byte per-block budge
 `delivery.py` is the only real size limit, and it is enforced by `chunk_for_send` returning
 fewer parts when the content cannot be split to fit. There is no `MAX_PART_BYTES` constant.
 
-### 17.5 Config still arrives from env, not from YAML
+### 17.5 Config still arrives from env, not from YAML — CLOSED
 
 Section 12 requires `apply_yaml_config_fn` to own the YAML schema, and section 2's hook list
 requires `RETICULUM_DISPLAY_NAME` and `RETICULUM_ANNOUNCE_INTERVAL` to be `config.yaml` keys.
@@ -667,6 +665,23 @@ Neither is wired yet: the adapter reads both from env via `get_scoped_secret`, a
 `apply_yaml_config_fn` is not registered on the platform entry. This is a known gap, not a
 silent one. The env path works today, so phone-based testing can proceed without it, but the
 YAML hook must land before this platform is shipped as a public plugin.
+
+Closed on card A7: the platform entry registers `apply_yaml_config_fn`, table-driven through
+the gateway's `_shared.apply_yaml_bridge`, so `display_name` and `announce_interval` are
+`config.yaml` keys — `config_loader.platform_section` accepts them under `platforms.reticulum`
+or a top-level `reticulum:` block. The hook bridges each key to the env name the transport
+already reads and seeds the raw YAML value into `PlatformConfig.extra`, which the transport's
+resolution chain reads first. Precedence is the gateway's contract, not a plugin-local rule:
+an operator value in `.env` or a secret source wins over the YAML key, and under a multiplexed
+secondary profile the hook seeds that profile's extra and writes no env. The display name
+remains the enable switch (D1) at the plugin gate: the YAML key satisfies `_env_enablement()`
+because it bridges `RETICULUM_DISPLAY_NAME`. That gate is not end-to-end — the gateway also
+activates the platform on the mere presence of a `platforms.reticulum` block, and
+`is_connected` returns `True` unconditionally (section 2), so a block carrying only
+`announce_interval` currently comes up announcing under the transport default name. Closing
+D1 across both layers is a separate card (issue #16), not this paragraph's claim. The remaining
+`RETICULUM_*` names (storage path, config path, allowlists, home channel) stay env-only; no
+ruling widens them into YAML.
 
 ### 17.6 `approvals.timeout=900` gap — CLOSED
 

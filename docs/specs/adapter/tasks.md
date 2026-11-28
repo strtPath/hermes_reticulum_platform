@@ -444,6 +444,10 @@ gateway starts, Then the adapter announces with the configured display name and 
 **Progress:** the transport now receives `PlatformConfig.extra` (connect() passes it), so a
 setting that reaches the adapter is no longer dropped on the floor before the transport. The
 `apply_yaml_config_fn` registration itself remains to be added.
+**Status:** in-review — PR #15 off dev@`91f97f0`. Hook registered table-driven through
+`_shared.apply_yaml_bridge` (`display_name`, `announce_interval`); §17.5 closed with it.
+Live row (gateway start announcing from YAML-only config) not run on the box yet; the
+deployment keeps its `.env` path, which the card deliberately leaves working.
 
 ## Card A8: Approvals 900s
 

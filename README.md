@@ -88,7 +88,7 @@ The adapter runs **inside the Hermes gateway** and reads the Hermes profile's `.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RETICULUM_DISPLAY_NAME` | *(none)* | Name announced on the mesh. **Required:** without it the platform is treated as not set up and never registers. |
+| `RETICULUM_DISPLAY_NAME` | *(none)* | Name announced on the mesh. **Required:** without it the plugin's enable gate treats the platform as not set up, and it never registers. |
 | `HERMES_RETICULUM_ALLOWED_USERS` | *(empty)* | LXMF hash allowlist (deny-by-default) |
 | `HERMES_RETICULUM_BLOCKED_USERS` | *(empty)* | LXMF hash blocklist |
 | `HERMES_RETICULUM_ALLOW_ALL` | `false` | Allow any sender — set only if you mean it |
@@ -97,6 +97,20 @@ The adapter runs **inside the Hermes gateway** and reads the Hermes profile's `.
 | `RETICULUM_RNS_CONFIG_PATH` | `~/.reticulum` | Reticulum config directory |
 | `RETICULUM_REQUIRE_SHARED_INSTANCE` | `false` | Require attaching to a running rnsd instead of starting an instance |
 | `RETICULUM_HOME_CHANNEL` | *(none)* | Home channel for scheduled/cron delivery to the mesh |
+
+The two behaviour keys can also be set in `~/.hermes/config.yaml`, under
+`platforms.reticulum` (or a top-level `reticulum:` block):
+
+```yaml
+platforms:
+  reticulum:
+    display_name: Hermes Agent   # enables the platform, like the env var
+    announce_interval: 30        # minutes; 0 disables
+```
+
+Precedence is the gateway's rule, not a plugin-local one: a value you put in
+`.env` or a secret source wins over the YAML key. Everything else in the table
+stays env-only — those are secrets and deployment plumbing, not behaviour.
 
 Each client has a 32-character hex LXMF identity hash. The agent's own address is derived from the identity file under `RETICULUM_STORAGE_PATH`; print it with `hermes-reticulum address` (read-only command, works on either path's storage), or read it from Sideband/RNode once the node announces.
 

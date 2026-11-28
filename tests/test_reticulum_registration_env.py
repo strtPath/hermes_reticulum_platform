@@ -7,6 +7,8 @@ platform entirely.
 """
 
 
+import os
+
 import pytest
 
 from hermes_reticulum.plugin import registration
@@ -179,3 +181,71 @@ def test_platform_hint_covers_clients_without_markdown_rendering():
     hint = registration._PLATFORM_HINT.lower()
     assert "raw text" in hint
     assert "without formatting" in hint
+
+
+class TestYamlConfigBridge:
+    """Card A7: ``config.yaml`` keys under ``platforms.reticulum`` reach the
+    adapter through the ``apply_yaml_config_fn`` hook (spec sections 12
+    and 17.5 closed the env-only gap)."""
+
+    def test_yaml_table_covers_the_carded_keys(self):
+        keys = {row[0] for row in registration._YAML_BRIDGE}
+        assert keys == {"display_name", "announce_interval"}
+
+    def test_hook_seeds_extra_and_bridges_env(self):
+        seeded = registration._apply_yaml_config(
+            {}, {"display_name": "Mesh Relay", "announce_interval": 20}
+        )
+        assert seeded == {"display_name": "Mesh Relay", "announce_interval": 20}
+        assert os.environ["RETICULUM_DISPLAY_NAME"] == "Mesh Relay"
+        assert os.environ["RETICULUM_ANNOUNCE_INTERVAL"] == "20"
+
+    def test_no_yaml_keys_yields_nothing(self):
+        assert registration._apply_yaml_config({}, {}) is None
+        assert "RETICULUM_DISPLAY_NAME" not in os.environ
+
+    def test_seeded_extra_reaches_the_transport(self):
+        """The acceptance shape: config.yaml values, no env, land on the
+        transport that announces."""
+        from hermes_reticulum.plugin import transport as transport_module
+
+        seeded = registration._apply_yaml_config(
+            {}, {"display_name": "Mesh Relay", "announce_interval": 20}
+        )
+        t = transport_module.ReticulumTransport(extra=seeded)
+        assert t.display_name == "Mesh Relay"
+        assert t.announce_interval_min == 20.0
+
+    def test_yaml_display_name_satisfies_the_enablement_gate(self):
+        """The bridged name opens the D1 gate: the YAML key enables the
+        platform precisely because it bridges RETICULUM_DISPLAY_NAME."""
+        assert registration._env_enablement() is None
+        registration._apply_yaml_config({}, {"display_name": "Mesh Relay"})
+        extra = registration._env_enablement()
+        assert extra is not None
+        assert extra["display_name"] == "Mesh Relay"
+
+    def test_announce_interval_alone_does_not_enable_the_platform(self):
+        """D1 stays ruled: the display name is the enable switch. A cadence
+        key without a name bridges its env but never registers the node."""
+        seeded = registration._apply_yaml_config({}, {"announce_interval": 20})
+        assert seeded == {"announce_interval": 20}
+        assert os.environ["RETICULUM_ANNOUNCE_INTERVAL"] == "20"
+        assert registration._env_enablement() is None
+
+
+def test_register_passes_the_yaml_hook():
+    """The entry must actually carry the hook, not just define it."""
+    pytest.importorskip("gateway.platform_registry")
+
+    class _CapturingCtx:
+        def __init__(self):
+            self.kwargs = None
+
+        def register_platform(self, **kwargs):
+            self.kwargs = kwargs
+
+    ctx = _CapturingCtx()
+    registration.register(ctx)
+    assert ctx.kwargs is not None
+    assert ctx.kwargs.get("apply_yaml_config_fn") is registration._apply_yaml_config

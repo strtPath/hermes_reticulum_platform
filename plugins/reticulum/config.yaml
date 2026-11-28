@@ -17,3 +17,13 @@
 #   and it is the reason this file exists.
 approvals:
   timeout: 900
+
+#
+# Behaviour keys (card A7, spec section 12): the platform reads display_name
+# and announce_interval from this platform's config.yaml block
+# (platforms.reticulum, or a top-level reticulum: block). Left commented here
+# on purpose: an uncommented display_name would enable every install under a
+# name we chose for it. The operator names their node.
+#
+# display_name: Hermes Agent
+# announce_interval: 30
