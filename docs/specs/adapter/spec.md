@@ -659,7 +659,7 @@ the gateway-side ceiling, not a transport constant. The 368-byte per-block budge
 `delivery.py` is the only real size limit, and it is enforced by `chunk_for_send` returning
 fewer parts when the content cannot be split to fit. There is no `MAX_PART_BYTES` constant.
 
-### 17.5 Config still arrives from env, not from YAML
+### 17.5 Config still arrives from env, not from YAML — CLOSED
 
 Section 12 requires `apply_yaml_config_fn` to own the YAML schema, and section 2's hook list
 requires `RETICULUM_DISPLAY_NAME` and `RETICULUM_ANNOUNCE_INTERVAL` to be `config.yaml` keys.
@@ -667,6 +667,19 @@ Neither is wired yet: the adapter reads both from env via `get_scoped_secret`, a
 `apply_yaml_config_fn` is not registered on the platform entry. This is a known gap, not a
 silent one. The env path works today, so phone-based testing can proceed without it, but the
 YAML hook must land before this platform is shipped as a public plugin.
+
+Closed on card A7: the platform entry registers `apply_yaml_config_fn`, table-driven through
+the gateway's `_shared.apply_yaml_bridge`, so `display_name` and `announce_interval` are
+`config.yaml` keys — `config_loader.platform_section` accepts them under `platforms.reticulum`
+or a top-level `reticulum:` block. The hook bridges each key to the env name the transport
+already reads and seeds the raw YAML value into `PlatformConfig.extra`, which the transport's
+resolution chain reads first. Precedence is the gateway's contract, not a plugin-local rule:
+an operator value in `.env` or a secret source wins over the YAML key, and under a multiplexed
+secondary profile the hook seeds that profile's extra and writes no env. The display name
+remains the enable switch (D1): the YAML key satisfies the gate because it bridges
+`RETICULUM_DISPLAY_NAME`, and `announce_interval` alone never registers a node. The remaining
+`RETICULUM_*` names (storage path, config path, allowlists, home channel) stay env-only; no
+ruling widens them into YAML.
 
 ### 17.6 `approvals.timeout=900` gap — CLOSED
 

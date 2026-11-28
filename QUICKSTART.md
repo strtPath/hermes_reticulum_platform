@@ -60,6 +60,11 @@ HERMES_RETICULUM_ALLOWED_USERS=YOUR_LXMF_HASH_HERE
 
 Optional env keys the adapter honours: `RETICULUM_ANNOUNCE_INTERVAL`, `RETICULUM_STORAGE_PATH`, `RETICULUM_RNS_CONFIG_PATH`, `RETICULUM_REQUIRE_SHARED_INSTANCE`, `RETICULUM_HOME_CHANNEL`.
 
+If you prefer gateway config over `.env`, `display_name` and `announce_interval`
+also work as keys under `platforms.reticulum:` in `~/.hermes/config.yaml` —
+the display name there enables the platform on its own. `.env` values win on
+conflict.
+
 ## 3. Tame the progress stream (recommended)
 
 The gateway's global default streams tool-progress and thinking ticks as separate one-shot LXMF messages — fine on Telegram, ruinous on a LoRa link (and it can hold back the real reply). In `~/.hermes/config.yaml`:
