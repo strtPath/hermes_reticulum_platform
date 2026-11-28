@@ -80,10 +80,8 @@ be implemented later. Out of scope for the first version (section 9).
   construction, so env-only setups appear in `hermes gateway status`. Build from a
   `(ENV_VAR, extra_key, conv)` table via `_shared.seed_extra_from_env`.
 - `apply_yaml_config_fn` — own the YAML schema for this platform rather than growing core
-  config boilerplate. Return `_shared.apply_yaml_bridge(platform_cfg, TABLE)`. **Not wired
-  yet** (see section 17): config currently arrives from env only, and
-  `RETICULUM_DISPLAY_NAME` / `RETICULUM_ANNOUNCE_INTERVAL` are read from env, not from
-  `config.yaml` as section 12 requires.
+  config boilerplate. Return `_shared.apply_yaml_bridge(platform_cfg, TABLE)`. Registered
+  on card A7; see section 17.5 for what that closed and what it did not.
 - `is_connected` — implemented as `_validate_config(config)` returning `True` (every field
   has a default), matching the IRC reference plugin's contract. This replaced an earlier
   version that read a runtime flag nothing ever sets, which made the gate permanently
@@ -676,8 +674,12 @@ already reads and seeds the raw YAML value into `PlatformConfig.extra`, which th
 resolution chain reads first. Precedence is the gateway's contract, not a plugin-local rule:
 an operator value in `.env` or a secret source wins over the YAML key, and under a multiplexed
 secondary profile the hook seeds that profile's extra and writes no env. The display name
-remains the enable switch (D1): the YAML key satisfies the gate because it bridges
-`RETICULUM_DISPLAY_NAME`, and `announce_interval` alone never registers a node. The remaining
+remains the enable switch (D1) at the plugin gate: the YAML key satisfies `_env_enablement()`
+because it bridges `RETICULUM_DISPLAY_NAME`. That gate is not end-to-end — the gateway also
+activates the platform on the mere presence of a `platforms.reticulum` block, and
+`is_connected` returns `True` unconditionally (section 2), so a block carrying only
+`announce_interval` currently comes up announcing under the transport default name. Closing
+D1 across both layers is a separate card (issue #16), not this paragraph's claim. The remaining
 `RETICULUM_*` names (storage path, config path, allowlists, home channel) stay env-only; no
 ruling widens them into YAML.
 

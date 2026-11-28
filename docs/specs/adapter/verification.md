@@ -134,7 +134,7 @@ gateway card — see the card record in `tasks.md`.
 
 | # | Acceptance criterion | Evidence | Result | Gap |
 |---|---|---|---|---|
-| 1 | `config.yaml` keys work without env vars | Unit-level, both halves of the acceptance: `test_yaml_display_name_satisfies_the_enablement_gate` starts with no `RETICULUM_*` env, `_env_enablement()` closed, calls the hook with only a YAML block, and the gate opens with the configured name — the adapter would register. `test_seeded_extra_reaches_the_transport` builds `ReticulumTransport(extra=seeded)` from the hook's return alone: `display_name == "Mesh Relay"`, `announce_interval_min == 20.0`, so the configured name and cadence land on the transport that announces. The autouse `_clean_env` fixture guarantees no env leaks in | PASS | live row open: gateway start with YAML-only config not yet run on the box; deployment keeps the `.env` path |
+| 1 | `config.yaml` keys work without env vars | Unit-level, both halves of the acceptance: `test_yaml_display_name_satisfies_the_enablement_gate` starts with no `RETICULUM_*` env, `_env_enablement()` closed, calls the hook with only a YAML block, and the gate opens with the configured name — the adapter would register. `test_seeded_extra_reaches_the_transport` builds `ReticulumTransport(extra=seeded)` from the hook's return alone: `display_name == "Mesh Relay"`, `announce_interval_min == 20.0`, so the configured name and cadence land on the transport that announces. The autouse `_clean_env` fixture guarantees no operator env leaks into the hook | PASS | live row open: gateway start with YAML-only config not yet run on the box; deployment keeps the `.env` path |
 
 Red-before, recorded at branch base dev@`91f97f0` with the new tests added and
 `registration.py` untouched: 7 failed / 16 passed in the file — every new test
@@ -153,8 +153,12 @@ Test-honesty note: the conftest `_shared` stub gained a hand-written
 simpler than the real setter (no operator-source detection, no bridge markers,
 no scoped loads under stub mode). Without the mirror, CI-stub mode would score
 the hook green without running it — the A12/A15 lesson, applied pre-emptively.
-D1 is pinned rather than assumed: `test_announce_interval_alone_does_not_enable_the_platform`
-bridges a cadence key with no name and asserts the gate stays closed.
+D1 is pinned at the plugin gate rather than assumed:
+`test_announce_interval_alone_does_not_enable_the_platform` bridges a cadence key with no
+name and asserts `_env_enablement()` stays closed. The gate is plugin-level only: senior
+review on this PR observed that the gateway activates the platform on the mere presence of
+a `platforms.reticulum` block with `is_connected` unconditionally `True`, so a cadence-only
+block does come up today under the default name. That end-to-end gap is issue #16.
 
 ## Card A8: Approvals 900s
 

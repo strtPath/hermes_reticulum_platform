@@ -88,7 +88,7 @@ The adapter runs **inside the Hermes gateway** and reads the Hermes profile's `.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RETICULUM_DISPLAY_NAME` | *(none)* | Name announced on the mesh. **Required:** without it the platform is treated as not set up and never registers. |
+| `RETICULUM_DISPLAY_NAME` | *(none)* | Name announced on the mesh. **Required:** without it the plugin's enable gate treats the platform as not set up, and it never registers. |
 | `HERMES_RETICULUM_ALLOWED_USERS` | *(empty)* | LXMF hash allowlist (deny-by-default) |
 | `HERMES_RETICULUM_BLOCKED_USERS` | *(empty)* | LXMF hash blocklist |
 | `HERMES_RETICULUM_ALLOW_ALL` | `false` | Allow any sender — set only if you mean it |
